@@ -1,0 +1,10 @@
+[project]
+name = "impdemo"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+# `root` tells ty where first-party code starts. Without it, `import pkg.core`
+# from inside src/ may not resolve -- which is itself worth seeing. Try
+# commenting this section out and re-running step 2.
+[tool.ty.environment]
+root = ["src"]
