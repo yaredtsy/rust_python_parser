@@ -14,6 +14,21 @@ is about *your* code.
 
 ---
 
+## How this exercise is organised
+
+**Part 1 — this file.** Toolchain, `Cargo.toml`, the build. Mechanical. You have
+probably already done it.
+
+**Part 2 — nine separate files.** One per object you have to understand, in the
+order you meet them. Each teaches one thing, shows worked examples, gives you an
+exercise, and has its own small exam. The index is at
+[Part 2](#part-2--the-objects-this-is-the-rest-of-the-exercise) below.
+
+If you are lost, you are probably in Part 2 territory and should go read the
+object files rather than pushing on from here.
+
+---
+
 ## Getting started — the commands you run
 
 Everything here is plain cargo. No submodules, no vendoring, no cloning ruff.
@@ -276,171 +291,107 @@ this folder. Only exercises that actually run something need a binary.
 
 ---
 
-## Step 5 — The smoke test
+## Part 2 — the objects (this is the rest of the exercise)
 
-Now write the Rust. Roughly twenty lines in `src/main.rs`. What it must do:
+Steps 1–4 got you a crate that compiles. Everything from here is about the
+**seven objects** you need in order to open one Python file and ask ty a
+question about it.
 
-1. Take a directory path from `std::env::args()`.
-2. Build an `OsSystem` for it.
-3. Discover the project metadata.
-4. Construct a `ProjectDatabase`.
-5. Resolve one Python file inside that project to a `File`.
-6. Print the Python version ty resolved for it.
+One file per object. Each file is the same shape:
 
-### The API surface, verified at `ac201b8`
-
-```rust
-// ruff_db
-pub fn system_path_to_file(db: &dyn Db, path: impl AsRef<SystemPath>) -> Result<File, FileError>;
-impl OsSystem { pub fn new(cwd: impl AsRef<SystemPath>) -> Self; }
-// SystemPathBuf::from("/abs/path")
-
-// ty_project
-impl ProjectMetadata {
-    pub fn discover(path: &SystemPath, system: &dyn System) -> Result<ProjectMetadata, ProjectMetadataError>;
-    pub fn discover_without_uv(path: &SystemPath, system: &dyn System) -> Result<..>;
-}
-impl ProjectDatabase {
-    pub fn use_defaults<S: System + 'static + Send + Sync + RefUnwindSafe>(m: ProjectMetadata, s: S) -> Self;
-    pub fn fallible<S: ...>(m: ProjectMetadata, s: S) -> anyhow::Result<Self>;
-}
-
-// ty_python_semantic::Db  — a TRAIT method. you must import the trait to call it.
-fn program_file(&self, file: File) -> ProgramFile<'_>;
-
-// ty_python_core::ProgramFile
-pub fn python_version(self, db: &'db dyn Db) -> PythonVersion;
-pub fn python_file(self, db: &'db dyn Db) -> PythonFile<'db>;
-pub fn file(self, db: &'db dyn Db) -> File;
+```
+what it is  →  why it exists  →  what you can do with it  →  examples
+            →  exercise  →  its own exam  →  answers at the bottom
 ```
 
-Use `use_defaults`, not `fallible`. A user's broken `pyproject.toml` must never
-take your analyser down — that matches the swallow-everything posture your
-Python driver already has (`plan/00-orientation/01`, quirk 13).
+Read them in order. Each one uses the one before it, and each one is small
+enough to finish in a sitting. **Do not skip to file 08** — it assumes all seven.
 
-### ⚠ The plan's smoke test does not compile
+| | file | object | one-line summary |
+|---|---|---|---|
+| 1 | [`01-object-systempath.md`](01-object-systempath.md) | `SystemPath`, `SystemPathBuf` | a path, guaranteed to be UTF-8 |
+| 2 | [`02-object-system.md`](02-object-system.md) | `System`, `OsSystem` | the filesystem, abstracted |
+| 3 | [`03-object-projectmetadata.md`](03-object-projectmetadata.md) | `ProjectMetadata` | where the project is + its config |
+| 4 | [`04-object-projectdatabase.md`](04-object-projectdatabase.md) | `ProjectDatabase` | ★ the database. ty's memory |
+| 5 | [`05-object-file.md`](05-object-file.md) | `File` | a handle for one path |
+| 6 | [`06-object-programfile.md`](06-object-programfile.md) | `ProgramFile` | that file + its program context |
+| 7 | [`07-object-pythonversion.md`](07-object-pythonversion.md) | `PythonVersion` | two integers, one booby trap |
+| 8 | [`08-putting-it-together.md`](08-putting-it-together.md) | — | the whole smoke test, line by line |
+| 9 | [`09-project-layout.md`](09-project-layout.md) | — | lib/bin split. do this before exercise 01 |
 
-`plan/04-build/01-wiring-cargo.md` ends with a snippet containing:
+Then [`exam.md`](exam.md), which covers the whole exercise including the
+manifest and toolchain parts above.
+
+---
+
+## How they fit together
+
+By the end of file 08 you will have typed this, and understood every line:
+
+```rust
+let system   = OsSystem::new(&dir);                          // object 2
+let metadata = ProjectMetadata::discover(path, &system)?;    // object 3
+let db       = ProjectDatabase::use_defaults(metadata, system);  // object 4
+let file     = system_path_to_file(&db, path)?;              // object 5
+let pf       = db.program_file(file);                        // object 6
+println!("{}", pf.python_version(&db));                      // object 7
+```
+
+Six lines. Seven objects. That is the entire deliverable of exercise 00 — and
+every later exercise starts from exactly these lines.
+
+---
+
+## Two things to know before you start
+
+**1. You will meet the same error three times.**
+
+```
+error[E0599]: no method named `X` found for struct `Y`
+```
+
+…when `X` is right there in the documentation. It always means the same thing: a
+**trait is not imported**. You will hit it with `System` (object 2), with `Db`
+(object 4), and later with `Ranged` and `HasType`. After the third time it
+becomes instant recognition. Object 8 has the full error catalogue.
+
+**2. The plan's smoke test does not compile.**
+
+`plan/04-build/01-wiring-cargo.md` ends with:
 
 ```rust
 use ty_python_core::Program;
 println!("python_version = {}", Program::get(&db).python_version(&db));
 ```
 
-**There is no `Program::get` at `ac201b8`.** **[verified]** — `Program` is a
-`#[salsa::interned]` struct in `ty_python_core/src/program.rs` whose only public
-constructor is `from_settings`, and it is *obtained*, not fetched globally. The
-route that exists:
+**There is no `Program::get` at `ac201b8`** **[verified]**. `Program` is a
+salsa-interned struct obtained *from a file*, not a global you fetch. Object 7
+gives the route that works.
 
-```
-File  --db.program_file(file)-->  ProgramFile  --.python_version(db)-->  PythonVersion
-```
-
-So you need a file before you can ask about a version. Pick any `.py` under the
-project root — you are asking "what version applies *here*", which is the
-honest question anyway, since ty resolves per-file.
-
-**Finding this yourself is the actual lesson of step 5.** The plan was written
-by reading the source at one moment; the source is the authority, always. When a
-snippet does not compile, do not guess and do not trust the doc — look:
+Mentioned here so you do not waste an afternoon on it — and as a warning about
+the plan generally. It was written by reading the source once; the source is the
+authority. When something does not compile:
 
 ```bash
 cargo doc -p ty_python_core --no-deps --open
 ```
 
-Then search the generated page for `Program`. Ten seconds, and it describes the
-exact code you linked against. Build this reflex now; you will need it
-constantly from exercise 06 onward, where the plan itself marks several API
-names `[check]` because the author was unsure.
-
-### Two compiler errors you will hit, and what they mean
-
-```
-error[E0599]: no method named `program_file` found for struct `ProjectDatabase`
-```
-The method is on the `ty_python_semantic::Db` trait, not on the struct. Add
-`use ty_python_semantic::Db as _;` — the `as _` imports the trait for method
-resolution without binding a name you would then have to disambiguate against
-the four other `Db` traits in scope.
-
-```
-error[E0277]: the trait bound `ProjectDatabase: ty_python_semantic::Db` ...
-   expected `&dyn Db`, found `&ProjectDatabase`
-```
-Some functions take `&dyn Db`. Coerce explicitly: `&db as &dyn Db`, or pass
-`&db` where the parameter type already forces the unsizing. This is the most
-common early friction with ty's API and it stops being confusing after about
-three occurrences.
-
----
-
-## Step 6 — Run it against three different projects
-
-```bash
-cargo run -- /path/to/a/bare/directory          # no config at all
-cargo run -- /path/to/a/project/with/.venv      # environment-derived
-cargo run -- /path/to/a/project/with/pyproject.toml   # config-derived
-```
-
-**Predict each answer before you run it.** Write the three predictions down.
-
-You will be wrong about at least one — that is exercise 04's entire subject, and
-seeing the surprise now makes that exercise land harder.
-
----
-
-## Folder structure — set it up now, not later
-
-You will regret a single `main.rs`. The layout the plan asks for
-(`plan/04-build/00-dev-cli.md`), adopted from day one:
-
-```
-pylspt/
-├── Cargo.toml
-├── rust-toolchain.toml
-├── src/
-│   ├── lib.rs              ← ALL analysis lives here. every exercise adds a module.
-│   ├── db.rs               ← project discovery, database construction  (ex 00, 03)
-│   ├── position.rs         ← LineIndex, offset ↔ line/column           (ex 01)
-│   ├── nodes.rs            ← the node tree + wire types                (ex 02)
-│   ├── modules.rs          ← is-this-project-code, qualified names     (ex 05, 06)
-│   ├── types.rs            ← inference helpers                         (ex 07)
-│   ├── mro.rs              ← base classes                              (ex 08)
-│   ├── inject.rs           ← libcst ID injection                       (ex 10)
-│   └── bin/
-│       └── pylspt-dev.rs   ← the CLI. thin. argument parsing only.     (ex 11)
-└── experience/             ← this folder
-```
-
-```toml
-# Cargo.toml — add these once you create src/lib.rs
-[lib]
-name = "pylspt"
-path = "src/lib.rs"
-
-[[bin]]
-name = "pylspt-dev"
-path = "src/bin/pylspt-dev.rs"
-```
-
-**The one rule** (`plan/04-build/00-dev-cli.md`): the binary must call the same
-functions the eventual server calls. The binary parses arguments and prints
-JSON. It contains no analysis. If the CLI and the server can ever disagree, your
-fixtures stop proving anything about what ships.
-
-For this exercise, `src/main.rs` is fine — but do the `lib.rs` split at the
-start of exercise 01, while it costs nothing.
+Ten seconds, and it describes the exact revision you linked against. Build that
+reflex now; from exercise 06 onward the plan marks several API names `[check]`
+precisely because the author was unsure.
 
 ---
 
 ## Done when
 
 - [ ] `cargo check` is clean
-- [ ] `cargo run -- <dir>` prints a Python version for three different projects
-- [ ] you can state, for each, where that version came from
 - [ ] `cargo tree -d` shows no duplicate `ruff_*`/`ty_*` crates
-- [ ] you wrote your three predictions down before running
+- [ ] you have worked through all seven object files and their exams
+- [ ] the smoke test from file 08 prints a version for six different projects
+- [ ] you predicted each version before running, and know which one you got wrong
+- [ ] the crate is split into `lib.rs` + `src/bin/` per file 09
+- [ ] `cargo test` runs one real test
 
 ---
 
-→ [`exam.md`](exam.md), then [`../01-source-and-positions/README.md`](../01-source-and-positions/README.md)
+→ Start: [`01-object-systempath.md`](01-object-systempath.md)

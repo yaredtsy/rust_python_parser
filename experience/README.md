@@ -7,11 +7,23 @@ Twelve exercises. Each one is a folder. Each folder holds:
 
 ```
 NN-topic/
-├── README.md ....... the lesson + the work to do, step by step
+├── README.md ....... the map of this exercise, and the work to do
+├── NN-object-*.md .. one file per object/module introduced — lesson, then
+│                     examples, then exercise, then its own exam
 ├── python/ ......... Python files to run your Rust against (already written for you)
-├── exam.md ......... questions. answer them before moving on
+├── exam.md ......... the combined exam for the whole exercise
 └── answers.md ...... the key. open it AFTER you have written your answers.
 ```
+
+**One new thing at a time.** Where an exercise introduces several ty types, each
+gets its own file, in the order you meet them, each in the same shape:
+
+> what it is → why it exists → what you can do with it → worked examples →
+> exercise → exam → answers
+
+`00-setup/` is built out this way (nine files). If a later exercise's single
+README moves too fast for you, say so and it gets the same treatment — the
+point of this folder is that you understand it, not that it exists.
 
 ---
 
@@ -133,7 +145,7 @@ experience/
 
 | Exercise | Reading | Doing | Notes |
 |---|---|---|---|
-| 00 | 20 min | 1–2 h | most of it is a cold `cargo build`, walk away |
+| 00 | 2–3 h | 3–4 h | nine files, seven objects. the cold build runs while you read |
 | 01 | 20 min | 1 h | |
 | 02 | 40 min | 3–4 h | the biggest of the early ones |
 | 03 | 30 min | 2 h | |
