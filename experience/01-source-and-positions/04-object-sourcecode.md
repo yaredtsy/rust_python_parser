@@ -73,7 +73,7 @@ to get it (the AST stores structure, not text).
 | `.line_index(offset)` | `OneIndexed` | line only |
 | `.line_start(line)` | `TextSize` | |
 | `.line_end(line)` | `TextSize` | includes the terminator |
-| `.line_end_exclusive(line)` | `TextSize` | ★ excludes the terminator |
+| `.line_end_exclusive(line)` | `TextSize` | ★ excludes the terminator — **except on the last line**, see example 1 |
 | `.line_text(line)` | `&str` | ★ a whole line, as text |
 | `.line_count()` | `usize` | |
 | `.text()` | `&str` | the whole file |
@@ -91,67 +91,203 @@ that live in the database).
 
 ---
 
-## Example 1 — a node's name, the easy way
+## Example 1 — a complete program: the line table
+
+`src/bin/lines.rs`, run with `cargo run --bin lines -- <file>`. It prints one
+row per line and makes `line_end` vs `line_end_exclusive` visible, which is the
+distinction that catches people.
 
 ```rust
-use ruff_db::source::{line_index, source_text};
-use ruff_source_file::SourceCode;
+use ruff_source_file::{LineIndex, OneIndexed, SourceCode};
 
-let text = source_text(&db, file);
-let index = line_index(&db, file);
-let code = SourceCode::new(text.as_str(), &index);
+fn main() -> anyhow::Result<()> {
+    let path = std::env::args().nth(1).expect("usage: lines <file>");
+    let source = std::fs::read_to_string(&path)?;
 
-// given some AST node…
-let name: &str = code.slice(some_node);
-let position = code.line_column(some_node.range().start());
+    let index = LineIndex::from_source_text(&source);
+    let code = SourceCode::new(&source, &index);
 
-println!("{name} at line {}, column {}",
-         position.line.get(),
-         position.column.to_zero_indexed());
-```
+    println!("{}  —  {} bytes, {} chars, {} lines",
+             path, source.len(), source.chars().count(), code.line_count());
+    println!();
+    println!("{:>4}  {:>6} {:>6} {:>6}   {}",
+             "line", "start", "end", "end_ex", "text");
 
-Three lines of setup, then every question is one call. This is the prologue you
-will write at the top of every analysis function in exercise 02 onward — right
-next to the `parsed_module` / `SemanticModel` prologue from exercise 00, object 6.
+    for n in 1..=code.line_count() {
+        let line = OneIndexed::new(n).expect("line numbers start at 1");
+        println!(
+            "{:>4}  {:>6} {:>6} {:>6}   {:?}",
+            n,
+            code.line_start(line).to_u32(),
+            code.line_end(line).to_u32(),
+            code.line_end_exclusive(line).to_u32(),
+            code.line_text(line),
+        );
+    }
 
----
-
-## Example 2 — a diagnostic printer worth keeping
-
-```rust
-use ruff_source_file::SourceCode;
-use ruff_text_size::TextRange;
-
-/// Print a range with its line, the way a compiler would.
-fn show(code: &SourceCode<'_, '_>, range: TextRange, label: &str) {
-    let start = code.line_column(range.start());
-    let line_no = start.line;
-    let line_text = code.line_text(line_no);
-    let col = start.column.to_zero_indexed();
-    let width = (range.end().to_u32() - range.start().to_u32()).max(1) as usize;
-
-    println!("{label} at {}:{}", line_no.get(), col);
-    println!("  {}", line_text.trim_end());
-    println!("  {}{}", " ".repeat(col), "^".repeat(width));
+    Ok(())
 }
 ```
 
 ```
-call at 7:8
-          greet("world")
-          ^^^^^^^^^^^^^^
+$ cargo run --bin lines -- experience/01-source-and-positions/python/ascii.py
+experience/.../ascii.py  —  100 bytes, 100 chars, 7 lines
+
+line   start    end end_ex   text
+   1       0     17     16   "def greet(name):\n"
+   2      17     41     40   "    return \"hi \" + name\n"
+   3      41     42     41   "\n"
+   4      42     43     42   "\n"
+   5      43     58     57   "class Greeter:\n"
+   6      58     77     76   "    def run(self):\n"
+   7      77    100    100   "        greet(\"world\")\n"
 ```
 
-Write this now. When exercise 02's node tree comes out wrong, being able to
-*see* which bytes a node covers turns a twenty-minute puzzle into a five-second
-look.
+**Read the `end` and `end_ex` columns.** They differ by **1** on lines 1–6 — the
+`\n`. Now run it on `python/crlf.py` and watch the gap become **2**, because the
+terminator is `\r\n`.
 
-⚠ One caveat, and it is the exercise-01 lesson again: `" ".repeat(col)` aligns
-the caret correctly only when one character is one column wide. On
-`unicode.py`'s emoji line the caret will be off, because `col` counts characters
-and your terminal renders the emoji two cells wide. Not worth fixing — worth
-*knowing*, because it is the same class of confusion as byte-vs-character
-columns.
+⚠ **Line 7 is different: both say 100.** The last line has no line *after* it, so
+there is no "next line start" to subtract a terminator from, and both methods
+fall back to the file's total length **[verified,
+`line_index.rs:275, 288`]** — even though the file does end with a `\n`.
+
+So `line_end_exclusive` means "excluding the terminator **if we can tell where
+the next line starts**". On the final line you get the terminator back. That is
+the kind of edge case that produces one wrong node in a thousand, and you would
+never guess it from the method name.
+
+Note also `line_text` **includes** the terminator (it uses `line_range`, which is
+`line_start..line_end` **[verified]**) — which is why the printer in example 2
+calls `.trim_end()`.
+
+> `LineIndex::line_end_exclusive` is `pub(crate)` **[verified]** — only the
+> `SourceCode` wrapper exposes it publicly. One more small reason to hold a
+> `SourceCode` rather than a bare `LineIndex`.
+
+**Rust notes:**
+
+- `OneIndexed::new(n)` returns `Option` because 0 is not a valid 1-based line
+  number. `.expect(...)` is fine here since the loop starts at 1.
+- `{:>4}` right-aligns in a 4-wide field; `{:?}` on a `&str` shows the escapes,
+  which is exactly what you want when the question is "where does this line
+  actually end".
+
+---
+
+## Example 2 — a complete program: the caret printer
+
+`src/bin/show.rs`, run with `cargo run --bin show -- <file> <start> <end>`.
+This is the tool you will reach for constantly in exercise 02.
+
+```rust
+use ruff_source_file::{LineIndex, SourceCode};
+use ruff_text_size::{TextRange, TextSize};
+
+/// Print a range with its line underlined, the way a compiler would.
+fn show(code: &SourceCode<'_, '_>, range: TextRange, label: &str) {
+    let start = code.line_column(range.start());
+    let end = code.line_column(range.end());
+    let line_no = start.line;
+    let col = start.column.to_zero_indexed();
+
+    // Width in CHARACTERS on this line, not bytes — and clamp to the line
+    // if the range spans several lines.
+    let width = if end.line == start.line {
+        end.column.to_zero_indexed().saturating_sub(col).max(1)
+    } else {
+        code.line_text(line_no).trim_end().chars().count().saturating_sub(col).max(1)
+    };
+
+    println!("{label} at {}:{}", line_no.get(), col);
+    println!("     |");
+    println!("{:>4} | {}", line_no.get(), code.line_text(line_no).trim_end());
+    println!("     | {}{}", " ".repeat(col), "^".repeat(width));
+    if end.line != start.line {
+        println!("     | … continues to line {}, column {}",
+                 end.line.get(), end.column.to_zero_indexed());
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 4 {
+        eprintln!("usage: {} <file> <start-byte> <end-byte>", args[0]);
+        std::process::exit(2);
+    }
+
+    let source = std::fs::read_to_string(&args[1])?;
+    let index = LineIndex::from_source_text(&source);
+    let code = SourceCode::new(&source, &index);
+
+    let range = TextRange::new(
+        TextSize::new(args[2].parse()?),
+        TextSize::new(args[3].parse()?),
+    );
+
+    // `slice` takes anything Ranged — including a bare TextRange. [verified]
+    println!("slice: {:?}", code.slice(range));
+    println!();
+    show(&code, range, "range");
+
+    Ok(())
+}
+```
+
+```
+$ cargo run --bin show -- experience/01-source-and-positions/python/ascii.py 77 99
+slice: "        greet(\"world\")"
+
+range at 7:0
+     |
+   7 |         greet("world")
+     | ^^^^^^^^^^^^^^^^^^^^^^
+
+$ cargo run --bin show -- experience/01-source-and-positions/python/ascii.py 85 90
+slice: "greet"
+
+range at 7:8
+     |
+   7 |         greet("world")
+     |         ^^^^^
+```
+
+**Write this now.** When exercise 02's node tree comes out wrong, being able to
+*see* which bytes a node covers turns a twenty-minute puzzle into a five-second
+look. Every compiler you have ever used prints this because it works.
+
+⚠ Now run it on the emoji line. `python/unicode.py` line 2 starts at byte 20 and
+the emoji occupies bytes 36–39. Point at the word `of`, which sits **after** it —
+bytes 41..43, character column 16:
+
+```
+$ cargo run --bin show -- experience/01-source-and-positions/python/unicode.py 41 43
+slice: "of"
+
+range at 2:16
+     |
+   2 |     """Résumé 🎉 of the thing."""
+     |                 ^^
+```
+
+The caret lands **one cell to the left** of `of`. Column 16 is correct — there
+really are 16 characters before it — but your terminal draws 🎉 two cells wide,
+so 16 characters occupy 17 columns on screen.
+
+Try `27 33` (`Résum`, entirely *before* the emoji) and the caret is perfect. The
+misalignment starts exactly at the emoji, which is how you know what caused it.
+
+The reported `column` is right in both cases. This is a *rendering* difference,
+not a position bug.
+
+Same family as byte-vs-character columns, and worth meeting deliberately: there
+are **three** notions of "how far along this line", and you now know all three.
+
+| notion | used by |
+|---|---|
+| bytes | `TextSize`, `TextRange` |
+| characters | your wire format, parso, `line_column` |
+| display cells | terminals, editors drawing a caret |
 
 ---
 
@@ -224,6 +360,15 @@ a large part of why ruff parses so fast.
 **4.** `line_end` includes the line terminator, `line_end_exclusive` does not. On
 an LF file they differ by 1; on a **CRLF** file by **2**, because the terminator
 is `\r\n`.
+
+**Except on the last line, where they are equal.** Both fall back to the file's
+total length when there is no following line to subtract a terminator from
+**[verified, `line_index.rs:275, 288`]** — even if the file ends with a newline.
+So `line_end_exclusive` really means "excluding the terminator, if we can see
+where the next line starts".
+
+Also worth knowing: `LineIndex::line_end_exclusive` is `pub(crate)`; only
+`SourceCode` exposes it **[verified]**.
 
 **5.** `'src` borrows the text; `'index` borrows the `LineIndex`. Two independent
 borrows, which is why there are two parameters.

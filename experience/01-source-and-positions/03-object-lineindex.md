@@ -257,14 +257,31 @@ index.offset(
 
 ---
 
-## Example 1 — the conversion function you will use forever
+## Example 1 — a complete program: offsets → positions
+
+These examples read the file with `std::fs` and build the index with
+`LineIndex::from_source_text`, so they run **standalone** — no database, no
+exercise-00 helpers. The database version is two lines different and is shown at
+the end of this file.
+
+Put this in `src/bin/positions.rs` and run it with
+`cargo run --bin positions -- <file> <start> <end>`.
+
+**Rust note — you do not need to touch `Cargo.toml`.** Cargo auto-discovers every
+`src/bin/*.rs` file as a binary named after the file. The explicit `[[bin]]`
+section you added for `pylspt-dev` (exercise 00, file 09) does not disable that.
+So each example below is: create the file, `cargo run --bin <name>`.
+
+Run all the example programs from the **repo root**
+(`/Users/yared/Documents/Programing/rust/pylspt`), since the paths below are
+relative to it.
 
 ```rust
 use ruff_source_file::LineIndex;
-use ruff_text_size::TextRange;
+use ruff_text_size::{TextRange, TextSize};
 
 /// Your wire format's position: 1-based line, 0-based column.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -283,71 +300,248 @@ pub fn to_position(index: &LineIndex, source: &str, range: TextRange) -> Positio
         end_column: end.column.to_zero_indexed(),
     }
 }
-```
 
-**That is the deliverable of exercise 01.** Everything else in this exercise
-exists to make you confident that those four lines are right.
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 4 {
+        eprintln!("usage: {} <file> <start-byte> <end-byte>", args[0]);
+        std::process::exit(2);
+    }
 
-Put it in `src/position.rs` and declare `pub mod position;` in `lib.rs`
-(exercise 00, file 09).
+    let source = std::fs::read_to_string(&args[1])?;
+    let start: u32 = args[2].parse()?;
+    let end: u32 = args[3].parse()?;
 
-**Rust note — `#[derive(serde::Serialize)]`.** This generates the code to turn
-your struct into JSON. Field names become JSON keys, so name them exactly as the
-wire format requires — the contract is the JSON (`MEMORY.md`). If a name has to
-differ, use `#[serde(rename = "…")]`.
+    let index = LineIndex::from_source_text(&source);
+    let range = TextRange::new(TextSize::new(start), TextSize::new(end));
 
----
+    let position = to_position(&index, &source, range);
 
-## Example 2 — checking it on known values
+    println!("file        {}", args[1]);
+    println!("bytes       {}..{}   ({} bytes total)", start, end, source.len());
+    println!("chars       {} total", source.chars().count());
+    println!("slice       {:?}", &source[range.to_std_range()]);
+    println!();
+    println!("line        {}", position.line);
+    println!("column      {}", position.column);
+    println!("end_line    {}", position.end_line);
+    println!("end_column  {}", position.end_column);
 
-```rust
-use ruff_db::source::{line_index, source_text};
-
-// ascii.py, 100 bytes, pure ASCII
-let text = source_text(&db, file);
-let index = line_index(&db, file);
-let source = text.as_str();
-
-// `def greet(name):` — `greet` is bytes 4..9
-let p = to_position(&index, source, TextRange::new(4.into(), 9.into()));
-assert_eq!((p.line, p.column, p.end_line, p.end_column), (1, 4, 1, 9));
-
-// the last statement, `        greet("world")` — bytes 77..99
-let p = to_position(&index, source, TextRange::new(77.into(), 99.into()));
-assert_eq!((p.line, p.column, p.end_line, p.end_column), (7, 0, 7, 22));
-```
-
-**Both assertions matter, and for different reasons.**
-
-The first has a **non-zero column** (4). An assertion where the expected column
-is 0 passes with both `.get()` and `.to_zero_indexed()`, so it cannot catch the
-off-by-one. Always assert on a column that is not 0.
-
-The second ends at byte **99**, not 100. Byte 99 is the final `\n`; offset 100
-would be *after* it, which is line 8, column 0. Node ranges never include their
-trailing newline — but a range you computed by hand might, and this is what that
-mistake looks like.
-
----
-
-## Example 3 — LSP positions, if you ever need them
-
-```rust
-use ruff_source_file::{PositionEncoding, SourceLocation};
-
-fn to_lsp_position(index: &LineIndex, source: &str, offset: TextSize) -> (usize, usize) {
-    let loc = index.source_location(offset, source, PositionEncoding::Utf16);
-    (loc.line.to_zero_indexed(), loc.character_offset.to_zero_indexed())
-    //   ↑ LSP is 0-based on BOTH axes
+    Ok(())
 }
 ```
 
-Two differences from `to_position`: `Utf16` instead of characters, and
-`to_zero_indexed()` on the **line** as well.
+Run it:
 
-You do not need this for the port — your wire format is parso's, not LSP's. It is
-here so that the existence of three encodings stops looking arbitrary: each one
-has a real consumer.
+```
+$ cargo run --bin positions -- experience/01-source-and-positions/python/ascii.py 4 9
+file        experience/01-source-and-positions/python/ascii.py
+bytes       4..9   (100 bytes total)
+chars       100 total
+slice       "greet"
+
+line        1
+column      4
+end_line    1
+end_column  9
+```
+
+**That `to_position` function is the deliverable of exercise 01.** Everything
+else in this exercise exists to make you confident those four lines are right.
+It belongs in `src/position.rs` (with `pub mod position;` in `lib.rs`); the
+binary above is just a way to exercise it.
+
+**Rust notes:**
+
+- `let args: Vec<String> = std::env::args().collect();` — collecting first lets
+  you check the count and index freely, which is nicer than three `.nth()` calls.
+- `args[2].parse()?` — `parse` infers `u32` from the annotation on `start`. The
+  `?` turns a bad number into an error rather than a panic.
+- `&source[range.to_std_range()]` — ⚠ this **panics** if an offset is not on a
+  character boundary. That is deliberate here: exercise B makes you trigger it.
+
+---
+
+## Example 2 — a complete program: check the known values
+
+`src/bin/check_positions.rs`, run with `cargo run --bin check_positions`. No
+arguments — it has the fixture path and the expected answers baked in, which is
+the point.
+
+```rust
+use ruff_source_file::LineIndex;
+use ruff_text_size::{TextRange, TextSize};
+
+// …paste `Position` and `to_position` from example 1, or `use pylspt::position::*;`
+// once you have moved them into the library.
+
+fn check(source: &str, start: u32, end: u32, expected: (usize, usize, usize, usize)) {
+    let index = LineIndex::from_source_text(source);
+    let range = TextRange::new(TextSize::new(start), TextSize::new(end));
+    let p = to_position(&index, source, range);
+    let got = (p.line, p.column, p.end_line, p.end_column);
+
+    let mark = if got == expected { "ok  " } else { "FAIL" };
+    println!(
+        "{mark} {start:>3}..{end:<3} {:?}  got {:?}  expected {:?}",
+        &source[range.to_std_range()],
+        got,
+        expected,
+    );
+}
+
+fn main() -> anyhow::Result<()> {
+    let ascii = std::fs::read_to_string(
+        "experience/01-source-and-positions/python/ascii.py",
+    )?;
+
+    println!("--- ascii.py (100 bytes, 100 chars) ---");
+    // `greet` in `def greet(name):`
+    check(&ascii, 4, 9, (1, 4, 1, 9));
+    // the last statement, `        greet("world")`
+    check(&ascii, 77, 99, (7, 0, 7, 22));
+    // one byte further: offset 100 is AFTER the final newline
+    check(&ascii, 77, 100, (7, 0, 8, 0));
+
+    let unicode = std::fs::read_to_string(
+        "experience/01-source-and-positions/python/unicode.py",
+    )?;
+
+    println!("\n--- unicode.py (88 bytes, 79 chars) ---");
+    // the `(` on line 1: byte 9, character 8
+    check(&unicode, 9, 9, (1, 8, 1, 8));
+    // all of line 2: starts at byte 20, 37 bytes, 32 characters
+    check(&unicode, 20, 57, (2, 0, 2, 32));
+
+    Ok(())
+}
+```
+
+```
+--- ascii.py (100 bytes, 100 chars) ---
+ok     4..9   "greet"  got (1, 4, 1, 9)  expected (1, 4, 1, 9)
+ok    77..99  "        greet(\"world\")"  got (7, 0, 7, 22)  expected (7, 0, 7, 22)
+ok    77..100 "        greet(\"world\")\n"  got (7, 0, 8, 0)  expected (7, 0, 8, 0)
+
+--- unicode.py (88 bytes, 79 chars) ---
+ok     9..9   ""  got (1, 8, 1, 8)  expected (1, 8, 1, 8)
+ok    20..57  "    \"\"\"Résumé 🎉 of the thing.\"\"\""  got (2, 0, 2, 32)  expected (2, 0, 2, 32)
+```
+
+**Every line of that output is doing a job:**
+
+| check | rejects |
+|---|---|
+| `4..9` → column **4** | `.get()` where `.to_zero_indexed()` belongs. A column of 0 would pass either way |
+| `77..99` → `7:0..7:22` | nothing subtle — the baseline |
+| `77..100` → ends `8:0` | shows what including the trailing newline does: the end jumps to the next line |
+| `9..9` → column **8** | **any byte-based column implementation.** Byte 9, character 8 |
+| `20..57` → end_column **32** | byte columns (would give 37) and UTF-16 columns (would give 33) |
+
+The last two are the ones that matter. Everything above them passes on a
+byte-based implementation.
+
+---
+
+## Example 3 — a complete program: all three encodings
+
+`src/bin/encodings.rs`. This is the tool for exercise B, and it is what proves
+the claim in the section above rather than taking my word for it.
+
+```rust
+use ruff_source_file::{LineIndex, PositionEncoding};
+use ruff_text_size::TextSize;
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 3 {
+        eprintln!("usage: {} <file> <byte-offset>", args[0]);
+        std::process::exit(2);
+    }
+
+    let source = std::fs::read_to_string(&args[1])?;
+    let offset = TextSize::new(args[2].parse()?);
+    let index = LineIndex::from_source_text(&source);
+
+    // The display function: characters, and BOM-aware.
+    let lc = index.line_column(offset, &source);
+
+    println!("offset {}  (file: {} bytes, {} chars)",
+             args[2], source.len(), source.chars().count());
+    println!();
+    println!("line_column()          line {}  column {}   ← what YOUR wire format uses",
+             lc.line.get(), lc.column.to_zero_indexed());
+    println!();
+    println!("source_location(), 0-based character_offset:");
+
+    for (name, encoding) in [
+        ("Utf8  (bytes)     ", PositionEncoding::Utf8),
+        ("Utf16 (code units)", PositionEncoding::Utf16),
+        ("Utf32 (characters)", PositionEncoding::Utf32),
+    ] {
+        let loc = index.source_location(offset, &source, encoding);
+        println!("  {name}  line {}  character_offset {}",
+                 loc.line.get(), loc.character_offset.to_zero_indexed());
+    }
+
+    // Round trip: position → offset → position, using the coordinate function.
+    let loc = index.source_location(offset, &source, PositionEncoding::Utf32);
+    let back = index.offset(loc, &source, PositionEncoding::Utf32);
+    println!();
+    println!("round trip  {} → source_location → offset → {}",
+             args[2], back.to_u32());
+
+    Ok(())
+}
+```
+
+Run it on the `(` of `café(` — byte 9 of `unicode.py`:
+
+```
+$ cargo run --bin encodings -- experience/01-source-and-positions/python/unicode.py 9
+offset 9  (file: 88 bytes, 79 chars)
+
+line_column()          line 1  column 8   ← what YOUR wire format uses
+
+source_location(), 0-based character_offset:
+  Utf8  (bytes)       line 1  character_offset 9
+  Utf16 (code units)  line 1  character_offset 8
+  Utf32 (characters)  line 1  character_offset 8
+
+round trip  9 → source_location → offset → 9
+```
+
+**There is the proof.** `line_column` gave 8, which matches `Utf32`, which is
+characters — parso's convention. A byte-based implementation would say 9.
+
+Now run it on **byte 3 of `bom.py`**, and on an offset on line 2 of
+`unicode.py` (after the emoji), where all three encodings disagree.
+
+---
+
+## Using the database instead
+
+Every program above reads the file itself. In the real driver the file is in the
+database, and the change is two lines:
+
+```rust
+// standalone (above)
+let source = std::fs::read_to_string(&path)?;
+let index = LineIndex::from_source_text(&source);
+
+// in the driver
+let text  = ruff_db::source::source_text(&db, file);      // #[salsa::tracked]
+let index = ruff_db::source::line_index(&db, file);       // #[salsa::tracked]
+let source = text.as_str();
+```
+
+Everything after that is identical — `to_position(&index, source, range)` does
+not care where the index came from.
+
+**Use the database version in `src/`**, because the index is then built once per
+file per revision and shared. The standalone version is for these binaries, for
+tests with literal source, and for the `parse_file(content)` RPC where the
+editor sent text that has no `File`.
 
 ---
 

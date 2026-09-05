@@ -21,9 +21,16 @@ gets its own file, in the order you meet them, each in the same shape:
 > what it is → why it exists → what you can do with it → worked examples →
 > exercise → exam → answers
 
-`00-setup/` is built out this way (nine files). If a later exercise's single
-README moves too fast for you, say so and it gets the same treatment — the
-point of this folder is that you understand it, not that it exists.
+**Exercises 00, 01 and 02 are built out this way.** 03 onwards are currently a
+single README each — denser, assuming you can fill in the gaps. When you reach
+one that moves too fast, say so and it gets the same object-by-object
+treatment. The point of this folder is that you understand it, not that it
+exists.
+
+| | format |
+|---|---|
+| 00, 01, 02 | one file per object — lesson, examples, exercise, exam |
+| 03 – 11 | single README + exam + answers |
 
 ---
 
@@ -146,8 +153,8 @@ experience/
 | Exercise | Reading | Doing | Notes |
 |---|---|---|---|
 | 00 | 2–3 h | 3–4 h | nine files, seven objects. the cold build runs while you read |
-| 01 | 20 min | 1 h | |
-| 02 | 40 min | 3–4 h | the biggest of the early ones |
+| 01 | 1–2 h | 2 h | five files, four objects |
+| 02 | 3–4 h | 4–6 h | seven files, six objects. the biggest of the early ones |
 | 03 | 30 min | 2 h | |
 | 04 | 30 min | 1 h | short, high value |
 | 05 | 20 min | 1–2 h | |

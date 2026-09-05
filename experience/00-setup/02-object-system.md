@@ -111,8 +111,8 @@ tells you what ty can and cannot see.
 |---|---|
 | `read_to_string(&path)` | `Result<String>` — ★ the file's text |
 | `read_to_notebook(&path)` | `Result<Notebook, NotebookError>` — `.ipynb` only |
-| `read_directory(&path)` | iterator of entries |
-| `walk_directory(&path)` | ★ a builder for recursive traversal |
+| `read_directory(&path)` | ★ `Result<Box<dyn Iterator<Item = Result<DirectoryEntry>>>>` — one level, a real iterator |
+| `walk_directory(&path)` | ★ a `WalkDirectoryBuilder` — recursive, and a **visitor, not an iterator**. See example 2 |
 
 ### Asking
 
@@ -191,33 +191,145 @@ fn main() -> anyhow::Result<()> {
 
 ## Example 2 — every Python file under a directory
 
+> **This is not an iterator.** If you tried `for entry in
+> system.walk_directory(root).build()` you got
+> `no method named 'build' found for struct 'WalkDirectoryBuilder'` — because
+> `walk_directory` is a **visitor**, not an iterator, and the reason is
+> interesting.
+
+### Why a visitor and not an iterator
+
+`WalkDirectoryBuilder::run` is documented as **"The walker may run multiple
+threads to visit the directories"** **[verified,
+`ruff_db/src/system/walk_directory.rs:85`]**.
+
+An iterator has one cursor and yields items to one caller in one order. A
+multithreaded walk has several workers producing entries at once, so it cannot
+be an iterator without funnelling everything back through a channel and losing
+the parallelism.
+
+So the API inverts: **you hand it a callback, it calls you** — possibly on
+several threads at once. That is why:
+
+- you pass a **factory** closure (`FnMut() -> FnVisitor`), not a single closure —
+  each worker thread gets its own visitor
+- the visitor must be `Send`
+- shared results need `Arc<Mutex<…>>` rather than a plain `Vec`
+
+### The verified API
+
 ```rust
-use ruff_db::system::{OsSystem, System, SystemPath};
+// ruff_db::system::System
+fn walk_directory(&self, path: &SystemPath) -> WalkDirectoryBuilder;
+
+// ruff_db::system::walk_directory::WalkDirectoryBuilder      [verified]
+.add(path)                      // also walk this path
+.ignore_hidden(bool)            // default: true
+.standard_filters(bool)         // .gitignore, .ignore etc. default: true
+.run(builder)                   // ★ run it. builder: FnMut() -> FnVisitor
+.visit(&mut builder)            // the trait-based form
+
+// the visitor closure is:
+//   FnMut(Result<DirectoryEntry, Error>) -> WalkState
+
+pub enum WalkState {            // [verified]
+    Continue,   // keep going
+    Skip,       // if this entry is a directory, do not descend into it
+    Quit,       // stop the whole walk (asynchronously — more entries may still arrive)
+}
+
+impl DirectoryEntry {           // [verified]
+    pub fn path(&self) -> &SystemPath;
+    pub fn into_path(self) -> SystemPathBuf;
+    pub fn file_type(&self) -> FileType;    // .is_file() / .is_directory() / .is_symlink()
+    pub fn depth(&self) -> usize;
+}
+```
+
+### The working version
+
+```rust
+use ruff_db::system::walk_directory::WalkState;
+use ruff_db::system::{OsSystem, System, SystemPath, SystemPathBuf};
+use std::sync::{Arc, Mutex};
 
 fn main() -> anyhow::Result<()> {
     let root = std::env::args().nth(1).expect("usage: prog <dir>");
     let system = OsSystem::new(&root);
 
-    let mut count = 0;
-    for entry in system.walk_directory(SystemPath::new(&root)).build() {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension() == Some("py") {
-            println!("{}", path.as_str());
-            count += 1;
-        }
+    // Shared, because the walk may run on several threads.
+    let found: Arc<Mutex<Vec<SystemPathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+
+    system.walk_directory(SystemPath::new(&root)).run(|| {
+        // This closure is the FACTORY: called once per worker thread.
+        let found = Arc::clone(&found);
+
+        // …and this is the visitor it produces.
+        Box::new(move |entry| {
+            match entry {
+                Ok(entry) => {
+                    if entry.file_type().is_file() && entry.path().extension() == Some("py") {
+                        found.lock().unwrap().push(entry.path().to_path_buf());
+                    }
+                }
+                Err(err) => eprintln!("walk error: {err}"),
+            }
+            WalkState::Continue
+        })
+    });
+
+    let mut files = Arc::try_unwrap(found).unwrap().into_inner().unwrap();
+    files.sort();                       // ★ the walk order is not deterministic
+    for path in &files {
+        println!("{path}");
     }
-    println!("{count} Python files");
+    println!("{} Python files", files.len());
     Ok(())
 }
 ```
 
-⚠ **[check]** the exact shape of `walk_directory`'s builder and its entry type at
-your revision — it returns a `WalkDirectoryBuilder`, and the `.build()` /
-iteration details are the part most likely to differ from what I wrote. Use
-`cargo doc -p ruff_db --no-deps --open` and search for `WalkDirectoryBuilder`.
+**Rust notes — this snippet has four things worth understanding:**
 
-Getting this working is genuinely useful: it is how you will feed a corpus to
+- **`Arc<Mutex<Vec<_>>>`.** `Arc` = atomically reference-counted shared
+  ownership; `Mutex` = only one thread touches the `Vec` at a time. You need both
+  because the visitor must be `Send` and there may be several of them.
+- **`Arc::clone(&found)` inside the factory, then `move` into the visitor.** Each
+  worker gets its own handle to the same vector. Writing `Arc::clone(&x)` rather
+  than `x.clone()` is the convention that makes "this is a cheap pointer copy,
+  not a deep copy" obvious to the reader.
+- **`Box::new(move |entry| …)`.** The factory returns
+  `Box<dyn FnMut(...) -> WalkState + Send>`, so the closure must be boxed and
+  must own what it captures — hence `move`.
+- **`Arc::try_unwrap(found).unwrap().into_inner().unwrap()`.** Getting the `Vec`
+  back out once the walk is finished and all other handles are dropped. Two
+  `unwrap`s: one for "am I the last owner", one for "was the mutex poisoned". In
+  real code you would `found.lock().unwrap().clone()` instead and not care.
+
+⚠ **`files.sort()` is not decoration.** With multiple threads the visit order is
+not deterministic, so anything you build from a walk must be sorted before it is
+compared or serialised. That is the same determinism concern as
+`plan/04-build/00-dev-cli.md`'s `--repeat` flag, arriving early.
+
+### The simpler alternative
+
+If you do not want the ceremony, `read_directory` **is** an ordinary iterator —
+one level at a time, and you recurse yourself **[verified]**:
+
+```rust
+fn read_directory<'a>(&'a self, path: &SystemPath)
+    -> Result<Box<dyn Iterator<Item = Result<DirectoryEntry>> + 'a>>;
+```
+
+Note the two `Result`s: the outer one is "could I open this directory", the inner
+one is "could I read this entry". Same `DirectoryEntry` type as the walker, so
+`.path()` and `.file_type()` work identically.
+
+Single-threaded and slower, but there is no shared state, no `Arc<Mutex<…>>`, and
+the order is whatever the filesystem gave you (still worth sorting). For a
+fixture corpus of 40 files that is entirely reasonable — do not reach for the
+parallel walker just because it exists.
+
+Getting one of these working is genuinely useful: it is how you feed a corpus to
 your CLI in exercise 11.
 
 ---
@@ -234,11 +346,28 @@ friendly message instead. (Hint: `read_to_string` returns a `Result`; use
 fn python_files(system: &dyn System, root: &SystemPath) -> Vec<SystemPathBuf>
 ```
 
-that returns every `.py` and `.pyi` file under `root`. Note the parameter type:
-`&dyn System`, not `&OsSystem`. Ask yourself why that is the better signature —
-then answer exam question 4.
+that returns every `.py` and `.pyi` file under `root`, **sorted**. Note the
+parameter type: `&dyn System`, not `&OsSystem`. Ask yourself why that is the
+better signature — then answer exam question 4.
 
-**C.** Call `system.as_writable()` and print whether you got `Some` or `None` for
+Do it twice, once each way:
+
+- with `walk_directory(...).run(...)` and the `Arc<Mutex<…>>` from example 2
+- with `read_directory(...)` and your own recursion
+
+Time both on a directory with a few hundred files. Then decide which one your
+CLI should use, and write the reason down. (Hint: which one can you debug at 2am?)
+
+**C.** Run the walker version **without** the `.sort()`, ten times, on a
+directory with a few hundred files. Are the results in the same order every
+time? If they always match, try a bigger tree. This is the cheapest possible
+demonstration of why `plan/04-build/00-dev-cli.md` has a `--repeat` flag.
+
+**D.** Use `WalkState::Skip` to avoid descending into any directory named
+`.venv`, `node_modules` or `__pycache__`. Note which entry you must return `Skip`
+*for* — the directory itself, not its contents.
+
+**E.** Call `system.as_writable()` and print whether you got `Some` or `None` for
 an `OsSystem`. Then find, in `ruff_db`'s docs, one system type where it would be
 `None`.
 
@@ -265,6 +394,21 @@ method, but you can see it in the docs. What did you forget?
 
 **7.** `OsSystem::new` takes `impl AsRef<SystemPath>`. Name three different types
 you can pass, and say what the idiom is for.
+
+**8.** `walk_directory` returns a builder with no `.build()` and no iterator.
+What shape is the API instead, and what design constraint forces it?
+
+**9.** `.run()` takes a **factory** closure — `FnMut() -> FnVisitor` — rather
+than a single visitor closure. Why?
+
+**10.** Why does collecting results from a walk need `Arc<Mutex<Vec<_>>>` rather
+than a plain `Vec`?
+
+**11.** Why must you sort the results of a walk before serialising or comparing
+them? Which flag in `plan/04-build/00-dev-cli.md` exists for the same reason?
+
+**12.** Name the three `WalkState` variants. To skip a directory, which entry do
+you return `Skip` for?
 
 ---
 
@@ -307,3 +451,40 @@ that writes, and it is the only one that would need `as_writable()`.
 **7.** `&str`, `String`, `SystemPathBuf`, `&SystemPathBuf`, `&SystemPath` — all
 work. The idiom means "anything convertible to a view of this type", and it
 exists so callers do not have to think about which exact form they are holding.
+
+**8.** It is a **visitor**: you configure the builder, then call `.run(factory)`
+or `.visit(&mut builder)` and it calls **you** for each entry.
+
+The constraint is that the walk **may run on multiple threads** **[verified,
+`walk_directory.rs:85`]**. An iterator has a single cursor yielding to a single
+caller; several worker threads producing entries concurrently cannot be
+expressed that way without funnelling everything through a channel and throwing
+away the parallelism. So the API inverts control.
+
+**9.** Because each worker thread needs **its own visitor**. A single closure
+would have to be shared across threads and mutated from all of them; a factory
+lets the walker call it once per thread and hand each one an independent
+`FnMut`. That is also why the returned visitor must be `Send`.
+
+**10.** Because several visitors, on several threads, are pushing into the same
+collection. `Arc` gives them shared ownership of it, `Mutex` makes the pushes
+mutually exclusive. A plain `Vec` cannot be captured by more than one `Send`
+closure, and the compiler will not let you try.
+
+**11.** Because the visit order is **not deterministic** when the walk is
+parallel — the same directory can produce the same set of files in a different
+order on two runs. Anything derived from that order (a corpus list, a snapshot,
+a JSON array) would then differ between runs for no real reason.
+
+Same reason as the `--repeat <n>` flag in `plan/04-build/00-dev-cli.md`, which
+runs the pipeline several times and asserts the output is identical. Hash-map
+iteration order and parallel merge order are the two usual culprits; walk order
+is a third.
+
+**12.** `Continue`, `Skip`, `Quit`. To skip a directory you return `Skip` when
+you are visiting **the directory entry itself** — not its children, which you
+would never see. `Skip` on a file entry does nothing.
+
+(And note `Quit`'s doc comment: it is "inherently asynchronous", so more entries
+may still arrive after you ask to stop. Another consequence of the multithreaded
+design.)

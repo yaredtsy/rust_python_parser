@@ -163,7 +163,7 @@ Fill in this table from your own output. Predictions first, in a second column.
 | `ascii.py` | `4..9` | 1:4 → 1:9 | `greet`, all ASCII |
 | `ascii.py` | `77..99` | 7:0 → 7:22 | last statement, no trailing `\n` |
 | `unicode.py` | offset `9` | col **8** | `(` on line 1: byte 9, char 8 |
-| `unicode.py` | `20..57` | 2:4 → 2:**32** | full line 2: 37 bytes, 32 chars |
+| `unicode.py` | `20..57` | 2:0 → 2:**32** | full line 2: starts at byte 20, 37 bytes, 32 chars |
 | `unicode.py` | `79..86` | 6:0 → 6:? | `café(1)` — predict the end column |
 | `bom.py` | offset `3` | col **0** | BOM stripped by `line_column` |
 | `tabs.py` | line 3 `return` | col **2** | a tab is one character |
