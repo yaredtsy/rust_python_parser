@@ -41,7 +41,9 @@ def has_lambda():
 
     ID: bbbbbbbb-4444-4444-4444-444444444444
     """
-    fn = lambda x: log(x)
+
+    def fn(x):
+        return log(x)
     build()
     return fn
 

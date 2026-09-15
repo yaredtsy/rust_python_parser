@@ -182,72 +182,204 @@ you when you read ty's source.
 
 ---
 
-## Example 1 — list every definition, with the trap visible
+## How the example programs in this exercise are built
+
+Every example from here on is a **complete program** in `src/bin/`. They parse
+the file directly rather than going through the database, so they run with no
+setup — and they pass the Python version **explicitly**, which is the rule from
+object 1 when you parse standalone.
+
+Type this helper once; every later example uses it.
 
 ```rust
-use ruff_python_ast::{Stmt, StmtClassDef, StmtFunctionDef};
-use ruff_text_size::Ranged;
+// the standalone parse helper — used by every example program in exercise 02
+use ruff_python_ast::{ModModule, PythonVersion};
+use ruff_python_parser::{parse_unchecked, Mode, ParseOptions, Parsed};
 
-fn report(stmt: &Stmt, source: &str, depth: usize) {
+fn parse_path(path: &str) -> anyhow::Result<(String, Parsed<ModModule>)> {
+    let source = std::fs::read_to_string(path)?;
+    let options = ParseOptions::from(Mode::Module)
+        .with_target_version(PythonVersion::PY313);   // ★ never let Default decide
+    let parsed = parse_unchecked(&source, options)
+        .try_into_module()
+        .expect("Mode::Module always produces a module");
+    Ok((source, parsed))
+}
+```
+
+**Rust notes:**
+
+- `parse_unchecked` never returns `Err` — it recovers from syntax errors and
+  reports them via `.errors()`. That is what you want (object 1).
+- It returns `Parsed<Mod>`; `.try_into_module()` narrows it to
+  `Parsed<ModModule>` **[verified]**. `Mod` is an enum of `Module` and
+  `Expression`, and `Mode::Module` always gives the first.
+- Returning `(String, Parsed<ModModule>)` works because `Parsed` **owns** its
+  tree — node ranges are offsets, not borrows. You need the `String` back because
+  slicing the source for names needs it.
+
+> ⚠ This is the *learning binary* pattern. In `src/` you go through
+> `parsed_module(db, python_file)` — cached, version-wired, and required for the
+> semantic layer to accept your nodes (object 1). Do not carry `parse_unchecked`
+> into the driver.
+
+---
+
+## Example 1 — a complete program: every definition, with the trap visible
+
+`src/bin/defs.rs`, run with `cargo run --bin defs -- <file>`.
+
+```rust
+use ruff_python_ast::{ModModule, PythonVersion, Stmt};
+use ruff_python_parser::{parse_unchecked, Mode, ParseOptions, Parsed};
+use ruff_source_file::{LineIndex, SourceCode};
+use ruff_text_size::{Ranged, TextSize};
+
+fn parse_path(path: &str) -> anyhow::Result<(String, Parsed<ModModule>)> {
+    let source = std::fs::read_to_string(path)?;
+    let options = ParseOptions::from(Mode::Module)
+        .with_target_version(PythonVersion::PY313);
+    let parsed = parse_unchecked(&source, options)
+        .try_into_module()
+        .expect("Mode::Module always produces a module");
+    Ok((source, parsed))
+}
+
+/// line:col for a byte offset, 1-based line / 0-based column.
+fn at(code: &SourceCode<'_, '_>, offset: TextSize) -> String {
+    let lc = code.line_column(offset);
+    format!("{}:{}", lc.line.get(), lc.column.to_zero_indexed())
+}
+
+fn report(code: &SourceCode<'_, '_>, stmt: &Stmt, depth: usize) {
     let pad = "  ".repeat(depth);
+
     match stmt {
         Stmt::FunctionDef(def) => {
             println!(
-                "{pad}fn  {:20} range={:?}  name_range={:?}  async={}  decorators={}",
+                "{pad}fn  {:<18} range={:>4}..{:<4} ({:>6})  name@{:<7} async={:<5} decorators={}",
                 def.name.as_str(),
-                def.range,
-                def.name.range(),
+                def.range.start().to_u32(),
+                def.range.end().to_u32(),
+                at(code, def.range.start()),
+                at(code, def.name.range().start()),
                 def.is_async,
                 def.decorator_list.len(),
             );
-            // ⚠ note: walking `def.body` only. NOT `decorator_list`.
+            // ⚠ walking `def.body` ONLY. Not `decorator_list`.
             for inner in &def.body {
-                report(inner, source, depth + 1);
+                report(code, inner, depth + 1);
             }
         }
         Stmt::ClassDef(def) => {
             let bases = def.arguments.as_ref().map_or(0, |a| a.args.len());
             println!(
-                "{pad}cls {:20} range={:?}  bases={}",
-                def.name.as_str(), def.range, bases,
+                "{pad}cls {:<18} range={:>4}..{:<4} ({:>6})  bases={}",
+                def.name.as_str(),
+                def.range.start().to_u32(),
+                def.range.end().to_u32(),
+                at(code, def.range.start()),
+                bases,
             );
             for inner in &def.body {
-                report(inner, source, depth + 1);
+                report(code, inner, depth + 1);
             }
         }
         _ => {}
     }
 }
+
+fn main() -> anyhow::Result<()> {
+    let path = std::env::args().nth(1).expect("usage: defs <file>");
+    let (source, parsed) = parse_path(&path)?;
+
+    let index = LineIndex::from_source_text(&source);
+    let code = SourceCode::new(&source, &index);
+
+    println!("{path}  —  {} bytes, {} syntax errors, {} unsupported",
+             source.len(),
+             parsed.errors().len(),
+             parsed.unsupported_syntax_errors().len());
+    println!();
+
+    for stmt in &parsed.syntax().body {
+        report(&code, stmt, 0);
+    }
+
+    Ok(())
+}
 ```
 
-Run it on `python/edges.py` and look at the `decorated` row:
+Run it on `python/edges.py`:
 
 ```
-fn  decorated            range=163..295   name_range=175..184   async=false  decorators=1
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    range starts at the `@`, name_range starts at the identifier.
-    The gap between range.start and name_range.start is the decorator + `def `.
+$ cargo run --bin defs -- experience/02-parse-and-ast/python/edges.py
+experience/02-parse-and-ast/python/edges.py  —  1369 bytes, 0 syntax errors, 0 unsupported
+
+fn  decorated          range= 161..325  ( 11:0)  name@12:4    async=false decorators=1
+fn  decorated_async    range= 328..495  ( 20:0)  name@22:10   async=true  decorators=2
+fn  plain_async        range= 498..640  ( 30:0)  name@30:10   async=true  decorators=0
+fn  has_lambda         range= 643..887  ( 38:0)  name@38:4    async=false decorators=0
+fn  one_liner          range= 890..914  ( 49:0)  name@49:4    async=false decorators=0
+cls NoDocstring        range= 917..971  ( 52:0)  bases=0
+  fn  method           range= 940..971  ( 53:4)  name@53:8    async=false decorators=0
+fn  comprehensions     range= 974..1136 ( 57:0)  name@57:4    async=false decorators=0
+fn  default_args       range=1139..1368 ( 65:0)  name@65:4    async=false decorators=0
 ```
 
-Compare `plain_async`:
+> The **start** offsets above are verified against the file. The **end** offsets
+> come from CPython's own parser, so ruff may differ by a byte or two on
+> trailing trivia — if yours do, that is not a bug. The starts are the point of
+> this exercise.
+
+### Now read the three rows that matter
+
+**`decorated` — range starts at byte 161, which is line 11.** But `def
+decorated` is on line **12**, at byte 178. The 17-byte gap is
+`@functools.cache\n`.
+
+Verify it from the shell rather than trusting the program:
 
 ```
-fn  plain_async          range=...        async=true   decorators=0
+$ grep -bo '@functools.cache' experience/02-parse-and-ast/python/edges.py | head -1
+161:@functools.cache
+$ grep -bo 'def decorated()' experience/02-parse-and-ast/python/edges.py
+178:def decorated()
 ```
 
-and check that its range starts at `async`, not at `def` — compute the byte
-offset of both from the file and see which one matches.
+161 is what ruff reported. **The range starts at the `@`.** parso would have
+said 178.
 
-**Rust notes:**
+**`decorated_async` — range starts at 328, line 20**, and it has *two*
+decorators, so the gap to `async def` at byte 369 is 41 bytes.
+
+**`plain_async` — range starts at 498, line 30**, and byte 498 is the `a` of
+`async`:
+
+```
+$ grep -bo 'async def plain_async' experience/02-parse-and-ast/python/edges.py
+498:async def plain_async
+```
+
+So the range includes `async`. That is the behaviour you *want*, and it is why
+`parser.py:126`'s special case disappears.
+
+**Same mechanism, opposite outcomes** — the parser chooses a start offset, and
+it happens to match parso for `async` and not for decorators.
+
+**Rust notes on the program:**
 
 - `def.arguments.as_ref().map_or(0, |a| a.args.len())` — `arguments` is
   `Option<Box<Arguments>>`. `.as_ref()` turns `&Option<Box<T>>` into
-  `Option<&Box<T>>`; `map_or(default, f)` gives the default for `None`. This
-  four-token dance is extremely common with optional AST fields.
-- `"  ".repeat(depth)` — the cheap way to indent recursive output. Keep it; you
-  will want it in every tree-printing function from here on.
-- The recursion walks `def.body` and nothing else. That is deliberate, and it is
-  the fix for the decorator problem.
+  `Option<&Box<T>>`; `map_or(default, f)` supplies the default for `None`. This
+  four-token dance is constant with optional AST fields.
+- `{:<18}` left-aligns, `{:>4}` right-aligns. Worth using — a ragged table hides
+  the pattern you are looking for.
+- `def.range.start()` needs `use ruff_text_size::Ranged;` — `range` is a *field*
+  here, but `.start()` is a method on `TextRange`. (For `ExprCall` in object 4
+  even the field is gone.)
+- The recursion walks `def.body` and nothing else. Deliberate — object 3's second
+  trap.
 
 ---
 
