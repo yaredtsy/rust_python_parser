@@ -1,9 +1,14 @@
 mod db;
 use db::{open, open_project, to_position};
-use ruff_python_ast::{Expr, ExprCall, ModModule, PythonVersion, Stmt};
+use ruff_python_ast::{
+    AnyNodeRef, Expr, ExprCall, ModModule, PythonVersion, Stmt,
+    visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_body, walk_expr},
+};
 use ruff_python_parser::{Mode, ParseOptions, Parsed, parse_unchecked};
 use ruff_source_file::{LineIndex, SourceCode};
 use ruff_text_size::{Ranged, TextRange, TextSize};
+use rustc_hash::FxHashSet;
+
 use ty_python_core::expression::Expression;
 
 fn parse_path(path: &str) -> anyhow::Result<(String, Parsed<ModModule>)> {
@@ -105,6 +110,37 @@ fn report_chain(index: &LineIndex, code: &SourceCode<'_, '_>, outer: &ExprCall) 
         );
     }
 }
+
+struct ScopeScanner<'a> {
+    root: TextRange,
+    seen: FxHashSet<TextRange>,
+    /// Definitions found in this scope — to be recursed into separately.
+    defs: Vec<AnyNodeRef<'a>>,
+    /// Calls found in this scope.
+    calls: Vec<&'a Expr>,
+}
+
+impl<'a> SourceOrderVisitor<'a> for ScopeScanner<'a> {
+    fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+        if node.range() == self.root {
+            return TraversalSignal::Traverse;
+        }
+        match node {
+            AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
+                self.defs.push(node); // remember it, recurse later
+                TraversalSignal::Skip // quirk: do not descend here
+            }
+            AnyNodeRef::ExprLambda(_) => TraversalSignal::Skip, // quirk 8
+            _ => TraversalSignal::Traverse,
+        }
+    }
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if let Expr::Call(call) = expr {
+            self.calls.push(call);
+        }
+        walk_expr(self, expr); // ★★ KEEP GOING
+    }
+}
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: defs <file>");
     let (source, parsed) = parse_path(&path)?;
@@ -119,10 +155,13 @@ fn main() -> anyhow::Result<()> {
         parsed.unsupported_syntax_errors().len()
     );
     println!();
+    let mut finder = CallFinder { calls: Vec::new() };
+    walk_body(&mut finder, &parsed.syntax().body);
+    println!("{} calls", finder.calls.len());
 
-    for stmt in &parsed.syntax().body {
-        report(&index, &code, stmt, 0);
-    }
+    // for stmt in &parsed.syntax().body {
+    //     report_chain(&index, &code, stmt, 0);
+    // }
 
     Ok(())
 }

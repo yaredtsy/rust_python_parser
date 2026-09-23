@@ -21,7 +21,7 @@ API → worked examples → exercise → its own exam → answers.
 | 2 | [`02-object-stmt-expr.md`](02-object-stmt-expr.md) | `Stmt`, `Expr` | ★ the two enums everything is made of |
 | 3 | [`03-object-functiondef-classdef.md`](03-object-functiondef-classdef.md) | `StmtFunctionDef`, `StmtClassDef` | ⚠ the decorator trap |
 | 4 | [`04-object-exprcall.md`](04-object-exprcall.md) | `ExprCall`, `Arguments` | ★ calls, chains, `call_col_pos` |
-| 5 | [`05-object-visitor.md`](05-object-visitor.md) | `SourceOrderVisitor`, `TraversalSignal` | ★ walking, and where to stop |
+| 5 | [`05-object-visitor.md`](05-object-visitor.md) *(3 parts, in [`05-object-visitor/`](05-object-visitor/))* | `SourceOrderVisitor`, `TraversalSignal` | ★ walking, and where to stop |
 | 6 | [`06-object-docstrings.md`](06-object-docstrings.md) | docstrings, the `ID:` scan | the join key into v-noc |
 | 7 | [`07-putting-it-together.md`](07-putting-it-together.md) | — | `src/nodes.rs`, the JSON, the quirk checklist |
 

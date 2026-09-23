@@ -37,13 +37,12 @@ async def plain_async():
 
 def has_lambda():
     """parser.py drops lambdas AND their whole subtree.
-    So `log()` inside the lambda must NOT appear in your output.
+    So `log(x)` inside the lambda must NOT appear in your output:
+    this function has exactly ONE call, `build()`.
 
     ID: bbbbbbbb-4444-4444-4444-444444444444
     """
-
-    def fn(x):
-        return log(x)
+    fn = lambda x: log(x)
     build()
     return fn
 
