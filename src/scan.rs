@@ -1,11 +1,16 @@
 //! Scope scanning: the `ScopeScanner` visitor and the `scan_scope` driver.
 //!
 //! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md`.
+//! RETIRED since: call collection. `ScopeScanner` used to also collect every
+//! `ExprCall` in a scope (quirk 8's `ExprLambda => Skip`, `visit_expr`'s
+//! `self.calls.push`). Superseded by
+//! `experience/02-parse-and-ast/08-staged-pipeline.md`'s stage 3, which
+//! resolves a call where `eval` reaches it rather than collecting it
+//! unresolved first — so there is nothing left for a pre-pass to collect.
+//! This file now only finds defs.
 
-use ruff_python_ast::visitor::source_order::{
-    SourceOrderVisitor, TraversalSignal, walk_body, walk_expr, walk_node,
-};
-use ruff_python_ast::{AnyNodeRef, Decorator, Expr, ExprCall, Stmt};
+use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_body, walk_node};
+use ruff_python_ast::{AnyNodeRef, Expr, Stmt};
 use ruff_source_file::{LineIndex, SourceCode};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 use rustc_hash::FxHashMap;
@@ -26,10 +31,6 @@ impl<'src> Ctx<'src> {
     pub(crate) fn position(&self, range: TextRange) -> Position {
         to_position_with(&self.code, range)
     }
-
-    fn slice(&self, range: TextRange) -> &'src str {
-        &self.code.text()[range]
-    }
 }
 
 // ---------------------------------------------------------------- the visitor
@@ -38,14 +39,11 @@ pub struct ScopeScanner<'a> {
     root: TextRange,
     /// Definitions found in this scope — recursed into separately.
     pub defs: Vec<AnyNodeRef<'a>>,
-    /// Every call found in this scope, in source order. One entry per
-    /// `ExprCall` — no chains, so no dedup set and nothing to collapse.
-    pub calls: Vec<&'a ExprCall>,
 }
 
 impl<'a> ScopeScanner<'a> {
     pub fn new(root: TextRange) -> Self {
-        Self { root, defs: Vec::new(), calls: Vec::new() }
+        Self { root, defs: Vec::new() }
     }
 }
 
@@ -59,25 +57,20 @@ impl<'a> SourceOrderVisitor<'a> for ScopeScanner<'a> {
                 self.defs.push(node); // remember it, recurse later
                 TraversalSignal::Skip // parser.py:78-80
             }
-            AnyNodeRef::ExprLambda(_) => TraversalSignal::Skip, // quirk 8
             _ => TraversalSignal::Traverse,
         }
     }
 
-    fn visit_decorator(&mut self, _d: &'a Decorator) {
-        // PARITY: parso puts decorators outside the funcdef, so calls inside
-        // them belong to the enclosing scope. Deliberately does NOT call
-        // walk_decorator.
-    }
-
-    fn visit_expr(&mut self, expr: &'a Expr) {
-        if let Expr::Call(call) = expr {
-            // Every call, once. No guard: the walk visits each `ExprCall`
-            // exactly once, and one output node per `ExprCall` means there is
-            // no second counting of chains to disagree with it.
-            self.calls.push(call);
-        }
-        walk_expr(self, expr); // ★★ KEEP GOING
+    fn visit_expr(&mut self, _expr: &'a Expr) {
+        // Nothing inside an expression matters any more: no def can live in
+        // one (object 5/8), and calls are no longer collected here — see the
+        // RETIRED note above. Not calling `walk_expr` is what stops the
+        // descent; `enter_node` is therefore never reached with an `Expr`
+        // node at all (every `Expr` path, `visit_annotation` included, funnels
+        // through this method — `ruff_python_ast::visitor::source_order`,
+        // `walk_annotation`/`walk_expr`), so quirk 8's `ExprLambda => Skip`
+        // and the empty `visit_decorator` (parity for call attribution) are
+        // both dead with it, not merely unused.
     }
 }
 
@@ -98,21 +91,17 @@ pub fn scan_module<'a>(ctx: &Ctx<'_>, body: &'a [Stmt]) -> Vec<Node> {
 }
 
 fn collect(ctx: &Ctx<'_>, scanner: ScopeScanner<'_>) -> Vec<Node> {
-    let mut out = Vec::new();
-    for def in scanner.defs {
-        let children = scan_scope(ctx, def); // ★★ the recursion
-        out.push(node_for_definition(ctx, def, children));
-    }
-    for call in scanner.calls {
-        out.push(node_for_call(ctx, call));
-    }
-    // Calls nested in one expression share a start, so the END breaks the tie —
-    // which puts `build`, `render`, `strip` in the order they actually run.
-    out.sort_by_key(|n| {
-        let p = n.position;
-        (p.line, p.column, p.end_line, p.end_column)
-    });
-    out
+    // No sort: `self.defs` was filled by `enter_node`, which — being a
+    // SOURCE ORDER visitor — already visits siblings in source order. Only
+    // mattered as an interleave once calls joined the same list; see RETIRED.
+    scanner
+        .defs
+        .into_iter()
+        .map(|def| {
+            let children = scan_scope(ctx, def); // ★★ the recursion
+            node_for_definition(ctx, def, children)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- definitions
@@ -231,39 +220,6 @@ fn extract_metadata(doc: &str) -> FxHashMap<&str, &str> {
     out
 }
 
-// --------------------------------------------------------------------- calls
-
-/// One node per `ExprCall`. No chain flattening, no `call_index`.
-///
-/// `call.range()` already covers the callee, so `build().render()` starts at
-/// `build` — the span the old chain code reconstructed by hand is the range
-/// ruff hands you.
-fn node_for_call(ctx: &Ctx<'_>, call: &ExprCall) -> Node {
-    Node {
-        id: None, // calls never have one
-        name: call_name(ctx, call),
-        kind: NodeKind::Call,
-        position: ctx.position(call.range()),
-        children: Vec::new(),
-        base_classes: None,
-    }
-}
-
-/// The called name, from the AST rather than from a source slice.
-///
-/// Taking `a.attr` instead of slicing `a` means `calls.py:multiline_callee` —
-/// a callee split over two lines with a backslash — is `render`, not the raw
-/// text with the backslash and the indentation still in it. The receiver is not
-/// part of the name; if something later needs "called on the result of what",
-/// that is one `call.func` hop away, computed where it is read.
-fn call_name(ctx: &Ctx<'_>, call: &ExprCall) -> String {
-    match call.func.as_ref() {
-        Expr::Name(n) => n.id.as_str().to_string(), // build()
-        Expr::Attribute(a) => a.attr.as_str().to_string(), // .render()
-        other => ctx.slice(other.range()).to_string(), // handlers["x"]()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,9 +231,7 @@ mod tests {
     fn defs(source: &str) -> Vec<(String, usize, usize)> {
         fn flatten(nodes: &[Node], out: &mut Vec<(String, usize, usize)>) {
             for n in nodes {
-                if !matches!(n.kind, NodeKind::Call) {
-                    out.push((n.name.clone(), n.position.line, n.position.column));
-                }
+                out.push((n.name.clone(), n.position.line, n.position.column));
                 flatten(&n.children, out);
             }
         }
@@ -295,77 +249,6 @@ mod tests {
         let index = LineIndex::from_source_text(source);
         let ctx = Ctx::new(source, &index);
         scan_module(&ctx, &parsed.syntax().body)
-    }
-
-    /// Every call node in the module, flattened, as
-    /// `(name, start_line, start_col, end_line, end_col)`.
-    fn calls(source: &str) -> Vec<(String, usize, usize, usize, usize)> {
-        fn flatten(nodes: &[Node], out: &mut Vec<(String, usize, usize, usize, usize)>) {
-            for n in nodes {
-                if matches!(n.kind, NodeKind::Call) {
-                    let p = n.position;
-                    out.push((n.name.clone(), p.line, p.column, p.end_line, p.end_column));
-                }
-                flatten(&n.children, out);
-            }
-        }
-        let mut out = Vec::new();
-        flatten(&scan(source), &mut out);
-        out
-    }
-
-    #[test]
-    fn one_node_per_call_in_a_chain() {
-        // `build().render().strip()` is three calls, so three nodes — no chain
-        // expansion, no `call_index`. They share a start, and the END ordering
-        // is the order they run in.
-        let got = calls("build().render().strip()\n");
-        assert_eq!(
-            got,
-            vec![
-                ("build".to_string(), 1, 0, 1, 7),
-                ("render".to_string(), 1, 0, 1, 16),
-                ("strip".to_string(), 1, 0, 1, 24),
-            ]
-        );
-    }
-
-    #[test]
-    fn subscript_between_calls_is_not_special() {
-        // The old chain walk had to hop Attribute-over-Subscript to avoid
-        // splitting this into two chains numbered from 0. One node per call
-        // removes the question.
-        let got = calls("build()[\"key\"].render()\n");
-        assert_eq!(
-            got,
-            vec![
-                ("build".to_string(), 1, 0, 1, 7),
-                ("render".to_string(), 1, 0, 1, 23),
-            ]
-        );
-    }
-
-    #[test]
-    fn no_call_is_emitted_twice() {
-        // The `seen` set is gone; this is what used to need it.
-        let src = "wrap(build(), key=build())\nbuild()()\n";
-        let got = calls(src);
-        assert_eq!(got.len(), 5, "{got:#?}");
-        // and every node has a distinct span, which is what makes the range a
-        // usable handle for the interpreter.
-        let mut spans: Vec<_> = got.iter().map(|c| (c.1, c.2, c.3, c.4)).collect();
-        spans.sort();
-        let before = spans.len();
-        spans.dedup();
-        assert_eq!(spans.len(), before, "two call nodes share a span");
-    }
-
-    #[test]
-    fn multiline_callee_name_comes_from_the_ast() {
-        // Not the raw slice: `obj \\\n        . render (value=1)` would have put
-        // a backslash and two lines of indentation in `name`.
-        let got = calls("obj \\\n    . render (value=1)\n");
-        assert_eq!(got.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["render"]);
     }
 
     #[test]

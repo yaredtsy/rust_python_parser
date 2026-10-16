@@ -120,14 +120,14 @@ mod tests {
         }
     }
 
-    /// Same shape as `flatten_defs`, over `ScopeScanner`'s tree — calls
-    /// dropped, since `DefScanner` never produces one.
+    /// Same shape as `flatten_defs`, over `ScopeScanner`'s tree — which, now
+    /// that call collection is retired (see `scan.rs`'s RETIRED note), is
+    /// defs only already, with nothing left to filter.
     fn flatten_nodes(nodes: &[Node], out: &mut Vec<Row>) {
         for n in nodes {
             let kind = match n.kind {
                 NodeKind::Function => "function",
                 NodeKind::Class => "class",
-                NodeKind::Call => continue,
             };
             out.push((n.name.clone(), kind, n.position.line, n.position.column, n.position.end_line, n.position.end_column));
             flatten_nodes(&n.children, out);

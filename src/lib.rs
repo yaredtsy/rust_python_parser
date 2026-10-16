@@ -1,5 +1,7 @@
 pub mod db;
 pub mod defs;
+pub mod edit;
+pub mod inject;
 pub mod lines;
 pub mod mro;
 pub mod nodes;

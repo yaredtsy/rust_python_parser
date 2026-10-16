@@ -1,16 +1,14 @@
 use crate::positions::Position;
 
-/// One output node per AST node. A `Call` node is exactly one `ExprCall`, so
-/// the visitor's "each node is visited once" guarantee *is* the deduplication —
-/// there is no chain to expand and nothing to get out of sync.
-///
-/// `call_index` / `call_col_pos` used to live here. They existed because Jedi
-/// resolves by cursor position and every call in a chain shares a start, so it
-/// needed a tiebreak. One node per `ExprCall` makes `position` unique, which is
-/// the whole handle; the interpreter looks a call up by its range.
+/// One output node per def. There used to be a third `NodeKind::Call`
+/// variant here, one per `ExprCall` collected by `ScopeScanner` — retired:
+/// stage 3 (`experience/02-parse-and-ast/08-staged-pipeline.md`) resolves a
+/// call when `eval` reaches it, with no pre-collected list to keep in sync.
+/// `call_index` / `call_col_pos`, the tiebreak that list needed because every
+/// call in a chain shares a start, went with it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Node {
-    /// "FunctionSchema/<uuid>" | "ClassSchema/<uuid>" | null for calls
+    /// "FunctionSchema/<uuid>" | "ClassSchema/<uuid>"
     pub id: Option<String>,
     pub name: String,
     #[serde(rename = "type")]
@@ -27,5 +25,4 @@ pub struct Node {
 pub enum NodeKind {
     Class,
     Function,
-    Call,
 }
