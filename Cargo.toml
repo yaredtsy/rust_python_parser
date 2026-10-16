@@ -3,6 +3,14 @@ name = "pylspt"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "pylspt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pylspt-dev"
+path = "src/bin/pylspt-dev.rs"
+
 [dependencies]
 # --- ruff/ty, all from ONE pinned revision ---
 ruff_db = { git = "https://github.com/astral-sh/ruff", rev = "ac201b8", features = [

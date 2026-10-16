@@ -1,5 +1,16 @@
 # Exam 02 — Parse and AST
 
+> ⚠ **Questions 5–8 and 12 are history questions now.** They describe the
+> one-tree scanner: `flatten_call_chain`, `call_index`, `call_col_pos`, and a
+> single traversal that collects defs and calls together. Object 5 part 4 §4
+> drops the two numeric fields (one node per `ExprCall` makes the range the
+> handle), and [file 8](08-staged-pipeline.md) stops collecting calls in the
+> first traversal at all.
+>
+> Answer them anyway — knowing what parso counted is how you read the Python
+> driver — but answer the **Staging** section at the end as well, and treat it
+> as the one that describes what you ship.
+
 ---
 
 ## Recall
@@ -86,3 +97,31 @@ which count moves. That is your regression test for quirk 8.
 **17.** Pick the quirk from 8–12 that your implementation currently gets wrong
 (there is usually one). Write the smallest Python file that demonstrates it, and
 put it in your fixture directory with an expected-output file.
+
+---
+
+## Staging
+
+See [`08-staged-pipeline.md`](08-staged-pipeline.md); its own exam goes deeper.
+
+**18.** Name the three stages, and for each one say what it is the *only* thing
+that does.
+
+**19.** Stage 1 uses `StatementVisitor`, which never enters an expression. Name
+the one definition form that is an expression, and explain why ignoring it loses
+no ID.
+
+**20.** Stage 2 applies its inserts in descending offset order. What does that
+buy, and what does it give you for free about a def and the defs nested inside
+it?
+
+**21.** Why must stage 2 end by re-running stage 1 rather than adjusting the
+ranges it already has? Name the thing in Rust that stops you getting this wrong.
+
+**22.** The ID index maps an ID to a **`Vec`** of locations. What real-world
+action produces two locations for one ID, and which earlier bug in this exercise
+is the single-valued version of?
+
+**23.** Stage 3 never receives a list of calls. Say where each of these rules
+from object 5 ends up: the lambda skip, the decorator override, and
+"default arguments stay with the function".

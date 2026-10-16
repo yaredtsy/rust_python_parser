@@ -127,25 +127,42 @@ fn flatten_call_chain<'a>(outer: &'a ExprCall) -> Vec<&'a ExprCall> {
     let mut cur = Some(outer);
     while let Some(call) = cur {
         chain.push(call);
-        cur = match call.func.as_ref() {
-            Expr::Call(inner) => Some(inner),                     // f()()
-            Expr::Attribute(attr) => attr.value.as_call_expr(),    // f().g()
-            Expr::Subscript(sub) => sub.value.as_call_expr(),      // f()[k].g()
-            _ => None,
-        };
+        cur = descend_to_call(call.func.as_ref());
     }
     chain.reverse();          // innermost first == call_index 0
     chain
 }
+
+/// The next call down a chain, through ANY depth of `.attr` / `[sub]` wrappers.
+///
+/// ⚠ One `as_call_expr()` per step is NOT enough. In `build()["k"].render()` the
+/// outer call's `func` is an Attribute whose `value` is a Subscript whose
+/// `value` is the call — a single-level hop sees the Subscript, returns `None`,
+/// and splits one chain into two, each numbered from 0. `calls.py:subscripted`
+/// is the fixture that catches it.
+fn descend_to_call(expr: &Expr) -> Option<&ExprCall> {
+    match expr {
+        Expr::Call(call) => Some(call),
+        Expr::Attribute(attr) => descend_to_call(attr.value.as_ref()),
+        Expr::Subscript(sub) => descend_to_call(sub.value.as_ref()),
+        _ => None,
+    }
+}
 ```
 
-**Three descent kinds**, and `python/calls.py` has a fixture for each:
+**Three descent kinds**, and `python/calls.py` has a fixture for each — note
+that they **compose**, which is why the descent recurses rather than hopping once:
 
 | descent | fixture | Python |
 |---|---|---|
 | `Expr::Call` → itself | `call_of_call` | `build()()` |
 | `Expr::Attribute` → `.value` | `chained`, `deep_chain` | `build().render()` |
 | `Expr::Subscript` → `.value` | `subscripted` | `build()["k"].render()` |
+
+In `subscripted` the outer call descends Attribute → Subscript → Call: **two**
+wrappers before the next call. Get that wrong and the chain reports
+`call_index` 0 twice instead of 0 and 1; object 5 part 4 has the measured
+before/after.
 
 **Rust notes:**
 

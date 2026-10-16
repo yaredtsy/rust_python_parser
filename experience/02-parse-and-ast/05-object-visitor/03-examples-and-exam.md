@@ -2,7 +2,8 @@
 
 Two visitors to write, ten exercises to run, sixteen questions to answer.
 
-**Part 3 of 3** · prev: [Part 2 — Stopping the walk](02-stopping-the-walk.md) ·
+**Part 3 of 4** · prev: [Part 2 — Stopping the walk](02-stopping-the-walk.md) ·
+next: [Part 4 — Wiring it up](04-wiring-it-up.md) ·
 [Part 1 — How the walk works](01-how-the-walk-works.md)
 
 ---
@@ -131,9 +132,12 @@ nowhere. Then change `ExprLambda` to `Traverse` and watch it appear. Put it back
 separately that the def's `.range` still starts at the `@` either way — the
 override fixes children, not ranges.
 
-**F.** Test the root guard: start a scanner at a `StmtFunctionDef` **without**
-the `node.range() == self.root` check. What do you get? Explain why in one
-sentence.
+**F.** Test the root guard: start a scanner at a `StmtFunctionDef` with
+`walk_node` and **without** the `node.range() == self.root` check. Predict the
+failure before you run it, then run it. (It is not an empty scope — and the
+reason it is not is in the same `match` arm that does the skipping.) Then delete
+the `self.defs.push(node)` line as well and run again: *now* what do you get?
+Explain both outcomes in one sentence each.
 
 **G.** Add position dedup and try to trigger it. (Hint: you need two emissions
 with identical ranges — think about what a call chain shares, and about
@@ -150,6 +154,13 @@ for scope stacks.
 root, once as a child of the module. Confirm `build()` and `log()` attach to
 `default_args` in the first case and to nothing in the second. Explain in one
 sentence why no special case was needed.
+
+**I2.** Now change the root scan's entry point from `walk_node(&mut s, def)` to
+`walk_body(&mut s, &def.body)` and run `default_args` again. Both calls vanish.
+Explain which of layer 2's six child groups you just stopped visiting, and then
+check what *else* became dead code: delete the root guard and the
+`visit_decorator` override and confirm the output does not change. (Part 2's
+table has the answer; derive it before you look.)
 
 **J.** Swap `SourceOrderVisitor` for `ruff_python_ast::visitor::Visitor` in
 `CallCounter` (drop `enter_node`; the method names match). Run it on
@@ -264,8 +275,16 @@ name `Identifier`, type params, the parameter list (and therefore every
 default-argument expression), the return annotation, and the body.
 
 **8.** Because you start the scanner *at* a definition, and the rule says "skip
-definitions". Without the guard you skip yourself and produce **nothing** — an
-empty scope for every function in the file.
+definitions". Without the guard the root skips itself.
+
+What you get then depends on the `Skip` arm's other statement. Since that arm
+also does `self.defs.push(node)`, the root records *itself* as a nested
+definition, the driver recurses into it, and that scan does the same —
+**infinite recursion**, which on `edges.py:comprehensions` prints `def
+comprehensions` forever. Only if you skipped *without* recording would you get
+the quieter failure: an **empty scope** for every function in the file.
+
+Both are the same root cause; the loud one is luck.
 
 **9.** `==` is the derived `PartialEq` on `AnyNodeRef` (`generated.rs:5829`),
 which compares the *pointed-to values* structurally and recursively: O(subtree),
@@ -346,3 +365,9 @@ wherever the two disagree — most visibly comprehensions, where source order is
 output ordering are positional and parso reported written order, that is a
 silent parity bug that would present as bad numbering rather than as a wrong
 visitor. Losing `enter_node` would also cost you the entire `Skip` design.
+
+---
+
+**Next:** [Part 4 — Wiring it up](04-wiring-it-up.md) — `Ctx`,
+`node_for_definition`, `nodes_for_call_chain`, and the two `main`s, as code that
+compiles and runs.

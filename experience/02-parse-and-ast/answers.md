@@ -187,3 +187,53 @@ first attempt: decorator ranges (9), decorator *contents* landing inside the
 function (9), lost calls in arguments (8), and lambda subtrees (11). If all four
 are right, check position dedup (quirk 10) with two identical call expressions
 on one line.
+
+---
+
+## Staging (18–23)
+
+**18.** **Stage 1** — `definitions(db, file)`, the only thing that reads the AST
+for structure; everything downstream sees owned `DefNode`s, not `&Stmt`.
+**Stage 2** — ID injection, the only thing that writes, which is why it is also
+the only thing that invalidates ranges. **Stage 3** — the interpreter, the only
+thing that resolves calls, which it does by evaluating a body rather than by
+reading a list.
+
+**19.** `lambda`. Its body is an expression, so it can contain no statement, and
+a string in that position is the lambda's *return value* rather than a docstring
+(`(lambda: "x").__doc__` is `None`). No ID can live there, so an
+expression-blind walk misses no ID-bearing definition. Every `def` and `class`
+is reachable through statements alone.
+
+**20.** It buys validity: an insert shifts only the bytes after it, so every
+offset you have not used yet is still correct — no fixups, no running offset.
+For free, it orders **children before parents**: a def's docstring slot is at
+the top of its body, strictly before any def nested inside it, so descending
+offset reaches the inner ones first and the parent's later insert only moves
+bytes that are already written.
+
+**21.** Because every range stage 1 produced describes the *pre-write* text, and
+after an insert they describe nothing. Adjusting them means re-deriving the
+whole tree's offsets from the edit list, which is the re-scan with extra steps
+and one more place to be wrong. What stops you: `definitions` is
+`returns(ref)`, so its result borrows the database, and `File::sync` takes
+`&mut dyn Db` (`ruff_db/src/files.rs:478`). Holding the old defs across the
+write does not compile. The loophole to avoid is cloning them out first — that
+compiles, and the clone's ranges are stale.
+
+**22.** Copying a function, docstring and all, into a second place — the
+docstring carries the `ID:` with it, so two defs legitimately claim one ID. A
+`HashMap<String, (File, TextRange)>` would keep whichever file merged last and
+the other def would disappear from every lookup. That is the same **last-wins**
+failure as `_extract_metadata`'s repeated keys (object 6, `multiple_keys`), one
+layer up: both silently discard a collision instead of reporting it.
+
+**23.** The lambda skip becomes: a `lambda` evaluates to a closure whose body
+runs only when the closure is called. The decorator override becomes: a
+decorator expression is evaluated in the **enclosing** environment at the `def`
+statement — which lands its calls in the enclosing scope, parso's answer, with
+no special case and nothing dropped (this closes object 5 part 4's one
+data-losing gap). Default arguments need no rule at all, again: they are
+evaluated in the enclosing environment when the `def` runs, but they are part of
+the function's own signature, so the call is attributed to the function — the
+same answer the AST gave, for the same reason.

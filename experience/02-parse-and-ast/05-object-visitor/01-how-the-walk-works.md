@@ -2,12 +2,13 @@
 
 `SourceOrderVisitor`, the three layers, and which hooks fire where.
 
-**Part 1 of 3** · next: [Part 2 — Stopping the walk](02-stopping-the-walk.md) ·
-[Part 3 — Examples, exercises, exam](03-examples-and-exam.md)
+**Part 1 of 4** · next: [Part 2 — Stopping the walk](02-stopping-the-walk.md) ·
+[Part 3 — Examples, exercises, exam](03-examples-and-exam.md) ·
+[Part 4 — Wiring it up](04-wiring-it-up.md)
 
 Walking the tree without enumerating 94 node types by hand.
 
-This object is split across three files, because the visitor is the one piece of
+This object is split across four files, because the visitor is the one piece of
 ruff machinery you will be *inside* every day, and because most of its bugs are
 silent. This part is the mechanism: what the trait is, what actually happens on
 one traversal step, and which hooks fire where. Everything in all three parts is

@@ -3,8 +3,9 @@
 `TraversalSignal::Skip`, the root guard, `AnyNodeRef`, and the four parity
 behaviours you must carry over from `parser.py`.
 
-**Part 2 of 3** · prev: [Part 1 — How the walk works](01-how-the-walk-works.md) ·
-next: [Part 3 — Examples, exercises, exam](03-examples-and-exam.md)
+**Part 2 of 4** · prev: [Part 1 — How the walk works](01-how-the-walk-works.md) ·
+next: [Part 3 — Examples, exercises, exam](03-examples-and-exam.md) ·
+[Part 4 — Wiring it up](04-wiring-it-up.md)
 
 Part 1 established the three layers: `visit_X` (your override) → `walk_X`
 (where `enter_node`/`leave_node` live) → `X::visit_source_order` (the generated
@@ -44,8 +45,22 @@ in one signal. That is exactly parso's early `return`.
 ### ⚠ But `enter_node` fires for your own root too
 
 If you start a visitor at a `StmtFunctionDef` and `enter_node` skips
-`StmtFunctionDef`, you skip the very thing you were asked to walk — and get
-nothing. Not an error: an empty scope, for every function in the file.
+`StmtFunctionDef`, you skip the very thing you were asked to walk.
+
+What that costs you depends on what the skip *also* does, and this is worth
+getting right because the obvious answer is wrong:
+
+- If `enter_node` only returned `Skip`, you would get an **empty scope** for
+  every function in the file — silent, plausible-looking, wrong.
+- But our `enter_node` also **pushes the node to `self.defs`**. So the root
+  pushes *itself*, the driver recurses into it, and that scan pushes itself
+  again. The real failure is an **infinite recursion** — a stack overflow, or
+  (with the printing driver below) an endless tower of the same function name.
+
+Verified by deleting the guard and running the driver on
+`edges.py:comprehensions`: it prints `def comprehensions` forever. The loud
+failure is the lucky case; it is loud only because `defs` is populated in the
+same match arm that skips.
 
 So the visitor needs to know its own root:
 
@@ -255,6 +270,42 @@ right entry: a module body is not a node (see the hooks table in
 so the guard never matches anything real.
 
 **One visitor per scope.** That is the design, and it falls out of `Skip`.
+
+### ⚠ `walk_node(def)` or `walk_body(&def.body)`? They are not equivalent
+
+It is tempting to enter a function's scope with `walk_body(&mut scanner,
+&def.body)` instead — no root guard needed, since a def is not inside its own
+body. **Do not.** It is a quieter, more plausible version of the same class of
+bug, and it drops output:
+
+| | `walk_node(&mut s, def)` | `walk_body(&mut s, &def.body)` |
+|---|---|---|
+| default-arg calls (`def f(x=build())`) | **found** ✓ | **missed** ✗ |
+| root guard | load-bearing | dead code |
+| empty `visit_decorator` | load-bearing | dead code |
+| decorators of the root | visited, then suppressed | never reached |
+
+Measured on `edges.py:default_args` at `ac201b8`:
+
+```
+=== entry via walk_node on `default_args` ===
+  call build()
+  call log()
+=== entry via walk_body on `default_args` ===
+            ← nothing
+```
+
+The reason is layer 2: `StmtFunctionDef::visit_source_order` visits
+`decorator_list`, `name`, `type_params`, **`parameters`**, `returns`, *then*
+`body`. Entering at the body skips the first five — and `parameters` is where
+default-argument expressions live. parso nests them inside the funcdef, so
+`build()` and `log()` are `default_args`' children, and `walk_body` loses them.
+
+The two dead-code rows are the tell. If you write the `walk_body` driver, the
+root guard and the decorator override both stop mattering — and a guard that
+can be deleted with no visible effect is a guard that is protecting you from
+nothing, which is a sign the entry point is wrong rather than that the guard is
+redundant. **Enter at the node, keep both guards.**
 
 ---
 

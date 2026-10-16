@@ -10,7 +10,7 @@ from helpers import build
 type Alias = int | str
 
 
-def generic_fn[T](value: T) -> T:
+async def generic_fn[T](value: T) -> T:
     """A generic function, 3.12 syntax.
 
     ID: 12121212-1111-1111-1111-111111111111
