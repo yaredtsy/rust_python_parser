@@ -135,9 +135,10 @@ experience/
 │     then find the input where it answers the wrong question.
 │                                       covers: tutorial/09+10, plan/03-call-tree/02
 │
-├── 10-lossless-edits/ ..................... writing files back
-│     Why the Ruff AST cannot round-trip, libcst, ID injection,
-│     idempotency, and the salsa write-ordering bug.
+├── 10-lossless-edits/ ..................... objects
+│     ID injection by INSERTING bytes: the def rule it shares with
+│     collection, the docstring slot, plan-then-apply, and why a
+│     writing pass cannot be a salsa query. Ten fixtures.
 │                                       covers: plan/02-mapping/02
 │
 └── 11-capstone/ ........................... put it together
@@ -154,7 +155,7 @@ experience/
 |---|---|---|---|
 | 00 | 2–3 h | 3–4 h | nine files, seven objects. the cold build runs while you read |
 | 01 | 1–2 h | 2 h | five files, four objects |
-| 02 | 3–4 h | 4–6 h | seven files, six objects. the biggest of the early ones |
+| 02 | 4–5 h | 5–7 h | eight files, six objects + the staged pipeline. the biggest |
 | 03 | 30 min | 2 h | |
 | 04 | 30 min | 1 h | short, high value |
 | 05 | 20 min | 1–2 h | |
@@ -162,7 +163,7 @@ experience/
 | 07 | 40 min | 3 h | ★ the conceptual centre |
 | 08 | 30 min | 2–3 h | |
 | 09 | 60 min | 2 h | mostly reading ty's source |
-| 10 | 30 min | 2–3 h | |
+| 10 | 2–3 h | 4–5 h | six files, four objects. it writes to the user's files |
 | 11 | 20 min | 4–6 h | assembly, not new ideas |
 
 Call it two focused weeks, or a month of evenings. **07 and 09 are the two that

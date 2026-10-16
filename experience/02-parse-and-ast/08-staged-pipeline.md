@@ -106,13 +106,13 @@ walking *expressions* to find calls; stage 1 is not walking expressions at all.
 
 Check the claim against the fixtures: `edges.py`'s `has_lambda` and
 `comprehensions`, `nested.py`'s `with_blocks` (a def inside an `if`, reached
-through `walk_stmt`'s `If` arm), and `calls.py`'s `default_args` (whose two
+through `walk_stmt`'s `If` arm), and `edges.py`'s `default_args` (whose two
 calls are in the signature — invisible here, and correctly so).
 
 ### `DefNode` — owned, because the parse does not outlive the query
 
 ```rust
-use ruff_text_size::{TextRange, TextSize};
+use ruff_text_size::TextRange;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefNode {
@@ -122,32 +122,11 @@ pub struct DefNode {
     pub kind: DefKind,
     /// `stmt.range()` — decorators included (object 3, `DECORATORS_IN_RANGE`).
     pub range: TextRange,
-    /// Where stage 2 writes. See "one insert per def" below.
-    pub doc: Option<DocSlot>,
     pub children: Vec<DefNode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefKind { Function, Class }
-
-/// Where stage 2 inserts, and what it inserts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DocSlot {
-    /// The offset the text goes at.
-    pub at: TextSize,
-    /// `body[0]`'s start: the indentation anchor, and the one-liner tell.
-    /// Equal to `at` when there is no docstring yet.
-    pub stmt_start: TextSize,
-    pub kind: SlotKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SlotKind {
-    /// A docstring exists: `at` is just before its closing quotes.
-    InLiteral { triple_quoted: bool },
-    /// None exists: a whole new docstring statement goes in at `at`.
-    NewStatement,
-}
 ```
 
 Three decisions in that struct, each with an alternative worth knowing:
@@ -161,9 +140,14 @@ Three decisions in that struct, each with an alternative worth knowing:
   boundary; strip at the RPC edge. A bonus: a request for
   `ClassSchema/<uuid>` that resolves to a `DefKind::Function` is then a
   *detectable* mismatch rather than a silent miss.
-- **`doc` is `Option<DocSlot>`** — `None` means "this def has no place to write
-  an ID", which happens on broken source (an empty body, an unclosed string).
-  Quirk 13 says swallow it, so model it instead of panicking.
+- **★ No docstring-slot fields.** An earlier version of this page carried the
+  insert offset, the quote style and the indentation anchor here, so stage 2
+  could read them off the cached outline. Do not: those fields make every cached
+  `DefNode` bigger *and* they join salsa's `old == new`, so reflowing a docstring
+  — which changes nothing about the outline — would invalidate the outline and
+  everything under it. Stage 2 derives them in its own pass, from the same
+  cached parse. [Exercise 10, object 4](../10-lossless-edits/04-object-purity.md)
+  §3 is the full argument.
 
 **Owned data, not `&'a Stmt`.** The query's return value outlives the
 `ParsedModuleRef` it was built from — salsa may even clear the AST
@@ -204,7 +188,6 @@ impl<'a> StatementVisitor<'a> for DefScanner {
             name: name.as_str().to_string(),
             kind,
             range: stmt.range(),
-            doc: doc_slot(body),
             children: inner.out,
         });
     }
@@ -237,42 +220,46 @@ it merges two lists.
 compiles — but a *signature* written as `fn f(body: &Vec<Stmt>)` will not. Take
 `&[Stmt]` everywhere, as object 6's helpers do.
 
-### `doc_slot` — the insert point, computed where the AST is still in hand
+### ★ The def-finding rule is extracted, because stage 2 needs the same one
+
+`DefScanner` above pushes a `DefNode` in the same `match` arm that finds the
+def. That is one rule in one place, which is fine until stage 2 needs it too —
+and stage 2 does, because it has to visit exactly the defs stage 1 reported.
+
+Two walks that answer "which defs exist" separately can disagree, and the
+failure is silent and permanent: a def collection sees and injection misses
+sits in the outline with `id: null` forever. So pull the walk out and let both
+passes call it:
 
 ```rust
-use ruff_python_ast::{ExprStringLiteral, StringFlags};
-use ty_python_core::definition::docstring_from_body;   // object 6, verified public
+pub fn child_defs<'a>(body: &'a [Stmt]) -> Vec<Def<'a>>;   // the ONE rule
+```
 
-fn doc_slot(body: &[Stmt]) -> Option<DocSlot> {
-    let stmt_start = body.first()?.start();   // broken source can give an empty body
-    match docstring_from_body(body) {
-        // Insert just before the closing quotes of the LAST part of the literal.
-        Some(doc) => {
-            let last = doc.value.as_slice().last()?;   // implicit concat: the last part closes it
-            let flags = last.flags;
-            if flags.is_unclosed() {
-                return None;                           // does not parse; write nothing
-            }
-            Some(DocSlot {
-                at: last.range().end() - flags.closer_len(),
-                stmt_start,
-                kind: SlotKind::InLiteral { triple_quoted: flags.is_triple_quoted() },
-            })
-        }
-        None => Some(DocSlot { at: stmt_start, stmt_start, kind: SlotKind::NewStatement }),
-    }
+Then stage 1 is a map over it, and stage 2 is a different map over it:
+
+```rust
+fn outline(body: &[Stmt]) -> Vec<DefNode> {
+    child_defs(body)
+        .into_iter()
+        .map(|d| DefNode {
+            id: id_from_body(d.body()),     // object 6
+            name: d.name(),
+            kind: d.kind(),
+            range: d.range(),
+            children: outline(d.body()),    // same rule, one level down
+        })
+        .collect()
 }
 ```
 
-Everything that function needs is on `StringFlags` (`nodes.rs:799`
-**[verified]**): `closer_len()` (`:847` — `quote_len()`, or zero when the string
-is unclosed), `is_triple_quoted()` (`:811`), `quote_str()`, `prefix()`.
-`StringLiteralValue::as_slice()` is `nodes.rs:1420`.
+`Def` is a two-variant enum (`Function`/`Class`) rather than an `AnyNodeRef`,
+which is what makes `d.body()` and `d.range()` total functions instead of
+matches with an `unreachable!()` arm — object 5 part 4's
+`node_for_definition` has that arm, and this is where it goes away.
 
-⚠ **An empty body is reachable.** `parse_body` returns `Suite::new()` after an
-error — `ruff_python_parser/src/parser/statement.rs:3117` **[verified]** — so
-`def f():` at end of file gives a def with *no* statements. `body.first()?` is
-not defensive programming; it is the quirk-13 path.
+[Exercise 10, object 1](../10-lossless-edits/01-object-def.md) is the full
+chapter: the `Def` impl, the sixteen-def agreement fixture, and why the *reader*
+(`id_from_body`) has to be shared as well as the walk.
 
 ### The query
 
@@ -334,10 +321,13 @@ macro will not compile — and with `no_eq` it would compile and silently stop
 backdating.
 
 Be honest about how much backdating buys here: `DefNode` carries `range`, so any
-edit that shifts bytes inside a def changes the value. It fires for edits
-*outside* every def (a trailing comment, a changed import), and for a re-sync
-that did not actually change the file. The reliable win is the per-file cache —
-edit one file in a 200-file project and only that file is re-walked.
+edit that *shifts bytes* changes the value — and an edit near the top of a file
+shifts every def below it. It fires in two narrow cases: an edit **after the
+last def** (a trailing comment, a newline at EOF), and an edit that keeps every
+byte count identical (`x = 1` → `x = 2`). A changed import is **not** one of
+them: if the line's length changes, every def range below it moves and
+`old != new`. The reliable win is the per-file cache — edit one file in a
+200-file project and only that file is re-walked.
 
 **The dependency you must add.** `salsa` is a transitive dependency today; a
 `#[salsa::tracked]` of your own needs it as a direct one, and at the *same*
@@ -352,6 +342,18 @@ salsa = { version = "0.28.2", default-features = false, features = [
 Defaults would add `rayon` and `accumulator`; cargo's feature unification is
 additive, so they would switch on for ruff's copy too. Same version, same
 features, one build.
+
+⚠ **"Copy ruff's line" means read ruff's line, not this one.** The danger is two
+*different* salsa crates in one graph: their types are unrelated, so
+`#[salsa::tracked]` over ty's `Db` will not compile against them. At `ac201b8`
+ruff takes salsa from **crates.io** (`Cargo.toml:165`) and has **no `[patch]`
+section** **[verified]**, so a matching crates.io dependency unifies to one
+build. If a later rev pins salsa by git rev — or patches it — the version
+string stops being enough and you must point at the same source. And if you
+ever move this crate *into* the ruff workspace, `salsa = { workspace = true }`
+removes the question entirely; it is not available from outside it, which is
+where pylspt lives (`Cargo.toml`: ruff crates by git rev, no workspace
+inheritance).
 
 **This works across crates — verified, not assumed.** `ty_ide` defines
 `#[salsa::tracked] fn symbols_for_file(db: &dyn Db, file: ProgramFile<'_>) ->
@@ -393,207 +395,79 @@ traversal no longer carries any of it.
 
 ## Stage 2 — generate IDs, write them, rescan
 
+> **This stage has its own exercise.**
+> [`experience/10-lossless-edits`](../10-lossless-edits/README.md) is four
+> objects on it: the shared def rule, the docstring slot, the edits, and why it
+> cannot be a salsa query. What follows is the summary the pipeline needs.
+
 ### The docstring is the storage
 
 There is no ID table. `read_or_inject_file_id`, the injector and the call tree
 all agree on one source of truth: the `ID:` line in the def's own docstring.
-Writing the ID into the source **is** the save, and
-`plan/00-orientation/01` §"Side effects" says `parse_file` is expected to
-rewrite the file when one is missing.
+Writing the ID into the source **is** the save, and `plan/00-orientation/01`
+§"Side effects" says `parse_file` is expected to rewrite the file when a key is
+missing.
 
-So stage 2 is: for every `DefNode` with `id == None`, mint a UUID, build the
-text, insert it at `doc`.
+### It is a separate pass, and it must share one thing with stage 1
 
-### One insert per def, two shapes
+Injection cannot live inside `definitions`: it writes files and it mints
+**random** UUIDs, so salsa's `old == new` is never true and the same def could
+be handed two IDs on two reads. And a query can be **cancelled mid-flight** by
+another thread taking `&mut db` — survivable for a pure query, not for a half-
+written file.
 
-Both shapes are **pure insertions** — one offset, one string, no byte outside
-the insert touched.
+What it must share is **"which defs exist"**. Give the two passes separate walks
+and they can disagree: a def collection sees and injection does not gets
+`id: null` forever, never becomes a graph node, and reports nothing. So the walk
+is extracted into one function both call —
+[`child_defs`](../10-lossless-edits/01-object-def.md), with
+`python/shared_rule.py`'s sixteen defs as the agreement test. The reader
+(`id_from_body`) is the other half of that rule, and is shared too.
 
-```rust
-// The indentation to write at, and whether `body[0]` even starts its own line.
-let indent = line_prefix(source, slot.stmt_start);
-
-let text = match (slot.kind, indent) {
-    // 1. a docstring exists: extend it in place
-    (SlotKind::InLiteral { triple_quoted: true }, Some(ind)) =>
-        format!("\n\n{ind}ID: {uuid}\n{ind}"),
-    (SlotKind::InLiteral { triple_quoted: false }, _) =>
-        format!(" ID: {uuid}"),                 // one line: a newline would not parse
-    (SlotKind::InLiteral { triple_quoted: true }, None) =>
-        format!(" ID: {uuid}"),                 // `def f(): """doc"""` — stay on the line
-
-    // 2. no docstring: a whole new statement before body[0]
-    (SlotKind::NewStatement, Some(ind)) =>
-        format!("\"\"\"ID: {uuid}\"\"\"\n{ind}"),
-    (SlotKind::NewStatement, None) =>
-        format!("\n{one_in}\"\"\"ID: {uuid}\"\"\"\n{one_in}"),   // the one-liner
-};
-```
+### Plan, then apply, bottom-up
 
 ```rust
-/// The whitespace between `at`'s line start and `at` — the indentation to reuse
-/// **verbatim**, tabs and all. `None` when `at` is not the first thing on its
-/// line, which is the `def f(): body` one-liner and the only case that has to
-/// synthesise an indent (`one_in` above: the def's own indent, plus one unit).
-fn line_prefix(source: &str, at: TextSize) -> Option<&str> {
-    let at = at.to_usize();
-    let line_start = source[..at].rfind('\n').map_or(0, |nl| nl + 1);
-    let prefix = &source[line_start..at];
-    prefix.bytes().all(|b| b == b' ' || b == b'\t').then_some(prefix)
-}
+let edits = plan_ids(&module.syntax().body, &source, &mut || Uuid::new_v4().to_string());
+let new_source = apply(&source, edits);     // descending offsets, or a builder
 ```
 
-### ★ Why inserting before the closing quote is always safe
+`Edit { offset, text }` is **owned**, which is what lets it outlive the AST
+borrow — and the write needs that, because `File::sync` takes `&mut db`. Each
+def contributes exactly one insert, located just before its docstring's closing
+quotes or before `body[0]` when there is no docstring. Inserting before a closer
+can never corrupt an escape, because Python forbids a literal from ending in an
+odd number of backslashes. Descending offsets keep every un-used offset valid,
+and put children before parents for free.
+[Objects 2 and 3](../10-lossless-edits/02-object-slot.md) have the eleven
+shapes, the one-liner case, and the measured tables.
 
-The obvious worry is escapes: insert after a trailing `\` and you change what
-the string means. **That input cannot exist.** Python forbids a literal from
-ending in an odd number of backslashes — the backslash would escape the closing
-quote. Measured on CPython 3.12.2:
+### The four-step order, and the borrow that enforces it
 
-| source | `__doc__` before | after inserting before the closer |
-|---|---|---|
-| `"""abc\\"""` (escaped backslash) | `'abc\\'` | `'abc\\ ID: u1'` ✓ |
-| `r"""abc\"""` (raw, trailing `\`) | **SyntaxError: unterminated** | input is impossible |
-| `"abc"` (single-quoted docstring) | `'abc'` | `'abc ID: u1'` ✓ |
-| `"ab" "cd"` (implicit concat) | `'abcd'` | `'abcd ID: u1'` ✓ |
-
-The single-quoted row is why `SlotKind` carries `triple_quoted`: a newline
-inside a single-quoted string is a syntax error, so that shape appends on the
-same line. `_extract_metadata`'s `(\S+)\s*:\s*(\S+)` reads `ID: u1` from the
-middle of a line perfectly well (object 6), so nothing downstream notices.
-`docstrings.py:single_quotes` is the fixture.
-
-The implicit-concat row is why `in_literal` takes `value.as_slice().last()` and
-not the first part: the last part is the one holding the closing quote.
-`docstrings.py:implicit_concat` is the fixture, and note it splits its two parts
-across a line continuation — the AST does not care, and neither does the insert,
-because the offset comes from the last part's own range.
-
-### ⚠ When `line_prefix` returns `None` — the one-liner
-
-`edges.py:one_liner` is the fixture (`def one_liner(): build()`), and it is the
-only case where the insert has to add a line break:
-
-```python
-def one_liner(): return build()
+```
+1. parse (cached)   2. plan_ids   3. apply → write → File::sync(&mut db)   4. definitions(file)
 ```
 
-`body[0]` starts on the *same line* as `def`, so inserting a docstring statement
-before it without a newline produces `def f(): """ID: u1"""` followed by an
-orphaned indented line. Insert `\n{indent}` first and it parses, with the
-original statement riding along behind the docstring:
+Step 4 is why a pre-write range never reaches the graph: the outline is always
+computed from the post-write text. And it is not a convention —
+`definitions` is `returns(ref)` so its result borrows the db, while
+`File::sync` takes `&mut dyn Db` (`ruff_db/src/files.rs:478` **[verified]**), so
+**holding an outline across the write does not compile**. The loophole to avoid
+is cloning it first: that compiles, and the clone's ranges are stale.
 
-```python
-def one_liner(): 
-    """ID: u1"""
-    return build()
-```
+Skip the sync and every later query serves the pre-injection source: IDs stay
+`None`, injection looks like a no-op, and the file on disk is visibly correct.
+Batch the writes and sync once — `&mut db` cancels in-flight queries.
 
-Measured: `__doc__ == 'ID: u1'`, and the function still returns. A semicolon
-body (`def g(): a = 1; return a`) works the same way — the whole compound line
-moves down as one. The trailing space after the colon is cosmetic; a formatter
-removes it on the next commit.
+### ⚠ This diverges from `plan/02-mapping/02`
 
-Both questions — "is this a one-liner?" and "what indentation do I write?" —
-are the same lookup, which is why `line_prefix` answers them together:
+That chapter designs injection around the `libcst` crate and says to *reproduce*
+two pre-existing bugs (a dropped `r` prefix, a broken rebuild when the docstring
+contains `"""`). Insertion fixes both by never rebuilding the literal, which is
+the right call for output that is **the user's source file** — and it means those
+two inputs are no longer byte-comparable against the Python driver.
+[Exercise 10, object 5](../10-lossless-edits/05-putting-it-together.md) has the
+comparison table and the two fixtures that mark the gap.
 
-- **`Some(prefix)`** — `body[0]` begins its line, and `prefix` is the exact
-  bytes to reuse. Reusing them **verbatim** preserves tabs, spaces and width
-  with no style detection at all.
-- **`None`** — something precedes `body[0]` on its line, so this is the
-  one-liner, and the insert must open a new line. This is the only case that has
-  to *synthesise* an indent (the def's own indent plus one unit), and the single
-  place `ruff_python_codegen::Stylist` would earn a new dependency.
-
-Deriving both in stage 2 rather than storing them in `DocSlot` keeps stage 1
-source-free: `doc_slot(body)` needs the AST and nothing else.
-
-### ★ Bottom-up, by descending offset
-
-An insert shifts every byte after it. Two rules, and the second follows from the
-first:
-
-**Within one file, apply inserts in descending offset order.** Each insert only
-moves text *below* itself, so every offset you have not used yet is still valid.
-No offset arithmetic, no fixups.
-
-That order also puts **children before parents**, for free: a def's docstring
-slot is at the top of its body, which is strictly before any nested def inside
-it. A parent's insert shifts text its children's inserts already wrote — which
-is fine, because those are bytes now, not ranges.
-
-**Build the whole new file in memory, write once.** One `String`, one
-`fs::write`, one `File::sync`. Writing per-def means N syncs, N revision bumps,
-and N re-parses of a file you are still editing.
-
-### The borrow checker enforces the rescan
-
-> **Never carry a pre-write range into stage 3.** After the write, update the
-> file in the db and call `definitions(db, file)` again.
-
-In Rust you do not have to remember this, because the types collide:
-
-```rust
-let defs = definitions(db, file);     // &Vec<DefNode> — borrows db immutably
-let new_source = apply_inserts(&source, defs);
-std::fs::write(path.as_std_path(), &new_source)?;
-file.sync(&mut db);                   // ← needs &mut: the shared borrow must be dead
-let defs = definitions(&db, file);    // fresh ranges, recomputed by salsa
-```
-
-`File::sync(self, db: &mut dyn Db)` (`ruff_db/src/files.rs:478` **[verified]**)
-takes `&mut`, and `returns(ref)` ties `defs` to the shared borrow. Hold the old
-`defs` across the write and it does not compile.
-
-The loophole to *not* take: cloning the defs out first. That compiles, and the
-clone's ranges are stale. If you need the names across the write, clone the
-names — never the ranges.
-
-`plan/02-mapping/02` §"The salsa write ordering" has the other half: skip the
-sync and every later query serves the pre-injection source, so IDs stay `None`
-forever and nothing looks broken. Because `&mut db` cancels in-flight queries,
-batch the whole request's writes before syncing once.
-
-### ⚠ DECISION — insertion fixes three bugs `plan/02-mapping/02` says to preserve
-
-That page's design is libcst: parse to a CST, insert a docstring node, codegen
-the module back. It argues against "hand-rolled text edits" — and a pure
-insertion *is* a hand-rolled text edit. The comparison is no longer the one that
-page makes, though, because inserting at an offset is not a general edit:
-
-| | libcst codegen | insert at an offset |
-|---|---|---|
-| bytes outside the docstring | re-emitted (preserved, but re-emitted) | **provably untouched** |
-| `r"""…"""` prefix | `id_injector.py:70` emits `f'"""{content}"""'` — **drops the `r`**, changing the string's meaning | preserved; the prefix is never read |
-| `"""` inside the content | rebuilt literal is **broken** | impossible; nothing is rebuilt |
-| quote style, indent, line endings | from `Stylist`, or you mismatch the file | inherited from the bytes you did not touch |
-| new dependency | `libcst` 1.8.4 (+ maybe `ruff_python_codegen`) | none, except `uuid` |
-| byte-parity with the Python driver | reproduces both bugs | **diverges on exactly those inputs** |
-
-The last two rows are the trade. `plan/02-mapping/02` says "reproduce them, do
-not fix them" about the prefix loss and the broken-`"""` rebuild — a defensible
-rule for *output* parity, and the wrong rule here, because this output is the
-user's source file and the Python's version of it is lossy. Reproducing a bug
-that corrupts `r"""..."""` is not parity, it is damage.
-
-**Recommended:** take the insertion, and record the divergence where the parity
-gate can see it — `plan/04-build/02-milestones.md`'s byte-identical test cannot
-cover a def with an `r` prefix or a `"""` in its docstring, because the two
-implementations disagree *by design*.
-
-Give the divergence fixtures rather than a footnote. `docstrings.py:raw` is not
-one: it already carries an `ID:`, so injection never touches it. You need the
-*no-ID* variants — a `raw_no_id` with `r"""…"""` and no key, and a
-`triple_in_content` whose docstring contains `\"\"\"`. Both are inputs the Python
-driver damages and yours does not.
-
-Still owed either way, and unchanged by this choice: `_build_docstring`'s
-key-replacement scan (for a def that has *some* metadata but no `ID:`), the
-`FileID:` / `FolderID:` module-level variants, `__init__.py` creation, and
-idempotence — run twice, the second run writes nothing and reports
-`modified: false`.
-
----
 
 ## Stage 3 — resolve calls by walking them, not collecting them
 
@@ -627,7 +501,7 @@ Every rule the scanner expressed as a traversal signal is a rule about what
 | the body is walked later, by a fresh visitor | the body is evaluated when something **calls** that value — in a child frame, with a child env |
 | `ExprLambda => Skip` | a `lambda` evaluates to a closure. Its body runs when the closure is called, in the closure's env |
 | empty `visit_decorator` (parso's enclosing-scope rule) | a decorator expression is evaluated in the **enclosing** env, at the `def` statement — which is where it lexically is |
-| default args belong to the function | a default expression is evaluated in the enclosing env too, once, when the `def` runs |
+| default args belong to the function | a default expression is evaluated in the **enclosing** env, once, when the `def` runs — so its calls land in the enclosing scope, **not** in the function. ⚠ This is a divergence from parso, which nests defaults inside the funcdef |
 | nested class terminates the scan | a `class` statement evaluates its body in a new class scope, then binds the class value |
 
 Two of those rows are *more* correct than the scanner's version, because
@@ -747,6 +621,11 @@ against `ScopeScanner`'s, filtering the latter to non-call nodes. They must
 match exactly — same names, same nesting, same ranges. Any difference is a bug
 in one of them; say which.
 
+> Non-call is the only filter you need: `ScopeScanner` never emits a lambda
+> node. Quirk 8 `Skip`s `ExprLambda` **and records nothing**, so there is no
+> `<lambda>` row to exclude (`src/scan.rs`, object 5 part 2). If you ever make
+> lambdas visible for some other reason, this check needs a second filter.
+
 **B.** Add `walk_stmt(self, stmt)` to the def arm, on purpose. Predict what
 `nested.py` does before you run it, then run it.
 
@@ -767,22 +646,25 @@ sync, and check whether `definitions`'s value compares equal. Then add a comment
 *inside* a function body and check again. Explain the difference in one
 sentence.
 
-**G.** Write stage 2 for `docstrings.py`, which has twelve docstring forms and no
-IDs on several of them. Apply the inserts bottom-up, write to a copy, and diff.
-Every def must gain exactly one `ID:` line, and `python3 -c "import docstrings"`
-must still work.
+**G.** Extract `child_defs` and make *both* `definitions` and `plan_ids` call it.
+Then diff the two def lists on every fixture in this exercise and in
+`../10-lossless-edits/python/`. They must be identical; a difference is the
+silent-`id: null` bug waiting to happen.
 
-**H.** Run stage 2 twice. The second run must write nothing. If it writes, your
-`id_from_body` cannot read what your inserter wrote — which is object 6's
+**H.** Try to hold `definitions`' result across `file.sync(&mut db)`. Paste the
+borrow-checker error into your notes; it is the clearest statement of the
+stale-range rule you will get. Then defeat it with `.clone()` and print the
+cloned ranges against the fresh ones.
+
+**I.** Run stage 2 over `docstrings.py` — twelve docstring forms, several
+without keys — then run it again. The second run must write nothing. If it
+writes, your reader cannot read what your writer wrote, which is object 6's
 "inject an ID it cannot read back" failure.
 
-**I.** Try to hold `definitions`' result across `file.sync(&mut db)`. Paste the
-borrow-checker error into your notes; it is the clearest statement of the
-stale-range rule you will get.
-
-**J.** Apply the inserts **ascending** instead. On a file with two defs, measure
-how far off the second insert lands, and relate the number to the length of the
-first inserted string.
+> **J.** The rest of stage 2 — every insert shape, the one-liner, the ordering,
+> the guards — is [exercise 10](../10-lossless-edits/README.md), which has ten
+> fixtures and four objects' worth of exercises for it. Do those there rather
+> than here.
 
 **K.** Build `id_index` over the fixture directory. Then copy a function —
 docstring and all — into a second file, rebuild, and confirm the ID has two
@@ -791,6 +673,10 @@ entries.
 ---
 
 ## Exam
+
+Questions 9–11 and 16 are stage-2 questions; [exercise
+10](../10-lossless-edits/exam.md) asks them again with ten fixtures behind
+them. Answer them here from the pipeline's point of view.
 
 **1.** Why does the pipeline not need a list of calls from the first traversal?
 Give the reason that is about the *interpreter*, not about efficiency.
@@ -926,9 +812,16 @@ tracked, cross-file merge plain.
 **15.** A `lambda` evaluates to a closure whose body runs only when the closure
 is called. A decorator expression is evaluated in the **enclosing** environment
 at the `def` statement — which lands its calls in the enclosing scope, parso's
-answer, with no special case. A default expression is likewise evaluated in the
-enclosing environment when the `def` runs, but it is part of the function's own
-signature, so the call is attributed to the function.
+answer, with no special case. A default expression is evaluated the same way and
+in the same place, so **its calls land in the enclosing scope too**.
+
+That last one is a change of answer, not a restatement: the AST scanner
+attributes a default-arg call to the function whose signature it is in (object 5
+part 2, matching parso), and the interpreter cannot, because the only frame in
+existence when the `def` statement runs is the enclosing one. Defaults and
+decorators end up in the same place for the same reason — both are evaluated
+*at* the `def`, not inside it. Record it as a parity divergence alongside the
+decorator one.
 
 **16.** A docstring with an `r` prefix, and a docstring containing `"""`. The
 Python is wrong on both — it re-emits `f'"""{content}"""'`, dropping the prefix

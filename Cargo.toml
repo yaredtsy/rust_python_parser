@@ -27,6 +27,17 @@ ty_project = { git = "https://github.com/astral-sh/ruff", rev = "ac201b8" }
 ty_python_core = { git = "https://github.com/astral-sh/ruff", rev = "ac201b8" }
 ty_python_semantic = { git = "https://github.com/astral-sh/ruff", rev = "ac201b8" }
 
+# salsa itself is already transitive through the ty_* crates above; a
+# `#[salsa::tracked]` of our own needs it as a DIRECT dependency, at the same
+# version/features ruff pins — copied verbatim from ruff's own Cargo.toml at
+# ac201b8, not retyped, so cargo's feature unification keeps it one build.
+salsa = { version = "0.28.2", default-features = false, features = [
+    "compact_str",
+    "macros",
+    "salsa_unstable",
+    "inventory",
+] }
+
 # --- yours ---
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

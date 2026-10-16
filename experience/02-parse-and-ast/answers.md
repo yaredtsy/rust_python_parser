@@ -233,7 +233,9 @@ runs only when the closure is called. The decorator override becomes: a
 decorator expression is evaluated in the **enclosing** environment at the `def`
 statement — which lands its calls in the enclosing scope, parso's answer, with
 no special case and nothing dropped (this closes object 5 part 4's one
-data-losing gap). Default arguments need no rule at all, again: they are
-evaluated in the enclosing environment when the `def` runs, but they are part of
-the function's own signature, so the call is attributed to the function — the
-same answer the AST gave, for the same reason.
+data-losing gap). Default arguments get the **same** rule, and a different
+answer than the AST gave: a default expression is evaluated in the enclosing
+environment when the `def` statement runs, so its calls land in the enclosing
+scope too — there is no frame for the function yet. The AST scanner attributes
+them to the function (object 5 part 2, matching parso); the interpreter cannot,
+and that is a parity divergence to record next to the decorator one.

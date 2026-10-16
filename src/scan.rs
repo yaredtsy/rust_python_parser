@@ -23,7 +23,7 @@ impl<'src> Ctx<'src> {
         Self { code: SourceCode::new(source, index) }
     }
 
-    fn position(&self, range: TextRange) -> Position {
+    pub(crate) fn position(&self, range: TextRange) -> Position {
         to_position_with(&self.code, range)
     }
 
@@ -200,7 +200,11 @@ fn skip_trivia(text: &str, from: TextSize) -> TextSize {
 }
 
 /// The `ID:` value from the scope's docstring, if any (object 6).
-fn id_from_body(body: &[Stmt]) -> Option<String> {
+///
+/// `pub(crate)`: `defs::DefScanner` (object 8) reads the same docstring the
+/// same way, on purpose — one reader shared by both walkers, so they cannot
+/// disagree about which defs have an `ID:` and which do not.
+pub(crate) fn id_from_body(body: &[Stmt]) -> Option<String> {
     let doc = docstring(body)?;
     extract_metadata(doc).get("ID").map(|s| s.to_string())
 }
