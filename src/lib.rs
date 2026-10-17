@@ -1,3 +1,4 @@
+pub mod attrs;
 pub mod db;
 pub mod defs;
 pub mod edit;

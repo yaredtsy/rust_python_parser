@@ -1,5 +1,9 @@
-//! `mro <dir> <file>` — print every class's qualified name and `base_classes`
-//! (C3-linearised), plus the direct bases ty's public API actually returns.
+//! `mro <dir> <file>` — the exercise 08 driver: for every class in the file,
+//! print the `Type` variant it comes back as, the direct bases
+//! (`type_hierarchy_supertypes`, one level, DAG) next to the linearised
+//! `base_classes` (`vnoc::class_mro`, via `pylspt::mro`), and for
+//! `attributes.py`-shaped files, the two attribute-resolution tools side by
+//! side.
 //!
 //! See `experience/08-classes-and-mro/README.md`.
 
@@ -11,6 +15,7 @@ use ruff_db::system::SystemPath;
 use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_body};
 use ruff_python_ast::{AnyNodeRef, StmtClassDef};
 use ty_python_semantic::types::ProgramEnvironment;
+use ty_python_semantic::types::ide_support::type_hierarchy_supertypes;
 use ty_python_semantic::{HasDefinition, HasType, SemanticModel};
 
 /// Every `StmtClassDef` in the module, nested ones included — unlike
@@ -61,8 +66,24 @@ fn main() -> anyhow::Result<()> {
             continue;
         };
 
-        let bases = base_classes(&db, &env, ty);
-        println!("{qname}: {bases:?}");
+        // Step 1: which `Type` variant did we actually get?
+        let variant = match ty {
+            ty_python_semantic::types::Type::ClassLiteral(_) => "ClassLiteral",
+            ty_python_semantic::types::Type::GenericAlias(_) => "GenericAlias",
+            _ => "<other>",
+        };
+
+        // Step 2: the direct bases (one level, DAG) next to the
+        // linearisation ty's MRO actually computed from them.
+        let direct: Vec<String> = type_hierarchy_supertypes(&db, &env, ty)
+            .iter()
+            .map(|base| base.name.to_string())
+            .collect();
+        let linearised = base_classes(&db, ty);
+
+        println!("{qname} [{variant}]");
+        println!("  direct bases (DAG):   {direct:?}");
+        println!("  base_classes (C3):    {linearised:?}");
     }
 
     Ok(())

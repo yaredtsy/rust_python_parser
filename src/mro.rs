@@ -1,110 +1,146 @@
-//! `base_classes`: direct bases via the public `type_hierarchy_supertypes`,
-//! linearised with C3 to match Jedi's `py__mro__()`.
+//! `base_classes`: ty's own C3-linearised MRO, via the `vnoc` fork wrapper —
+//! see `experience/08-classes-and-mro/README.md`.
 //!
-//! See `experience/08-classes-and-mro/README.md`. The private MRO the plan
-//! assumed (`ClassLiteral::iter_mro`) does not compile under Option B — this
-//! is the public-API replacement, and the DAG-vs-C3 gap it leaves behind.
-
+//! This used to hand-roll C3 over the public, one-level-only
+//! `type_hierarchy_supertypes`, with a `covering_node` round trip to get back
+//! from that API's `(name, file, range)` to a `Definition`. Both are gone:
+//! `vnoc::class_mro` already returns the linearisation, as `Definition`s
+//! directly, so there is nothing left to merge or to re-locate.
+//!
+//! DECISION — the `None` slot (next to `DECORATORS_IN_RANGE`, object 3): ty's
+//! MRO holds bases it cannot tie to a `Definition` — `Any`, `Unknown`,
+//! `Protocol`, `Generic` — and `vnoc::class_mro` reports those positions as
+//! `None` rather than dropping them, so a later base is never shifted into
+//! the wrong slot. `hierarchy.py`'s `Runner(Protocol)` and `Box(Generic[T])`
+//! both produce one. Jedi reports a real name there (`typing.Protocol`,
+//! `typing.Generic`) because it infers the base expression directly; ty's
+//! `ClassBase` enum does carry that distinction (`Protocol`, `Generic`,
+//! `Dynamic`, …) but `class_mro`'s signature deliberately erases it to stay a
+//! wrapper with no logic (object 8's rule 2) — recovering the Jedi string
+//! would mean matching `ClassBase` in the fork, a `pub(crate)` type `pylspt`
+//! cannot even name. So this module renders a `None` slot as the literal
+//! placeholder below: a known deliberate loss (same shape as `IntBox` ->
+//! `Box`, stripping the specialisation) rather than a match to Jedi's exact
+//! string. Revisit only if a consumer indexes `base_classes` by content
+//! rather than by position.
 use ruff_db::parsed::parsed_module;
-use ruff_python_ast::AnyNodeRef;
-use ruff_python_ast::find_node::covering_node;
-use ty_python_core::semantic_index;
-use ty_python_semantic::types::ProgramEnvironment;
+use ty_python_core::definition::Definition;
+use ty_python_semantic::Db;
 use ty_python_semantic::types::Type;
-use ty_python_semantic::types::ide_support::{TypeHierarchyClass, type_hierarchy_supertypes};
-use ty_python_semantic::{Db, HasType, SemanticModel};
+use ty_python_semantic::types::vnoc;
 
 use crate::qname::qualified_name;
 
-/// `base_classes` for a class, in C3 order, with `builtins.object` last — the
-/// class itself is not included (matching the `BaseNode` wire shape:
-/// `"base_classes": ["pkg.mod.Base", "builtins.object"]`).
-pub fn base_classes<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Vec<String> {
-    let bases = direct_bases(db, env, ty);
+/// A base ty's MRO places but cannot tie to a definition — `Any`, `Unknown`,
+/// `Protocol`, `Generic`. See the module doc's DECISION.
+pub const UNRESOLVED_BASE: &str = "<unresolved-base>";
 
-    // C3: `L[C] = C + merge(L[B1], …, L[Bn], [B1, …, Bn])`. This computes the
-    // merge (everything but the leading `C`), so callers get just the bases.
-    let mut sequences: Vec<Vec<String>> = bases
-        .iter()
-        .map(|(qname, base_ty)| {
-            let mut linearisation = base_classes(db, env, *base_ty);
-            linearisation.insert(0, qname.clone());
-            linearisation
-        })
-        .collect();
-    sequences.push(bases.into_iter().map(|(qname, _)| qname).collect());
-
-    c3_merge(sequences)
-}
-
-/// One level of bases, each resolved back to a `(qualified_name, Type)` pair
-/// so the caller can recurse into it.
-fn direct_bases<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Vec<(String, Type<'db>)> {
-    type_hierarchy_supertypes(db, env, ty)
-        .iter()
-        .filter_map(|base| resolve(db, base))
+/// `base_classes` for a class, in ty's C3 order, class itself excluded —
+/// matching the `BaseNode` wire shape: `["pkg.mod.Base", "builtins.object"]`.
+pub fn base_classes<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<String> {
+    vnoc::class_mro(db, ty)
+        .into_iter()
+        .map(|definition| definition.and_then(|d| qname_of(db, d)).unwrap_or_else(|| UNRESOLVED_BASE.to_string()))
         .collect()
 }
 
-/// `type_hierarchy_supertypes` hands back a `(name, file, range)` — not a
-/// `Type` — because it is a tree-view IDE API, not an inference one. To
-/// recurse (or to name the base precisely, nested classes included) we have
-/// to go back through the AST: find the `StmtClassDef` the range covers, then
-/// use the SAME `HasDefinition`/`HasType` path exercise 06 and the class's own
-/// definition use, rather than any private accessor on `ClassLiteral`.
-fn resolve<'db>(db: &'db dyn Db, base: &TypeHierarchyClass<'db>) -> Option<(String, Type<'db>)> {
-    let file = base.file.file(db);
-    let program_file = db.program_file(file);
-    let parsed = parsed_module(db, program_file.python_file(db)).load(db);
-
-    // `selection_range` is the class NAME's range — a leaf, so `covering_node`
-    // always lands exactly on it, unambiguously. `full_range` is only the
-    // HEADER (`ClassLiteral::header_range`, ide_support.rs), which is not any
-    // single AST node's own range, so looking for `StmtClassDef` AT that node
-    // (rather than walking up from it) silently misses every time.
-    let root = AnyNodeRef::from(parsed.syntax());
-    let class_def = covering_node(root, base.selection_range)
-        .ancestors()
-        .find_map(|node| match node {
-            AnyNodeRef::StmtClassDef(class_def) => Some(class_def),
-            _ => None,
-        })?;
-
-    let index = semantic_index(db, program_file);
-    let definition = *index.definitions(class_def).first()?;
-    let qname = qualified_name(db, definition, &parsed)?;
-
-    let model = SemanticModel::new(db, program_file);
-    let ty = class_def.inferred_type(&model)?;
-    Some((qname, ty))
+/// A `Definition` can live in a different file than the class being asked
+/// about (a base imported from another module), so the `ParsedModuleRef`
+/// `qualified_name` needs has to come from the definition's OWN file, not
+/// the caller's.
+fn qname_of<'db>(db: &'db dyn Db, definition: Definition<'db>) -> Option<String> {
+    let parsed = parsed_module(db, definition.python_file(db)).load(db);
+    qualified_name(db, definition, &parsed)
 }
 
-/// Python's own C3 algorithm: repeatedly take the first head that appears in
-/// no other list's tail, consuming it from every list it leads.
-///
-/// Degrades to "take the first remaining head anyway" on an inconsistent
-/// hierarchy rather than erroring — the driver must not die on pathological
-/// input (quirk 13), and an MRO conflict is exactly that.
-fn c3_merge(mut sequences: Vec<Vec<String>>) -> Vec<String> {
-    let mut result = Vec::new();
-    loop {
-        sequences.retain(|s| !s.is_empty());
-        if sequences.is_empty() {
-            return result;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{open, open_project};
+    use ruff_db::system::SystemPath;
+    use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_body};
+    use ruff_python_ast::{AnyNodeRef, StmtClassDef};
+    use ty_python_semantic::{HasType, SemanticModel};
 
-        let head = sequences
-            .iter()
-            .map(|s| &s[0])
-            .find(|candidate| sequences.iter().all(|s| !s[1..].contains(candidate)))
-            .cloned()
-            .unwrap_or_else(|| sequences[0][0].clone());
+    struct ClassCollector<'a> {
+        classes: Vec<&'a StmtClassDef>,
+    }
 
-        for s in &mut sequences {
-            if s.first() == Some(&head) {
-                s.remove(0);
+    impl<'a> SourceOrderVisitor<'a> for ClassCollector<'a> {
+        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            if let AnyNodeRef::StmtClassDef(class_def) = node {
+                self.classes.push(class_def);
             }
+            TraversalSignal::Traverse
         }
-        result.push(head);
+    }
+
+    /// `base_classes` for every top-level class in `hierarchy.py`, by name.
+    fn hierarchy_base_classes() -> std::collections::HashMap<String, Vec<String>> {
+        let dir = std::fs::canonicalize("experience/08-classes-and-mro").unwrap();
+        let dir = SystemPath::from_std_path(&dir).unwrap();
+        let db = open_project(dir).unwrap();
+
+        let file_path =
+            std::fs::canonicalize("experience/08-classes-and-mro/python/hierarchy.py").unwrap();
+        let file_path = SystemPath::from_std_path(&file_path).unwrap();
+        let (_file, program_file) = open(&db, file_path).unwrap();
+        let parsed = parsed_module(&db, program_file.python_file(&db)).load(&db);
+
+        let mut collector = ClassCollector { classes: Vec::new() };
+        walk_body(&mut collector, &parsed.syntax().body);
+
+        let model = SemanticModel::new(&db, program_file);
+        collector
+            .classes
+            .into_iter()
+            .filter_map(|class_def| {
+                let ty = class_def.inferred_type(&model)?;
+                Some((class_def.name.to_string(), base_classes(&db, ty)))
+            })
+            .collect()
+    }
+
+    /// Exercise 08, step 4's headline case: ty's own C3, not a DAG walk —
+    /// `Diamond, Left, Right, Base, object`, not `Diamond, Left, Base, Right,
+    /// Base, object`. This is `vnoc::class_mro`'s behaviour, observed through
+    /// `base_classes`.
+    #[test]
+    fn diamond_is_c3_linearised_not_depth_first() {
+        let bases = hierarchy_base_classes();
+        let diamond = &bases["Diamond"];
+
+        assert_eq!(diamond.len(), 4, "{diamond:?}");
+        assert!(diamond[0].ends_with(".Left"), "{diamond:?}");
+        assert!(diamond[1].ends_with(".Right"), "{diamond:?}");
+        assert!(diamond[2].ends_with(".Base"), "{diamond:?}");
+        assert_eq!(diamond[3], "builtins.object");
+    }
+
+    /// `Protocol`/`Generic` bases carry no `Definition` — the `None` slot
+    /// this module's DECISION renders as `UNRESOLVED_BASE`, in position,
+    /// rather than dropping (which would shift a later base left by one).
+    /// Only the presence of the placeholder is asserted here, not the exact
+    /// surrounding sequence — see this module's DECISION doc for why the
+    /// exact rendering is a deliberately lossy choice, not a parity target.
+    #[test]
+    fn protocol_and_generic_bases_are_unresolved_placeholders() {
+        let bases = hierarchy_base_classes();
+
+        let runner = &bases["Runner"];
+        assert!(runner.contains(&UNRESOLVED_BASE.to_string()), "{runner:?}");
+
+        let box_ = &bases["Box"];
+        assert!(box_.contains(&UNRESOLVED_BASE.to_string()), "{box_:?}");
+    }
+
+    /// `object` has no base classes — `vnoc::class_mro`'s own MRO is just
+    /// `[object]`, and `.skip(1)` leaves nothing, matching
+    /// `type_hierarchy_supertypes`'s special case without duplicating its
+    /// logic.
+    #[test]
+    fn plain_class_ends_at_object() {
+        let bases = hierarchy_base_classes();
+        assert_eq!(bases["Plain"], vec!["builtins.object".to_string()]);
     }
 }

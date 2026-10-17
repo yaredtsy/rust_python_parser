@@ -28,36 +28,70 @@
 //! `pylspt` owns one test per wrapper (not here): the compiler catches a
 //! signature change on rebase, only a test catches a *behaviour* change.
 
-use crate::types::{ClassLiteral, Type};
-use crate::{Db, ProgramEnvironment};
+use super::{ClassBase, ProgramEnvironment, Type};
+use crate::Db;
+use ty_python_core::definition::Definition;
 
-/// The real C3-linearised MRO, `object` last — `ClassLiteral::iter_mro`
-/// (`class.rs:644`), `pub(crate)`. Not a class literal → empty, matching
-/// `type_hierarchy_supertypes`'s own quirk-13 posture (never panic on input
-/// that is not what you expected).
+/// The MRO of `ty`, without the class itself, as definitions.
+///
+/// `ClassLiteral::iter_mro` (`class.rs:644`) is `pub(crate)` and yields the
+/// class first (`MroIterator::next`, `mro.rs:691-699`) — `.skip(1)` drops it,
+/// matching Jedi's `py__mro__()[1:]` and the wire shape's `base_classes`.
+///
+/// Uses `to_class_type`, not `let Type::ClassLiteral(c) = ty`: `Type` has two
+/// class-ish variants, `ClassLiteral` and `GenericAlias` (`Box[int]`), and
+/// matching only the first silently returns an empty MRO for every
+/// specialised generic.
+///
+/// `None` holds a base's *position* when ty cannot tie it to a `Definition`
+/// (`Any`, `Unknown`, `Protocol`, `Generic`) rather than dropping it — a
+/// dropped slot would shift every base after it. What a `None` slot should
+/// render as in `base_classes` is `pylspt::mro`'s decision, not this one's.
 ///
 /// Supersedes `pylspt::mro::base_classes`'s hand-rolled C3 over the public,
 /// one-level-only `type_hierarchy_supertypes` IDE API — that function
 /// existed only because this one was unreachable without the fork.
-pub fn class_mro<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<Type<'db>> {
-    let Type::ClassLiteral(literal) = ty else {
+pub fn class_mro<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<Option<Definition<'db>>> {
+    let Some(class) = ty.to_class_type(db) else {
         return Vec::new();
     };
-    literal.iter_mro(db).map(Type::from).collect()
+    class
+        .iter_mro(db)
+        .skip(1) // [0] is the class itself
+        .map(|base| match base {
+            ClassBase::Class(c) => c.class_literal(db).definition(db),
+            _ => None,
+        })
+        .collect()
 }
 
-/// Runtime attribute access on `ty` — `Type::member` (`types.rs:4929`),
-/// private. Goes through the descriptor protocol, properties and
-/// `__getattr__`/`__getattribute__`, unlike the public
+/// `getattr(<value of type ty>, name)`, as ty resolves it — descriptors,
+/// properties, metaclasses and `__getattr__` included. `Type::member`
+/// (`types.rs:4929`), private. Unlike the public
 /// `static_member`/`static_member_type_for_attribute` (`ide_support.rs`),
-/// which is IDE-oriented (hover/completion) and does not fully simulate
-/// what `getattr(<instance of ty>, name)` does at runtime. The interpreter
-/// (`pylspt`'s call tree, stage 3) needs the runtime answer: given *this*
-/// object's actual type on *this* path, what does `.save` resolve to.
+/// which infers the receiver from AST syntax, this takes the receiver `ty`
+/// as an argument — the interpreter (`pylspt`'s call tree, stage 3) picks
+/// *which* type that is, per call path; the wrapper only answers what is on
+/// it once chosen.
 ///
 /// `None` for "no such attribute" or "could not be determined" — callers
 /// should treat both the same way object 5's quirk 13 treats a bad parse:
 /// skip, do not panic.
 pub fn member<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>, name: &str) -> Option<Type<'db>> {
     ty.member(db, env, name).ignore_possibly_undefined()
+}
+
+/// Turn a class-ish `Type` (`ClassLiteral` or `GenericAlias`) into the type
+/// of ITS INSTANCES — `Type::instance` (`types/instance.rs:60`), private.
+///
+/// Added for `member`'s sake: choosing a receiver by hand (exercise 08 step
+/// 5 — "call the wrapper with `LoudHandler`'s type as the receiver") means
+/// starting from a class's `Type` (what `inferred_type` on a `StmtClassDef`
+/// gives you) and turning it into the instance `member` expects, since
+/// `.handle` is looked up on an *instance* of `LoudHandler`, not on the
+/// class object itself. Not a class literal → `None`, same posture as
+/// `class_mro`.
+pub fn instance_of<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Option<Type<'db>> {
+    let class = ty.to_class_type(db)?;
+    Some(Type::instance(db, env, class))
 }
