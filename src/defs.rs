@@ -120,9 +120,7 @@ mod tests {
         }
     }
 
-    /// Same shape as `flatten_defs`, over `ScopeScanner`'s tree — which, now
-    /// that call collection is retired (see `scan.rs`'s RETIRED note), is
-    /// defs only already, with nothing left to filter.
+    /// Same shape as `flatten_defs`, over `scan_module`'s wire-shape tree.
     fn flatten_nodes(nodes: &[Node], out: &mut Vec<Row>) {
         for n in nodes {
             let kind = match n.kind {
@@ -134,9 +132,9 @@ mod tests {
         }
     }
 
-    /// Exercise A (08-staged-pipeline.md): `DefScanner`'s defs must match
-    /// `ScopeScanner`'s non-call nodes exactly — same names, same nesting,
-    /// same ranges.
+    /// `scan_module` (`crate::scan`) is now a pure map over this module's
+    /// `scan_defs` — no second walk — so this checks that the map is
+    /// faithful: same names, same nesting, same ranges, on every fixture.
     fn assert_matches_scope_scanner(source: &str) {
         let options = ParseOptions::from(Mode::Module).with_target_version(PythonVersion::PY313);
         let parsed = parse_unchecked(source, options)

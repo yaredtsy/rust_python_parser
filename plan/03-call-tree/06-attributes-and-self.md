@@ -2,8 +2,9 @@
 
 You named this explicitly: *"it works for callback, attribute calls, stuff."*
 This is the attribute-call chapter. It is the second-hardest thing after
-argument binding, and the place where Option B
-([`01-crates/04`](../01-crates/04-public-vs-private-api.md)) hurts most.
+argument binding, and the component the fork shrinks most
+([`01-crates/04`](../01-crates/04-public-vs-private-api.md)): its lookup half
+becomes one wrapper call, and its identity half stays entirely yours.
 
 ---
 
@@ -210,23 +211,70 @@ to invest. If it produces nothing today, produce nothing.
 
 ---
 
-## What this costs under Option B (no `pub(crate)` access)
+## ★ Step 2 is now one wrapper call
 
-Step 2 needs "members of this class, walking the MRO". The public surface gives
-you `static_member_type_for_attribute(model, &ast::ExprAttribute)` — which takes
-an **AST node** and infers the receiver itself. You cannot supply your own.
+Step 2 needs "member `m` of **this** value, walking the MRO". That is
+`vnoc::member`, the second of the two wrappers in the fork
+([`01-crates/04`](../01-crates/04-public-vs-private-api.md)):
 
-Workarounds, all bad:
-- Walk the class body AST directly and match `def` names yourself. Loses
-  properties, descriptors, dataclass fields, `__slots__`, metaclass attributes,
-  and inherited C-level members.
-- Use `definitions_for_attribute` on the real AST node, then filter the returned
-  definitions by whether their enclosing class is in your value's MRO. **This
-  actually works reasonably well** and is the best Option-B strategy — you let
-  ty over-approximate, then narrow using your path knowledge.
+```rust
+// crates/ty_python_semantic/src/types/vnoc.rs
+/// `getattr(<value of type ty>, name)`, as ty resolves it.
+pub fn member<'db>(
+    db: &'db dyn Db,
+    env: &ProgramEnvironment<'db>,
+    ty: Type<'db>,
+    name: &str,
+) -> Option<Type<'db>> {
+    ty.member(db, env, name).ignore_possibly_undefined()
+}
+```
 
-The second one is worth knowing even under Option A: it is a good fallback for
-step 3.
+**[verified at `ac201b8`]** — `Type::member(self, db, env, name) ->
+PlaceAndQualifiers` is **private** to `crate::types` (`types.rs:4929`), and
+`PlaceAndQualifiers::ignore_possibly_undefined` is `pub(crate)`
+(`place.rs:923`). A child module of `types` reaches both; nothing outside the
+crate reaches either.
+
+You construct the `env` yourself: `ProgramEnvironment::from_file(program_file)`
+is `pub` (`types/context.rs:42`, re-exported at `types.rs:15` **[verified]**),
+and `program_file` is what `db.program_file(file)` already gives you.
+
+### What that deletes from this chapter
+
+The `member.rs` this chapter budgeted — MRO walk, instance vs class attributes,
+the descriptor protocol, properties, `__getattr__`, metaclasses — is a second
+copy of Python's attribute semantics, and it would disagree with ty precisely
+where ty is right. It is gone. `vnoc::member` is ty's own lookup, on a receiver
+**you** chose.
+
+### What it does **not** delete
+
+Everything above this section. The wrapper answers "what is `.handle` on a
+`LoudHandler`?"; it has no opinion about *which* receiver `self.handler` holds
+on this path. That is the attribute store, the `OriginId`, the per-object state
+and the frame — the parts only you can write, and the reason Option C survives
+the fork.
+
+So the division is exactly:
+
+| question | answered by |
+|---|---|
+| which object is `self.handler` on this path? | **your** attribute store, keyed on origin |
+| what is `.handle` on that object's type? | `vnoc::member` |
+| is that definition project code, and does it have an `ID:`? | **your** filters |
+
+### The fallback, still worth knowing
+
+If the fork ever becomes untenable, the best public-API strategy is:
+`definitions_for_attribute` on the real AST node, then filter the returned
+definitions by whether their enclosing class is in your value's MRO — let ty
+over-approximate, then narrow with your path knowledge. It is also a reasonable
+**cross-check** for step 3 while the wrapper is new: two routes, same answer.
+
+The other public option — walking the class body AST and matching `def` names
+yourself — loses properties, descriptors, dataclass fields, `__slots__`,
+metaclass attributes and inherited C-level members. Do not.
 
 ---
 

@@ -12,8 +12,10 @@ Tempting — it's already there, it's `Copy`, it has all the class machinery. Bu
 1. **`Type` is a set, not a value.** `Type::NominalInstance(JsonWriter)` means
    "some JsonWriter". You need "*this* JsonWriter, constructed at *that* call
    site" to keep two paths distinct.
-2. **`Type`'s operations are `pub(crate)`.** Even under Option A you'd be
-   fighting for access to `bindings`, `static_member`, `member_lookup_with_policy`.
+2. **`Type`'s operations are private.** The fork reaches them through
+   `types/vnoc.rs` wrappers (`01-crates/04`), which is what makes `member` and
+   the MRO usable — but reaching an operation is not the same as having a value
+   model. Points 1, 3 and 4 are why you still need your own.
 3. **Unions lose path information.** `Type::Union([A, B])` is exactly the
    flattening you're trying to avoid. Your domain must keep alternatives
    *enumerable* so you can produce distinct subtrees.

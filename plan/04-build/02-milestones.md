@@ -170,16 +170,23 @@ underestimated.
 | Column semantics (UTF-8 vs char) break positions | M2 | non-ASCII fixture, early |
 | Qualified names don't match Jedi's | M4 | table-driven test on 4 known cases |
 | ~~Merge-by-qname semantics misunderstood~~ | — | **resolved:** frame identity is `(parent, qname)`; see [`03-call-tree/09`](../03-call-tree/09-path-identity.md#the-merge-rule) |
-| `pub(crate)` blocks member lookup | M6.4 | Option A decided at M1, not M6 |
+| ~~`pub(crate)` blocks member lookup~~ | — | **resolved:** forked, with `types/vnoc.rs` wrappers; see [`01-crates/04`](../01-crates/04-public-vs-private-api.md) |
 | Exponential blowup on real input | M6/M8 | budget from day one, not retrofitted |
 | Non-deterministic output | M5+ | 10× repeat test in CI from M5 |
 | ty inference gaps → `Unknown` | M6 | fallbacks everywhere; count `Unknown`s and report |
 | Value flow silently dropped → regression vs Jedi | M6.6–6.8 | ch.10 fixtures; watch the "jedi resolved, ty didn't" row in the divergence log |
 | Return-value query double-counts factories in the tree | M6.7 | ch.10 fixture 12 |
 
-The two that actually sink projects: **deciding Option A/B too late** (M6.4 is
-the wrong time to discover you need a fork) and **adding the budget too late**
-(retrofitting cancellation into a recursive descent is miserable).
+The two that actually sink projects: **deciding Option A/B too late** and
+**adding the budget too late** (retrofitting cancellation into a recursive
+descent is miserable).
+
+The first one is now settled — the fork landed at exercise 08 rather than at
+M6.4, which is roughly as late as it could have been without hurting. The cost
+of having answered it late was one hand-rolled C3 in `src/mro.rs` and the
+`covering_node` round trip around it; the cost of answering it at M6.4 would
+have been a half-written `member.rs`. Keep the row as a reminder of what a
+late decision looks like when you get away with it.
 
 ---
 

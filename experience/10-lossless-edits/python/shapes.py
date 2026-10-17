@@ -23,7 +23,7 @@ def single_quoted():
 
 def implicit_concat():
     """First part. """ \
-    """Second part holds the closing quotes."""
+        """Second part holds the closing quotes."""
     return 4
 
 

@@ -185,3 +185,70 @@ whose module you failed to resolve.
 
 Membership differences are worth fixing immediately. Order differences are worth
 a decision, and the decision belongs to the goldens.
+
+---
+
+## The fork (8b, 8c, 8d, 16b)
+
+**8.** That the next component is `member`, and it is the same problem one
+order of magnitude larger. Writing your own C3 costs ~30 lines of a
+well-specified algorithm. Writing your own `member` costs the MRO walk *plus*
+instance-vs-class attributes, descriptors, properties, `__getattr__` and
+metaclasses — a second copy of Python's attribute semantics, which will
+disagree with ty exactly where ty is right and you are not. You do not fork for
+the MRO; you fork once, for the MRO *and* `member`, and the MRO is the cheap
+one that proves the mechanism.
+
+**8b.** Rust privacy is **module-scoped**: a private item is visible in the
+module that declares it and in all of that module's descendants. `Type::member`
+is private to `crate::types`, so only a module *under* `types` can call it —
+`types/vnoc.rs`. A sibling module or a separate crate cannot, at any
+visibility short of editing the item itself.
+
+Which is the rebase argument. Flipping `pub(crate)` to `pub` edits existing
+lines in upstream files, and edited lines are what conflict when upstream
+touches the same region — which it will, because these are exactly the
+functions ty is still changing. An added file conflicts with nothing, and the
+single `pub mod vnoc;` line in `types.rs` sits in a list of module declarations
+that rarely churns. After a rebase, every error that remains is in a file you
+wrote.
+
+**8c.** Because `ClassBase`, `ClassType` and `ClassLiteral` are all
+`pub(crate)` **[verified, `types.rs:75`, `:118`]**. A wrapper returning one
+compiles inside the fork and is uncallable from `pylspt` — the error lands at
+the call site in your own crate, which is a confusing place to learn about ty's
+visibility. Returning `Definition` and `Type`, both `pub`, is what makes the
+wrapper a wrapper.
+
+`Option` rather than skipping, because a skipped base **shifts every base after
+it**. `Any`, `Unknown`, `Protocol` and `Generic` all appear in real MROs
+(`hierarchy.py:Runner` and `Box` produce two of them), and "position 3 of this
+class's MRO" is a thing downstream can care about. A `None` says "there is a
+base here that has no definition"; a shorter list says nothing at all, and
+silently.
+
+**8d.** (1) **Wrappers only, no logic** — a wrapper with an `if` is a decision
+you must re-verify on every rebase, in the one file your tests cover least.
+(2) **Add one only when you need it** — every unused wrapper is maintenance for
+a call that never happens. (3) **One test per wrapper, in `pylspt`** — the
+compiler catches a changed *signature* for free, so the only thing a test adds
+is the thing the compiler cannot see: a changed *answer*. Ignore that one and a
+silent upstream behaviour change reaches the graph as a wrong edge.
+
+A fourth, if you want it: **pin and rebase deliberately.** Continuous rebasing
+spreads the cost over every day; a pinned rev concentrates it into an hour you
+chose, with every compile error in one file.
+
+**16b.** No — and the distinction is worth being exact about.
+
+`vnoc::member` answers "given **this** receiver type, what is `name` on it?",
+including descriptors and the MRO. What it cannot do is tell you *which*
+receiver to pass. For `dispatch`, the receiver is whatever `self.handler` holds
+on this path, which depends on which of `build_loud` / `build_quiet` ran, which
+is frame- and object-state, and ty has no representation for it.
+
+So from `plan/03-call-tree/06`'s workload the wrapper removes the **lookup**
+half — all of `member.rs`'s MRO walk, descriptor protocol and property
+handling. It leaves the **identity** half untouched: the environment, per-object
+state, and the rule for what `self.x` means in a frame. That half was always
+the part only you could write, and it is the reason Option C survives the fork.

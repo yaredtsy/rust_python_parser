@@ -79,6 +79,8 @@ plan/
 │   ├── 01-wiring-cargo.md ......................... dependencies that actually resolve
 │   ├── 02-milestones.md ........................... ordered, each independently verifiable
 │   └── 03-transport-and-parity.md ................. JSON-RPC + proving equivalence
+│       (04-local-ty-checkout.md deleted 2026-10-17: moot once `vendor/` held
+│        a real local checkout instead of a `git = "…"` dependency to patch)
 │
 └── 05-reference/
     ├── api-cheatsheet.md .......................... verified API surface, copy-paste

@@ -343,17 +343,25 @@ Defaults would add `rayon` and `accumulator`; cargo's feature unification is
 additive, so they would switch on for ruff's copy too. Same version, same
 features, one build.
 
-⚠ **"Copy ruff's line" means read ruff's line, not this one.** The danger is two
-*different* salsa crates in one graph: their types are unrelated, so
-`#[salsa::tracked]` over ty's `Db` will not compile against them. At `ac201b8`
-ruff takes salsa from **crates.io** (`Cargo.toml:165`) and has **no `[patch]`
-section** **[verified]**, so a matching crates.io dependency unifies to one
-build. If a later rev pins salsa by git rev — or patches it — the version
-string stops being enough and you must point at the same source. And if you
-ever move this crate *into* the ruff workspace, `salsa = { workspace = true }`
-removes the question entirely; it is not available from outside it, which is
-where pylspt lives (`Cargo.toml`: ruff crates by git rev, no workspace
-inheritance).
+> ★ **Superseded by the fork.** `pylspt` is now a member of the fork's
+> workspace (`plan/01-crates/04`, rule 6), so the whole paragraph above
+> collapses to one line:
+>
+> ```toml
+> salsa = { workspace = true }
+> ```
+>
+> You inherit ruff's entry — same version, same features, one build, nothing to
+> keep in sync. Rule 6 exists for exactly this.
+
+The reasoning is kept because it is what you need if you ever consume ty as a
+plain git dependency again. The danger is two *different* salsa crates in one
+graph: their types are unrelated, so `#[salsa::tracked]` over ty's `Db` will
+not compile against them. At `ac201b8` ruff takes salsa from **crates.io**
+(`Cargo.toml:165`) with **no `[patch]` section** **[verified]**, so a matching
+crates.io dependency unifies to one build — and if a later rev pins salsa by
+git rev, the version string stops being enough and you must point at the same
+source.
 
 **This works across crates — verified, not assumed.** `ty_ide` defines
 `#[salsa::tracked] fn symbols_for_file(db: &dyn Db, file: ProgramFile<'_>) ->
@@ -611,6 +619,38 @@ Note that `resolve_calls(file_path, calls)` already takes a `calls` argument —
 call sites identified positionally. Starting the call tree from an **ID**
 instead (which is what the index above is for) changes that signature too.
 Check both against v-noc before M2, and write the answer down here.
+
+### ★ DECIDED: defs only
+
+This driver is new orchestration, not a drop-in replacement for the current
+Python backend's `parse_file` consumers. Calls come from the call tree
+(stage 3), not from `parse_file` — `parse_file` emits defs only.
+
+That matters because it is not a free choice against the *current* backend.
+The old chain — `body_parser.py`'s `_traverse_and_collect` reads `type ==
+"call"` nodes out of `parse_file`'s array, `call_graph/builder.py`'s
+`resolve_call_hierarchy` skips `resolve_calls` entirely when that list is
+empty, and `diff_calulator.py` then diffs an empty tree against whatever call
+nodes are already stored — would read an empty call array as "every call was
+deleted" and remove every stored call node from the graph on the first sync.
+That is the real cost of "defs only" against that backend, and it is why the
+table above called this a decision to check against v-noc rather than a
+cleanup.
+
+It is not a problem here because nothing routes this driver's `parse_file`
+output through that chain. If that ever changes — this driver serving the
+current backend before stage 3 exists — `parse_file` needs its calls back,
+and the way to do it **without** reopening the two-walkers risk
+(`experience/10-lossless-edits/01-object-def.md`) is a call finder scoped to
+one def's body at a time: given a body `DefScanner` (object 8) already found,
+walk its expressions, collect `ExprCall`s, stop descending at a nested
+`FunctionDef`/`ClassDef`/`Lambda`, and never record a def itself. It finds
+calls inside defs `DefScanner` already decided exist; it does not re-decide
+which defs exist.
+
+`src/scan.rs`'s `ScopeScanner` — the thing that used to put call nodes into
+`parse_file` — is deleted, not merely unused. Recover it from git history if
+this decision is revisited.
 
 ---
 

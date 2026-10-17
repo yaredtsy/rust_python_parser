@@ -42,28 +42,79 @@ important, because your driver must not die on pathological input).
 
 ## The port
 
-```rust
-use ty_python_semantic::{SemanticModel, HasType};
-use ty_python_semantic::types::Type;
+Two pieces: a **wrapper in the fork** that hands back ty's own linearisation,
+and a function in `pylspt` that names each entry. The split is the rule from
+[`01-crates/04`](../01-crates/04-public-vs-private-api.md): ty's internals
+behind one thin call, every decision on your side of the line.
 
-fn base_classes(model: &SemanticModel<'_>, class: &ast::StmtClassDef) -> Vec<String> {
-    // The class *name* is a definition; the StmtClassDef itself has a type
-    // (the ClassLiteral). No position arithmetic needed.
-    let Some(Type::ClassLiteral(literal)) = class.inferred_type(model) else {
+### In the fork — `crates/ty_python_semantic/src/types/vnoc.rs`
+
+```rust
+/// The MRO of `ty`, without the class itself, as definitions.
+/// `None` keeps a base's POSITION when ty cannot tie it to a definition
+/// (`Any`, `Unknown`, `Protocol`, `Generic`).
+pub fn class_mro<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<Option<Definition<'db>>> {
+    let Some(class) = ty.to_class_type(db) else {
         return Vec::new();
     };
-    // `iter_mro` / `py__mro__` equivalent — exact name to confirm at your rev.
-    literal
-        .iter_mro(model.db(), &model.program_environment(), None)
-        .filter_map(|base| qualified_name_of(model.db(), base))
+    class
+        .iter_mro(db)
+        .skip(1)                                  // [0] is the class itself
+        .map(|base| match base {
+            ClassBase::Class(c) => c.class_literal(db).definition(db),
+            _ => None,
+        })
         .collect()
 }
 ```
 
-**[check]** the exact accessor name at your pinned revision. Candidates seen in
-`types/mro.rs` and `types/class.rs`: `ClassLiteral::iter_mro`,
-`ClassType::iter_mro`, `Mro::of_class`. Under Option A (workspace member) any of
-them is reachable; under Option B check what's `pub`.
+**[verified at `ac201b8`]**, every hop:
+
+| item | visibility | where |
+|---|---|---|
+| `Type::to_class_type -> Option<ClassType>` | private to `types` | `types.rs:2570` |
+| `ClassType::iter_mro -> MroIterator` | `pub(super)` | `class.rs:1362` |
+| `MroIterator: Iterator<Item = ClassBase>` | — | `mro.rs:691` |
+| first element is the class itself | — | `mro.rs:623, 694-698` |
+| `ClassType::class_literal` | `pub(crate)` | `class.rs:1199` |
+| `ClassLiteral::definition -> Option<Definition>` | `pub(crate)` | `class.rs:913` |
+
+Three corrections to the sketch this chapter used to carry:
+
+- **`iter_mro` takes only `db`** at this rev — not
+  `(db, &program_environment, None)`. The specialisation argument lives on
+  `MroIterator::new`, which `iter_mro` calls for you.
+- **Go through `to_class_type`, not `let Type::ClassLiteral(..)`.** `Type` has
+  two class-ish variants, `ClassLiteral` (`types.rs:1676`) and `GenericAlias`
+  (`:1678`); matching only the first returns an empty MRO for `Box[int]`.
+- **`.skip(1)`**, because the iterator yields the class before its bases, and
+  `base_classes` is the bases.
+
+### In `pylspt` — naming, and the `None` slots
+
+```rust
+pub fn base_classes<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<String> {
+    vnoc::class_mro(db, ty)
+        .into_iter()
+        .map(|base| match base {
+            Some(def) => qualified_name(db, def),     // exercise 06
+            None => "<unresolved>".to_string(),       // ← YOUR decision; see below
+        })
+        .collect()
+}
+```
+
+That is the whole port now. What it replaced — a recursion over
+`type_hierarchy_supertypes`, a hand-written C3 merge, a
+`TypeHierarchyClass` → range → `covering_node` → `Definition` round trip per
+base, and an inheritance-cycle fallback of our own invention — is in
+`src/mro.rs` and git history.
+
+⚠ **The `None` slot is an open decision.** Dropping it shifts every later base;
+emitting a placeholder keeps positions honest but puts a non-name in a field of
+names. `hierarchy.py`'s `Runner(Protocol)` and `Box(Generic[T])` are the two
+fixtures that produce one — decide against real output, against a golden, and
+write it down.
 
 `HasType` is implemented for statement types too **[verified]** —
 `semantic_model.rs:900-925` has macro-generated `impl HasType for $ty` blocks

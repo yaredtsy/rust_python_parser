@@ -4,16 +4,18 @@
 `mro_resolver.py` produces today — and you know exactly where attribute
 resolution stops working for your purposes.
 
-This exercise contains the biggest correction to the plan in the whole folder.
-Read the API section carefully.
+This exercise contained the biggest correction to the plan in the whole folder
+— and then the fork reversed it. Read the DECIDED section carefully: what used
+to be "you cannot call ty's MRO" is now "you call it through one wrapper you
+own".
 
 ---
 
 ## Read first
 
 - `plan/02-mapping/03-jedi-mro-to-ty-mro.md` — the chapter this exercise ports
-- `plan/01-crates/04-public-vs-private-api.md` — re-read after step 2, it will
-  mean more
+- `plan/01-crates/04-public-vs-private-api.md` — the fork decision and the
+  wrapper discipline. Read it **before** step 1 now, not after step 2
 
 ---
 
@@ -45,9 +47,9 @@ deletes entirely.
 gracefully on inheritance cycles rather than panicking — which matters, because
 your driver must not die on pathological input.
 
-### ⚠ …but you cannot call it
+### ⚠ …and until now you could not call it
 
-**[verified at `ac201b8`]**:
+**[verified at `ac201b8`]** — every entry point is private:
 
 ```rust
 pub(crate) struct Mro<'db>(Box<[ClassBase<'db>]>);              // mro.rs:38
@@ -56,82 +58,202 @@ pub(super)  fn ClassType::iter_mro(self, db)   -> MroIterator   // class.rs:1362
 pub(crate) fn ClassLiteral::explicit_bases(self, db) -> Box<[Type]>  // class.rs:1094
 ```
 
-**All of it is private.** `plan/02-mapping/03` sketches
-`literal.iter_mro(model.db(), &model.program_environment(), None)` and marks the
-accessor name `[check]`. The name is not the problem — the **visibility** is.
-That snippet cannot compile from a git dependency, at any accessor name.
+`plan/02-mapping/03` sketches `literal.iter_mro(...)` and marks the accessor
+name `[check]`. The name was never the problem; the **visibility** was. From a
+git dependency that snippet cannot compile at any accessor name.
 
-So the plan's "smallest port, biggest speedup per line, 77 lines → ~30" needs
-revisiting. It is still the smallest port. It is just not a one-liner.
+That is what the fork changes.
 
 ---
 
-## The API that *is* public
+## ★★ DECIDED — fork ty, and reach `iter_mro` through one wrapper
+
+`plan/01-crates/04` recommended Option A (a workspace fork) and this exercise
+was written against Option B (git dependency, public API only). **The decision
+is now A**, with a discipline that makes it cheaper than the plan assumed:
+
+> **One file in the fork, wrappers only, no logic.**
+> `crates/ty_python_semantic/src/types/vnoc.rs`, plus one line — `pub mod
+> vnoc;` — in `types.rs`. Every wrapper calls exactly one internal function and
+> returns public types. Your C3 decisions, your IDs, your interpreter all stay
+> in `pylspt`.
+
+Why that file, in that module: Rust privacy is **module-scoped**, so a child
+module sees its ancestors' private items. `Type::member` and friends are
+private to `crate::types`, so a `crate::types::vnoc` can call them and nothing
+else has to change. `pub mod types;` is already declared in `lib.rs`
+**[verified, `lib.rs:68`]**, so `ty_python_semantic::types::vnoc::*` is reachable
+from `pylspt` with **no edit to `lib.rs`** and **no visibility flipped** on any
+existing item.
+
+That last point is what keeps rebases cheap. The plan's Option A proposed
+"small, surgical visibility patches" — every one of those is a modified line in
+an upstream file, and modified lines are what conflict. An added file plus one
+`pub mod` line conflicts with almost nothing.
+
+### The two wrappers you need first
 
 ```rust
-use ty_python_semantic::{
-    type_hierarchy_prepare, type_hierarchy_supertypes, TypeHierarchyClass,
-};
+//! crates/ty_python_semantic/src/types/vnoc.rs
+//! Public wrappers for V-NOC. One internal call each, no logic.
 
-pub fn type_hierarchy_supertypes<'db>(
+use super::{ClassBase, ProgramEnvironment, Type};
+use crate::Db;
+use ty_python_core::definition::Definition;
+
+/// The MRO of `ty`, without the class itself, as definitions.
+///
+/// `None` holds a base's *position* when ty cannot tie it to a definition
+/// (`Any`, `Unknown`, `Protocol`, `Generic`), instead of dropping it — losing
+/// a slot silently would shift every base after it.
+pub fn class_mro<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<Option<Definition<'db>>> {
+    let Some(class) = ty.to_class_type(db) else {
+        return Vec::new();
+    };
+    class
+        .iter_mro(db)
+        .skip(1)                                  // [0] is the class itself
+        .map(|base| match base {
+            ClassBase::Class(c) => c.class_literal(db).definition(db),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `getattr(<value of type ty>, name)`, as ty resolves it — descriptors,
+/// properties, metaclasses and `__getattr__` included.
+pub fn member<'db>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
     ty: Type<'db>,
-) -> Vec<TypeHierarchyClass<'db>>;
-
-pub struct TypeHierarchyClass<'db> {
-    pub name: Name,                  // just the class name — NOT qualified
-    pub file: ResolverFile<'db>,     // → file_to_module → module name
-    pub full_range: TextRange,       // the class definition header
-    pub selection_range: TextRange,  // the class name
+    name: &str,
+) -> Option<Type<'db>> {
+    ty.member(db, env, name).ignore_possibly_undefined()
 }
 ```
 
-Three things about it that you must know before designing around it
-**[verified, `ide_support.rs:1896-1922`]**:
+Every item that touches is verified at `ac201b8`:
 
-1. **It returns the DIRECT bases, one level.** Internally it is
-   `class_literal.explicit_bases(db)` mapped to hierarchy info. It is a
-   type-hierarchy *tree view* API — you recurse it yourself.
-2. **`object` is special-cased.** Asking about `object` returns an empty vec.
-   A class with no explicit bases gets an implicit `object` supertype added.
-3. **The name is not qualified.** You build `pkg.mod.Base` yourself, from
-   `file` + the ranges + exercise 06's `qualified_name`.
+| used | visibility | where | reachable from `types::vnoc`? |
+|---|---|---|---|
+| `Type::member(db, env, name) -> PlaceAndQualifiers` | **private** to `types` | `types.rs:4929` | ✓ child module |
+| `Type::to_class_type(db) -> Option<ClassType>` | private to `types` | `types.rs:2570` | ✓ |
+| `ClassType::iter_mro(db) -> MroIterator` | `pub(super)` | `class.rs:1362` | ✓ `pub(in crate::types)` |
+| `ClassType::class_literal(db)` | `pub(crate)` | `class.rs:1199` | ✓ |
+| `ClassLiteral::definition(db) -> Option<Definition>` | `pub(crate)` | `class.rs:913` | ✓ |
+| `PlaceAndQualifiers::ignore_possibly_undefined()` | `pub(crate)` | `place.rs:923` | ✓ |
+| `Type`, `ProgramEnvironment` | **`pub`** | `types.rs:1629`, `:15` | ✓ and nameable from `pylspt` |
 
-### The consequence: DAG walk ≠ MRO
+> **Use `to_class_type`, not `let Type::ClassLiteral(c) = ty`.** `Type` has two
+> class-ish variants: `ClassLiteral` (`types.rs:1676`) and `GenericAlias`
+> (`:1678`). `to_class_type` (`types.rs:2570`) maps both; matching only
+> `ClassLiteral` returns an empty MRO for `IntBox` and for any `Box[int]`,
+> which is exactly the distinction step 1 below asks you to notice.
 
-Jedi's `py__mro__()` returns a **linearised** sequence — C3 order, ending in
-`builtins.object`. Recursing `type_hierarchy_supertypes` gives you the
-inheritance **DAG**, not a linearisation.
+`ClassBase`, `ClassType` and `ClassLiteral` are all `pub(crate)`
+**[verified, `types.rs:75`, `:118`]**, so none of them may appear in a
+wrapper's *signature*. Both wrappers above return public types only — that is
+not a stylistic choice, it is what makes them callable from `pylspt` at all.
 
-For single inheritance they coincide. For `Diamond(Left, Right)` they do not:
+### `MroIterator` yields the class first
+
+`MroIterator::next` returns `first_element()` before anything else
+(`mro.rs:691-699`, `:623` **[verified]**), and `first_element` is the class
+itself. Hence `.skip(1)`: the wire shape's `base_classes` is the MRO *without*
+the class, and Jedi's `py__mro__()[1:]` is the same slice.
+
+### The six rules that keep the fork cheap
+
+1. **One file.** `types/vnoc.rs`, plus `pub mod vnoc;` in `types.rs`. It must
+   live under `types` — that is where the private items are.
+2. **Wrappers only.** One internal call each, public types out, no logic.
+3. **Add a wrapper only when you need it.** Start with these two.
+4. **Pin the fork and rebase on purpose.** After a rebase every compile error
+   lands in one file.
+5. **One test per wrapper, in `pylspt`.** Compile errors catch signature
+   changes; only a test catches a behaviour change.
+6. **Put `pylspt` in the fork's workspace**, so `salsa` and every shared
+   dependency come from one place with `workspace = true`.
+
+Ruff — ty included — is **MIT** (`Cargo.toml:13`, `LICENSE` at the root
+**[verified]**), so a private fork inside a closed product is fine. Keep the
+licence file.
+
+---
+
+## What this deletes
+
+### Your own C3 goes away
+
+`src/mro.rs` recurses `type_hierarchy_supertypes` and runs its own C3 merge,
+because `iter_mro` was unreachable. With the wrapper it is ty's MRO, and three
+problems go with it:
+
+| your C3 | ty's `iter_mro` |
+|---|---|
+| inheritance cycles: your merge degrades to "take the first head anyway" | handled upstream, tested upstream |
+| inconsistent hierarchies: you pick an order, CPython raises | ty's documented fallback, same answer ty's own diagnostics use |
+| `Protocol`, `Generic`, `NamedTuple`, `Enum`, metaclasses | all in `iter_mro`; none in yours |
+| a `TypeHierarchyClass` → range → `covering_node` → `Definition` round trip per base | `ClassBase` → `Definition`, one hop |
+
+What stays in `pylspt`: turning each `Definition` into a **qualified name**
+(exercise 06) or into an **ID** (exercise 02 object 6), deciding what to emit
+for a `None` slot, and the wire shape. That is the logic that is *yours*; the
+linearisation never was.
+
+### The `member` component shrinks to a call
+
+`plan/03-call-tree/06` budgets a `member.rs` that reimplements attribute lookup
+against a receiver you choose: MRO walk, instance vs class attributes,
+descriptors, properties, `__getattr__`, metaclasses. That is a second copy of
+Python's semantics, and it will disagree with ty wherever ty is right.
+
+Your own C3 is the small version of that problem. `member` is the big one, and
+the wrapper removes it.
+
+### What does *not* change
+
+The reason for Option **C** is untouched: ty's `Type` still has no notion of
+"this specific object on this specific path", so your `AbstractValue` domain
+and the frame-sensitive environment stay exactly as planned. The fork buys you
+**primitives** — MRO, member lookup, call binding — not a value model.
+`attributes.py:dispatch` (step 5) still needs the interpreter.
+
+---
+
+## The old decision, kept for the record
+
+Before the fork, `base_classes` had to be built from the one public entry point:
+
+```rust
+pub fn type_hierarchy_supertypes<'db>(
+    db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>,
+) -> Vec<TypeHierarchyClass<'db>>;
+```
+
+Three facts about it **[verified, `ide_support.rs:1896-1922`]**, still true and
+still worth knowing, because it is the fallback if the fork ever becomes
+untenable:
+
+1. **It returns the DIRECT bases, one level** — internally
+   `class_literal.explicit_bases(db)`. It is a tree-view API; you recurse it.
+2. **`object` is special-cased.** Asking about `object` returns an empty vec; a
+   class with no explicit bases gets an implicit `object` supertype.
+3. **The name is not qualified.** You build `pkg.mod.Base` yourself.
+
+And the consequence that forced the old three-way choice — recursing a DAG is
+not a linearisation:
 
 ```
 C3 (what jedi gives you):        Diamond, Left, Right, Base, object
 naive depth-first recursion:     Diamond, Left, Base, Right, Base, object
                                                   ^^^^         ^^^^ duplicated,
-                                                                    and Base is
-                                                                    too early
+                                                                    and too early
 ```
 
-You have three options, and this is a real decision:
-
-| option | cost | when it is right |
-|---|---|---|
-| **Implement C3 yourself** over the base DAG | ~30 lines, well-specified algorithm | you need `base_classes` to match `py__mro__()` exactly |
-| **Emit the DAG, deduped, depth-first** | trivial | if v-noc only ever asks "is X in the bases", order does not matter |
-| **Take Option A** (vendored workspace) and call `iter_mro` | a fork to maintain | if you need ty's exact handling of `Protocol`/`Generic`/metaclass edge cases |
-
-**Find out which one you need before you build it** — from the golden files
-(M0), not from reasoning. If nothing downstream depends on order, option 2 is
-correct and you have just saved yourself the third option's maintenance cost.
-That is a decision the plan could not make for you, because it depends on data
-you have and it did not.
-
-C3 is genuinely small: take the class, merge the linearisations of its bases
-plus the list of bases, repeatedly picking the first head that appears in no
-other list's tail. Python's own documentation of the algorithm is enough to
-implement it, and your inputs are small.
+The options table said: implement C3 yourself (~30 lines), emit the deduped DAG,
+or fork. **The answer is now the third one**, and it is the one the plan
+recommended before this exercise's API survey talked it out of.
 
 ---
 
@@ -160,11 +282,17 @@ Print the variant you got for each class in `hierarchy.py`. `Box` and `IntBox`
 may not both be `ClassLiteral` — one may be a `GenericAlias`. That distinction
 is the source of the `Base[int]` vs `Base` question below.
 
-### Step 2 — direct bases
+### Step 2 — the MRO, and the bases it is built from
 
-For each class, call `type_hierarchy_supertypes` and print the results.
+Call `vnoc::class_mro` for each class and print the `Definition`s — that is the
+answer. Then, to understand what it did, call the public
+`type_hierarchy_supertypes` for the same class and print its **direct** bases.
 
-Check against your predictions:
+The second list is one level of the DAG; the first is the linearisation. Seeing
+them side by side on `Diamond` is the whole lesson of this exercise in two
+lines of output.
+
+Check the direct bases against your predictions:
 
 | class | expected direct bases |
 |---|---|
@@ -202,15 +330,25 @@ where that exercise's failure-mode list pays off.
 
 ### Step 4 — the full sequence
 
-Produce `base_classes` for every class in `hierarchy.py`, however you decided in
-the options table. Then check `Diamond` against what Python itself says:
+Produce `base_classes` for every class in `hierarchy.py` — `vnoc::class_mro`,
+then each `Definition` to a qualified name, then your decision for the `None`
+slots. Then check `Diamond` against what Python itself says:
 
 ```bash
 python3 -c "import hierarchy; print([c.__module__ + '.' + c.__qualname__ for c in hierarchy.Diamond.__mro__])"
 ```
 
 Running the real interpreter as your oracle is legitimate and fast. Jedi is
-modelling CPython here, so CPython is the ground truth for order.
+modelling CPython here, so CPython is the ground truth for order — and now so
+is ty, which is the point of calling its linearisation instead of writing one.
+
+**The `None` slots are yours to decide.** `class_mro` yields `None` where ty
+has a base it cannot tie to a definition — `Any`, `Unknown`, `Protocol`,
+`Generic`. Dropping them silently shifts every later base; emitting a
+placeholder keeps the positions honest. `hierarchy.py`'s `Runner(Protocol)` and
+`Box(Generic[T])` are the two fixtures that produce one, so decide against real
+output, and write the decision down next to `DECORATORS_IN_RANGE` as a thing
+the wire shape depends on.
 
 ### Step 5 — attributes, and where they stop
 
@@ -223,18 +361,35 @@ expression and of the call's callee:
 | `self.default.handle(...)` in `inherited` | resolves through the class body |
 | `self.handler.handle(...)` in `dispatch` | ← **the interesting one** |
 
-The public tool is:
+There are now **two** tools, and the difference between them is the whole
+reason for the fork:
 
 ```rust
+// public, AST-shaped: ty picks the receiver
 ty_python_semantic::types::ide_support::static_member_type_for_attribute(
     model, attribute: &ast::ExprAttribute
-) -> Option<Type>
+) -> Option<Type>                                        // ide_support.rs:449
+
+// your wrapper, type-shaped: YOU pick the receiver
+ty_python_semantic::types::vnoc::member(db, env, ty, name) -> Option<Type>
 ```
 
-For `dispatch`, ty must consider both constructions (`build_loud` passes a
-`LoudHandler`, `build_quiet` passes a `Handler`), so you get both or you get
-something widened. Correct, and not what the call tree needs — under
-`use_loud → build_loud → dispatch`, the answer must be `LoudHandler.handle`.
+The public one takes `x.y` and looks `y` up on **ty's** type for `x`. The
+interpreter asks the other question — "the receiver is this type, because my
+environment says so; what is `.handle` on it?" — and only the wrapper answers
+it.
+
+Run both on all three expressions. For `dispatch`, the public call must
+consider both constructions (`build_loud` passes a `LoudHandler`, `build_quiet`
+passes a `Handler`), so you get a union or something widened. Correct, and not
+what the call tree needs — under `use_loud → build_loud → dispatch`, the answer
+must be `LoudHandler.handle`.
+
+Now call the wrapper with `LoudHandler`'s type as the receiver and watch it
+answer exactly that. **The wrapper does not solve `dispatch`** — knowing *which*
+receiver to pass is still the interpreter's job, and that is the environment,
+the frame and the object identity from `plan/03-call-tree/06` and `/10`. What
+the wrapper removes is having to reimplement `.handle`'s lookup once you know.
 
 You saw this shape in exercise 07 with a parameter. Now you have seen it with an
 **attribute**, which is worse: the value was stored on an object in one frame and
@@ -249,9 +404,17 @@ read `plan/03-call-tree/06` and compare.
 
 ## Traps
 
-- **Trusting the plan's MRO snippet.** It does not compile on Option B; the
-  accessor is private, not merely renamed.
-- **Assuming supertypes are the MRO.** One level, DAG, not linearised.
+- **Putting logic in the fork.** The wrapper is one call and a `map`. The
+  moment a wrapper grows an `if`, that `if` is a line you will re-resolve on
+  every rebase, in the file you are least able to test.
+- **A `pub(crate)` type in a wrapper signature.** `ClassBase`, `ClassType` and
+  `ClassLiteral` are all `pub(crate)` — a wrapper returning one compiles inside
+  the fork and is uncallable from `pylspt`. Return `Definition`, `Type`, or
+  something you own.
+- **Matching only `Type::ClassLiteral`.** `Box[int]` is a `GenericAlias`; use
+  `to_class_type`.
+- **Assuming supertypes are the MRO.** `type_hierarchy_supertypes` is one
+  level, DAG, not linearised — that is why it is not what `class_mro` calls.
 - **Emitting an unqualified name.** `Base` instead of `mod.Base` breaks every
   downstream join, and looks fine in a log.
 - **Forgetting `builtins.object` at the tail.** Jedi includes it. Check whether
@@ -265,10 +428,16 @@ read `plan/03-call-tree/06` and compare.
 
 ## Done when
 
-- [ ] every class in `hierarchy.py` yields a `ClassLiteral` (or you know why not)
+- [ ] `types/vnoc.rs` exists in the fork with **two** wrappers and no logic
+- [ ] `pylspt` is a member of the fork's workspace, and `salsa` is
+      `{ workspace = true }`
+- [ ] one test per wrapper lives in `pylspt`, not in the fork
+- [ ] `src/mro.rs`'s C3 merge and its `covering_node` round trip are deleted
+- [ ] every class in `hierarchy.py` yields a `ClassLiteral` **or** a
+      `GenericAlias`, and `class_mro` handles both
 - [ ] direct bases printed and checked against the table
 - [ ] all four parity cases from `plan/02-mapping/03` answered with real output
-- [ ] you decided DAG vs C3, and wrote down what evidence decided it
+- [ ] you decided what a `None` MRO slot emits, from `Runner` and `Box`
 - [ ] `Diamond`'s output compared against CPython's `__mro__`
 - [ ] you can name the three attribute cases in `attributes.py` and which resolves
 - [ ] you wrote your three sentences on what `dispatch` would need

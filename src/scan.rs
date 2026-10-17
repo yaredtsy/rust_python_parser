@@ -1,20 +1,33 @@
-//! Scope scanning: the `ScopeScanner` visitor and the `scan_scope` driver.
+//! `parse_file`'s wire-shape mapping: `DefNode` (stage 1, `crate::defs`) →
+//! `Node` (object 5/7's output shape).
 //!
-//! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md`.
-//! RETIRED since: call collection. `ScopeScanner` used to also collect every
+//! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md` and
+//! `experience/02-parse-and-ast/08-staged-pipeline.md`.
+//!
+//! RETIRED since: `ScopeScanner`, the `SourceOrderVisitor`-based walker this
+//! file used to define. It did two things — find defs, and collect every
 //! `ExprCall` in a scope (quirk 8's `ExprLambda => Skip`, `visit_expr`'s
-//! `self.calls.push`). Superseded by
-//! `experience/02-parse-and-ast/08-staged-pipeline.md`'s stage 3, which
-//! resolves a call where `eval` reaches it rather than collecting it
-//! unresolved first — so there is nothing left for a pre-pass to collect.
-//! This file now only finds defs.
+//! `self.calls.push`) — and both are gone:
+//!
+//! - Calls: superseded by stage 3, which resolves a call where `eval` reaches
+//!   it rather than collecting it unresolved first. Nothing collects calls
+//!   anywhere now.
+//! - Defs: once calls were gone, this walker found exactly what
+//!   `crate::defs::DefScanner` already finds — same rule, over the same
+//!   `StatementVisitor`, producing `DefNode` instead of `Node`. Keeping a
+//!   second, independent `SourceOrderVisitor` walk for the identical "which
+//!   defs exist" question is exactly the two-walkers risk object 1 of
+//!   exercise 10 warns about (one disagreement away from a def that is
+//!   silently missing from one side). So this file no longer walks the AST
+//!   at all — it maps `defs::scan_defs`'s output to the wire shape.
+//! `ruff_python_ast::visitor::source_order::SourceOrderVisitor` is no longer
+//! a dependency of this crate for that reason.
 
-use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_body, walk_node};
-use ruff_python_ast::{AnyNodeRef, Expr, Stmt};
 use ruff_source_file::{LineIndex, SourceCode};
-use ruff_text_size::{Ranged, TextRange, TextSize};
+use ruff_text_size::TextRange;
 use rustc_hash::FxHashMap;
 
+use crate::defs::{DefKind, DefNode, scan_defs};
 use crate::nodes::{Node, NodeKind};
 use crate::positions::{Position, to_position_with};
 
@@ -33,174 +46,66 @@ impl<'src> Ctx<'src> {
     }
 }
 
-// ---------------------------------------------------------------- the visitor
-
-pub struct ScopeScanner<'a> {
-    root: TextRange,
-    /// Definitions found in this scope — recursed into separately.
-    pub defs: Vec<AnyNodeRef<'a>>,
-}
-
-impl<'a> ScopeScanner<'a> {
-    pub fn new(root: TextRange) -> Self {
-        Self { root, defs: Vec::new() }
-    }
-}
-
-impl<'a> SourceOrderVisitor<'a> for ScopeScanner<'a> {
-    fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-        if node.range() == self.root {
-            return TraversalSignal::Traverse; // this is me; go in
-        }
-        match node {
-            AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
-                self.defs.push(node); // remember it, recurse later
-                TraversalSignal::Skip // parser.py:78-80
-            }
-            _ => TraversalSignal::Traverse,
-        }
-    }
-
-    fn visit_expr(&mut self, _expr: &'a Expr) {
-        // Nothing inside an expression matters any more: no def can live in
-        // one (object 5/8), and calls are no longer collected here — see the
-        // RETIRED note above. Not calling `walk_expr` is what stops the
-        // descent; `enter_node` is therefore never reached with an `Expr`
-        // node at all (every `Expr` path, `visit_annotation` included, funnels
-        // through this method — `ruff_python_ast::visitor::source_order`,
-        // `walk_annotation`/`walk_expr`), so quirk 8's `ExprLambda => Skip`
-        // and the empty `visit_decorator` (parity for call attribution) are
-        // both dead with it, not merely unused.
-    }
-}
-
 // ----------------------------------------------------------------- the driver
 
-/// Scan ONE scope. Returns its direct children, nested scopes recursed into.
-pub fn scan_scope<'a>(ctx: &Ctx<'_>, root: AnyNodeRef<'a>) -> Vec<Node> {
-    let mut scanner = ScopeScanner::new(root.range());
-    walk_node(&mut scanner, root); // ★ the NODE, not its body
-    collect(ctx, scanner)
-}
-
-/// Scan a module: its body is not a node, so there is no root to enter.
-pub fn scan_module<'a>(ctx: &Ctx<'_>, body: &'a [Stmt]) -> Vec<Node> {
-    let mut scanner = ScopeScanner::new(TextRange::default());
-    walk_body(&mut scanner, body);
-    collect(ctx, scanner)
-}
-
-fn collect(ctx: &Ctx<'_>, scanner: ScopeScanner<'_>) -> Vec<Node> {
-    // No sort: `self.defs` was filled by `enter_node`, which — being a
-    // SOURCE ORDER visitor — already visits siblings in source order. Only
-    // mattered as an interleave once calls joined the same list; see RETIRED.
-    scanner
-        .defs
-        .into_iter()
-        .map(|def| {
-            let children = scan_scope(ctx, def); // ★★ the recursion
-            node_for_definition(ctx, def, children)
-        })
-        .collect()
+/// A module's (or a scope's) defs, as the wire shape. `body` works for either
+/// — `DefScanner` already recurses into nested defs' bodies on its own, so
+/// there is nothing left here that needs "scope" and "module" to differ.
+pub fn scan_module(ctx: &Ctx<'_>, body: &[ruff_python_ast::Stmt]) -> Vec<Node> {
+    scan_defs(body).iter().map(|def| node_for_definition(ctx, def)).collect()
 }
 
 // ---------------------------------------------------------------- definitions
 
-fn node_for_definition(ctx: &Ctx<'_>, def: AnyNodeRef<'_>, children: Vec<Node>) -> Node {
-    let (name, kind, body, range) = match def {
-        AnyNodeRef::StmtFunctionDef(d) => {
-            (d.name.to_string(), NodeKind::Function, &*d.body, d.range)
-        }
-        AnyNodeRef::StmtClassDef(d) => (d.name.to_string(), NodeKind::Class, &*d.body, d.range),
-        _ => unreachable!("scanner only pushes defs"),
+fn node_for_definition(ctx: &Ctx<'_>, def: &DefNode) -> Node {
+    let kind = match def.kind {
+        DefKind::Function => NodeKind::Function,
+        DefKind::Class => NodeKind::Class,
     };
 
     Node {
-        id: id_from_body(body).map(|uuid| match kind {
+        id: def.id.as_deref().map(|uuid| match kind {
             NodeKind::Class => format!("ClassSchema/{uuid}"),
-            _ => format!("FunctionSchema/{uuid}"),
+            NodeKind::Function => format!("FunctionSchema/{uuid}"),
         }),
-        name,
+        name: def.name.clone(),
         kind,
-        position: ctx.position(def_position_range(ctx, range, def)),
-        children,
+        position: ctx.position(def.range),
+        children: def.children.iter().map(|child| node_for_definition(ctx, child)).collect(),
         // exercise 08: needs semantic resolution, not the AST.
         base_classes: None,
     }
 }
 
-/// DECIDED: a decorated def's `position` **starts at the `@`**, not at the
-/// `def`/`async`/`class` keyword — i.e. the decorators are part of the range.
-/// Flip this const to go back to parso's convention; `header_range` below is
-/// the other half of the switch and stays compiled either way.
-///
-/// This is a deliberate divergence from the Python driver (object 3's trap,
-/// `experience/02-parse-and-ast/03-object-functiondef-classdef.md`): parso's
-/// `Function.start_pos` is at `def`, with decorators in a `decorated` wrapper
-/// *outside* the funcdef. So the M2 byte-identical gate
-/// (`plan/04-build/02-milestones.md`) will differ on **every decorated def** —
-/// which on real code is most methods. That is expected, not a regression.
-const DECORATORS_IN_RANGE: bool = true;
-
-/// The range a definition's `position` is computed from.
-fn def_position_range(ctx: &Ctx<'_>, range: TextRange, def: AnyNodeRef<'_>) -> TextRange {
-    if DECORATORS_IN_RANGE {
-        range // ruff's own range: already starts at `@` (and at `async`)
-    } else {
-        header_range(ctx, range, def)
-    }
-}
-
-/// Range with the decorators removed — parso's convention. `decorator_list` is a
-/// field of the def, so `def.range` starts at `@`; parso starts at `def`/`async`.
-///
-/// Stopping at `last_decorator.end()` is not enough — that offset is the
-/// newline after the decorator, so the position reports the decorator's line.
-/// Skip forward over trivia (whitespace and `# comments`) to land on the real
-/// `def`/`async`/`class` keyword.
-fn header_range(ctx: &Ctx<'_>, range: TextRange, def: AnyNodeRef<'_>) -> TextRange {
-    let last = match def {
-        AnyNodeRef::StmtFunctionDef(d) => d.decorator_list.last().map(|d| d.range().end()),
-        AnyNodeRef::StmtClassDef(d) => d.decorator_list.last().map(|d| d.range().end()),
-        _ => None,
-    };
-    let Some(end) = last else { return range };
-    TextRange::new(skip_trivia(ctx.code.text(), end), range.end())
-}
-
-/// First offset at or after `from` that is not whitespace or a comment.
-fn skip_trivia(text: &str, from: TextSize) -> TextSize {
-    let mut at = from.to_usize();
-    let bytes = text.as_bytes();
-    while at < bytes.len() {
-        match bytes[at] {
-            b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' => at += 1,
-            b'#' => {
-                // a comment runs to the end of its line
-                at += bytes[at..]
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .map_or(bytes.len() - at, |n| n + 1);
-            }
-            _ => break,
-        }
-    }
-    TextSize::try_from(at).expect("offset came from this text")
-}
+// A decorated def's `position` starts at the `@`, not at the
+// `def`/`async`/`class` keyword — `DefNode.range` is `stmt.range()`, ruff's
+// own range, decorators included.
+//
+// There used to be a `DECORATORS_IN_RANGE` const here plus `header_range` and
+// `skip_trivia`, which stripped decorators back off for parso's convention
+// (object 3's trap,
+// `experience/02-parse-and-ast/03-object-functiondef-classdef.md`) — kept
+// around for a byte-identical M2 parity gate against the Python driver.
+// Deleted: that gate's other half, `call_index`/`call_col_pos`, is already
+// gone (object 5 part 4), and once `node_for_definition` stopped taking an
+// `AnyNodeRef` (this file's retirement of `ScopeScanner`), re-wiring the
+// toggle needs a `covering_node(root, def.range)` lookup rather than a
+// one-word flip — so the const no longer paid for its keep. Recover it from
+// git history if the parity gate comes back.
 
 /// The `ID:` value from the scope's docstring, if any (object 6).
 ///
-/// `pub(crate)`: `defs::DefScanner` (object 8) reads the same docstring the
-/// same way, on purpose — one reader shared by both walkers, so they cannot
-/// disagree about which defs have an `ID:` and which do not.
-pub(crate) fn id_from_body(body: &[Stmt]) -> Option<String> {
+/// `pub(crate)`: `defs::DefScanner` reads the same docstring the same way, on
+/// purpose — one reader shared, so there is nothing to disagree about which
+/// defs have an `ID:` and which do not.
+pub(crate) fn id_from_body(body: &[ruff_python_ast::Stmt]) -> Option<String> {
     let doc = docstring(body)?;
     extract_metadata(doc).get("ID").map(|s| s.to_string())
 }
 
-fn docstring(body: &[Stmt]) -> Option<&str> {
+fn docstring(body: &[ruff_python_ast::Stmt]) -> Option<&str> {
     match body.first()? {
-        Stmt::Expr(e) => Some(e.value.as_string_literal_expr()?.value.to_str()),
+        ruff_python_ast::Stmt::Expr(e) => Some(e.value.as_string_literal_expr()?.value.to_str()),
         _ => None,
     }
 }
@@ -253,10 +158,8 @@ mod tests {
 
     #[test]
     fn decorators_are_inside_the_range() {
-        // The decision recorded on `DECORATORS_IN_RANGE`: `position` starts at
-        // the `@`, so a decorated def reports the DECORATOR's line, not `def`'s.
-        assert!(DECORATORS_IN_RANGE, "this module's tests encode `true`");
-
+        // `DefNode.range` is `stmt.range()`: a decorated def reports the
+        // DECORATOR's line, not `def`'s.
         let src = "\
 @cache
 def one():
@@ -292,26 +195,5 @@ class Plain:
             defs(src),
             vec![("f".to_string(), 1, 0), ("g".to_string(), 5, 0)]
         );
-    }
-
-    /// The other half of the switch still works, so flipping the const back for
-    /// the M2 parity gate is a one-word change and not a rewrite.
-    #[test]
-    fn header_range_still_strips_decorators() {
-        let src = "@cache  # trailing comment\n@wraps(f)\ndef one():\n    pass\n";
-        let options = ParseOptions::from(Mode::Module).with_target_version(PythonVersion::PY313);
-        let parsed = parse_unchecked(src, options)
-            .try_into_module()
-            .expect("Mode::Module always produces a module");
-        let index = LineIndex::from_source_text(src);
-        let ctx = Ctx::new(src, &index);
-
-        let def = parsed.syntax().body.first().expect("one statement");
-        let node = AnyNodeRef::from(def);
-        let stripped = ctx.position(header_range(&ctx, node.range(), node));
-        assert_eq!((stripped.line, stripped.column), (3, 0), "lands on `def`");
-
-        let full = ctx.position(node.range());
-        assert_eq!((full.line, full.column), (1, 0), "ruff's range: the `@`");
     }
 }

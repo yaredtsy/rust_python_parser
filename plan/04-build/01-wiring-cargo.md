@@ -39,31 +39,50 @@ recent language features and a mismatched toolchain gives you compile errors in
 
 ---
 
-## Option A — workspace member (recommended)
+## Option A — workspace member ★ DECIDED, direction reversed 2026-10-17
 
-See [`01-crates/04`](../01-crates/04-public-vs-private-api.md) for why.
+See [`01-crates/04`](../01-crates/04-public-vs-private-api.md) for the current
+DECIDED section — that is the source of truth for the layout now; what follows
+in this file is partly stale (written for the fork-wholesale shape this
+reverses) and not yet fully rewritten to match. Read the layout from there,
+not from the diagram and warning this replaces.
 
-### Layout
+> ⚠ **This section used to say "Fork; do not vendor"**, warning against
+> nesting ruff inside `pylspt/vendor/ruff` as a submodule. That warning is
+> itself now reversed — `01-crates/04`'s DECIDED section explains why
+> (`pylspt` is the repo of record; a full ruff fork makes it one crate among
+> someone else's fifty). What's actually at `pylspt/vendor/` today is neither
+> of the two things that sentence considered: not a submodule (a plain
+> directory copy of each needed crate, so a rebase is "re-copy the files and
+> re-apply the one `vnoc.rs` diff", not a submodule bump), and not "all of
+> ruff" (a computed closure of ~26 crates — whatever `ty_python_semantic`
+> actually depends on — not the full ~50-crate workspace). The wrapper
+> discipline (one wrapper file, public types only, add on demand) is
+> unchanged by any of this; only the directory nesting direction and the trim
+> are new.
+
+### Layout — `pylspt` is the repo; a trimmed closure lives at `vendor/`
 
 ```
-pylspt/
-├── vendor/ruff/          ← git submodule, pinned at ac201b8
-├── crates/pylspt/        ← your code
-├── Cargo.toml            ← workspace root
-└── rust-toolchain.toml
+pylspt/                     ← the repo. workspace root AND the pylspt package.
+├── Cargo.toml              [workspace] members = ["vendor/*"]
+├── src/                    ← your crate, all your logic
+└── vendor/                 ← ty_python_semantic's real dependency closure,
+    ├── ruff_db/              computed by walking [dependencies] sections,
+    ├── ty_python_semantic/   not hand-picked. Unchanged except:
+    │   └── src/types.rs        + `pub mod vnoc;`
+    │   └── src/types/vnoc.rs   ← NEW: wrappers only
+    └── ... (~24 more crates)
 ```
 
-```bash
-cd /Users/yared/Documents/Programing/rust/pylspt
-git submodule add https://github.com/astral-sh/ruff vendor/ruff
-git -C vendor/ruff checkout ac201b8
-```
+Add a crate, and `members = ["vendor/*"]` already covers it — nothing else to
+configure.
 
-### Root `Cargo.toml`
+### Root `Cargo.toml` — ruff's, with `crates/*` already covering you
 
 ```toml
 [workspace]
-members = ["crates/pylspt", "vendor/ruff/crates/*"]
+members = ["crates/*"]        # ← already matches crates/pylspt. nothing to add.
 resolver = "2"
 
 [workspace.package]
@@ -106,11 +125,17 @@ libcst     = { version = "1.8.4", default-features = false }
 > `libcst = { workspace = true }` in your crate, exactly as `ruff_linter` does
 > **[verified]**. That guarantees one copy in the tree.
 
-> ⚠ **`salsa` must be exactly `0.28.2` with exactly those features.**
-> **[verified]** from ruff's workspace manifest. If Cargo unifies two different
-> salsa versions you get `expected Db, found Db` — two distinct traits with the
-> same name. Symptom: an error message where both types print identically.
-> Diagnose with `cargo tree -d -p salsa` (`-d` = duplicates).
+> ✅ **`salsa` is now a solved problem.** As a workspace member you write
+> `salsa = { workspace = true }` and inherit ruff's entry — exactly
+> `0.28.2`, `default-features = false`, features `compact_str`, `macros`,
+> `salsa_unstable`, `inventory` **[verified, ruff `Cargo.toml:165`]**. There is
+> no second version to unify and nothing to keep in sync by hand.
+>
+> This is the whole reason rule 6 of the fork discipline exists. Outside the
+> workspace you must match that line yourself, and two different salsa versions
+> in one graph give you `expected Db, found Db` — two distinct traits with the
+> same name, in an error message where both types print identically. Diagnose
+> with `cargo tree -d -p salsa` (`-d` = duplicates) if it ever recurs.
 
 ### `crates/pylspt/Cargo.toml`
 
@@ -185,7 +210,20 @@ Use `cargo check` in your inner loop. Consider `sccache` or a
 
 ---
 
-## Option B — git dependency
+> **`04-local-ty-checkout.md` is deleted.** It described a git-ignored
+> `.cargo/config.toml` `[patch]` pointing `pylspt`'s committed `git = "…"`
+> dependency lines at a local ruff checkout, for fast edit/rebuild on
+> `vnoc.rs` without a commit-and-rev-bump round trip. Moot now: `pylspt`
+> doesn't have `git = "…"` lines any more — `vendor/ty_python_semantic` is a
+> real, local, already-checked-out copy, so editing `vendor/.../vnoc.rs` and
+> rebuilding already *is* the fast loop that file was trying to approximate.
+
+## Option B — git dependency ← *what this repo did until the fork*
+
+This is how `pylspt/Cargo.toml` looks today, and it is what the fork replaces.
+Keep it documented: it is the fallback if the fork ever becomes untenable, and
+it is still the right shape for a throwaway spike against a *different* ruff
+revision.
 
 ```toml
 [dependencies]

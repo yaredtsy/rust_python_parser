@@ -226,12 +226,17 @@ The in-flight memo gets both right, and it's one mechanism doing two jobs
 
 > This mirrors how ty handles the same problem internally: `Type::Divergent` is
 > documented as *"A cycle marker used during recursive type inference"*
-> **[verified, types.rs:1632]**, alongside `types/cyclic.rs`. If you build this
-> inside the ruff workspace (Option A), consider making `eval_returns` an actual
-> `#[salsa::tracked]` query with salsa cycle recovery rather than a hand-rolled
-> table — same semantics, and you inherit the incrementality. **[check]** that
-> the env fingerprint can be expressed as a salsa ingredient first; if not, the
-> plain table above is fine.
+> **[verified, types.rs:1632]**, alongside `types/cyclic.rs`. You **are** in
+> the ruff workspace now (the fork, `01-crates/04`), so making `eval_returns` an
+> actual `#[salsa::tracked]` query with salsa cycle recovery — rather than a
+> hand-rolled table — is available rather than hypothetical: same semantics,
+> and you inherit the incrementality. **[check]** that the env fingerprint can
+> be expressed as a salsa ingredient first; if not, the plain table above is
+> fine.
+>
+> ⚠ Note the boundary: this query would live in **`pylspt`**, not in
+> `types/vnoc.rs`. The fork holds wrappers with no logic; a memoised
+> interpreter query is logic, and the most load-bearing kind.
 
 **3. Multiple returns union.** `if x: return A() else: return B()` → both.
 Consistent with the no-branch-analysis rule. Fan-out cap applies —

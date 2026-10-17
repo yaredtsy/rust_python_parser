@@ -15,7 +15,7 @@ wrong? Name three.
 
 ---
 
-## The visibility wall
+## The visibility wall, and the way through it
 
 **4.** `plan/02-mapping/03` gives you a snippet calling `literal.iter_mro(...)`
 and marks the accessor name `[check]`. What is actually wrong with it, and why
@@ -38,9 +38,21 @@ return? Name the three surprises in its behaviour.
 
 Then say what is wrong with the second, in two specific ways.
 
-**8.** You have three options: implement C3, emit the deduped DAG, or fork
-(Option A) to reach `iter_mro`. What evidence would make you pick each? Where
-does that evidence come from, and at which milestone?
+**8.** You had three options: implement C3, emit the deduped DAG, or fork to
+reach `iter_mro`. The answer is the fork. Give the argument that is **not**
+about MRO correctness — the one about the next component after this one.
+
+**8b.** The wrapper file lives at `types/vnoc.rs` and not at `types/../vnoc.rs`
+or in a new crate. Give the language rule that forces it, and the rebase
+argument that makes "one added file plus one `pub mod` line" cheaper than
+"flip `pub(crate)` to `pub` where needed".
+
+**8c.** `class_mro` returns `Vec<Option<Definition>>`. Why not
+`Vec<ClassBase>`, which is what `iter_mro` actually yields? And why `Option`
+rather than skipping the bases ty cannot resolve?
+
+**8d.** Name the three rules that keep a fork cheap to rebase, and for each say
+what breaks if you ignore it.
 
 **9.** Is `base_classes` order actually observable downstream? How would you
 find out without asking anyone?
@@ -86,6 +98,10 @@ missed.
 **16.** `static_member_type_for_attribute(model, &ExprAttribute)` takes syntax.
 For `self.handler.handle`, what does it use as the receiver's type, and why is
 that the wrong receiver for your call tree?
+
+**16b.** `vnoc::member(db, env, ty, name)` takes a type instead. Does that solve
+`dispatch`? Say precisely what it does and does not remove from
+`plan/03-call-tree/06`'s workload.
 
 ---
 
