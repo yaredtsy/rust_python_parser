@@ -57,18 +57,23 @@ not the same thing.
 that describe *what exists in Ruff and ty and how it behaves* —
 `00-orientation/`, `01-crates/`, `02-mapping/`, `04-build/`, `05-reference/`.
 
-**Does not cover:** building the abstract interpreter (`plan/03-call-tree/`).
-That is the ~70% of the port that is *your design work*, and it is the wrong
-thing to learn from. You cannot get a mental model of a machine you have not
-built yet.
+**Does not cover:** writing `src/interp/` itself. That remains *your design
+work*, in real Rust, against a real project — no exercise substitutes for it.
 
 But you **do** need to know exactly where ty stops being enough, because that
 boundary is the entire reason the plan exists. So exercise **09** walks you
 through ty's own `outgoing_calls` and has you find, empirically, the exact input
 where it gives the wrong answer for your purposes. You will not build the
-replacement. You will just see the hole with your own eyes.
+replacement there — you'll just see the hole with your own eyes.
 
-After exercise 11 you re-read `plan/03-call-tree/` and it will read like a
+Exercise **12** picks the design back up afterward: once you've seen the hole,
+it walks `plan/03-call-tree/`'s architecture by hand, case by case — every
+shape a function call or a method call can take — using fixtures, worked
+traces, and the real Jedi driver as ground truth, the same way exercises
+00–02 taught the syntax layer. It stops short of handing you working Rust for
+`src/interp/` for the same reason every other exercise does: a solution you
+fought for teaches you the design, one you pasted only teaches you where the
+file is. By the time you reach it, `plan/03-call-tree/` reads like a
 description of a problem you already have, rather than a description of a
 solution you do not understand.
 
@@ -141,10 +146,18 @@ experience/
 │     writing pass cannot be a salsa query. Ten fixtures.
 │                                       covers: plan/02-mapping/02
 │
-└── 11-capstone/ ........................... put it together
-      A dev CLI: file in, JSON out. Node tree with real positions,
-      real IDs, real MRO. Plus the final exam over everything.
-                                        covers: plan/04-build/00, plan/04-build/02
+├── 11-capstone/ ........................... put it together
+│     A dev CLI: file in, JSON out. Node tree with real positions,
+│     real IDs, real MRO. Plus the final exam over everything.
+│                                       covers: plan/04-build/00, plan/04-build/02
+│
+│  ── THE HARD PART: the design you build next, taught the same way ──
+│
+└── 12-call-tree/ .......................... the abstract interpreter, by hand
+      Three folders: values (AbstractValue, OriginId, Env, the budget),
+      functions (every call shape), classes (self, attribute state, MRO).
+      No Rust to run yet -- predict against the real Jedi driver instead.
+                                        covers: plan/03-call-tree/ in full
 ```
 
 ---
@@ -165,9 +178,12 @@ experience/
 | 09 | 60 min | 2 h | mostly reading ty's source |
 | 10 | 2–3 h | 4–5 h | six files, four objects. it writes to the user's files |
 | 11 | 20 min | 4–6 h | assembly, not new ideas |
+| 12 | 4–6 h | 6–9 h | three folders, fifty files (33 md, 17 Python). the biggest, on purpose — it's the 70% |
 
-Call it two focused weeks, or a month of evenings. **07 and 09 are the two that
-matter most.** If you are short on time, do 00, 01, 02, 03, 07, 09.
+Call it two focused weeks, or a month of evenings, for 00–11. **07 and 09 are
+the two that matter most** of those. If you are short on time, do 00, 01, 02,
+03, 07, 09 — then 12 whenever you're ready to actually design the interpreter,
+since nothing before it substitutes for it.
 
 ---
 
@@ -226,6 +242,9 @@ Tick these off. Each is the exercise's own "done when" line.
 - [ ] **09** — you have an input where `outgoing_calls` is right and useless
 - [ ] **10** — you can inject IDs into a file, twice, with the second run a no-op
 - [ ] **11** — `pylspt-dev parse file.py` emits your node JSON
+- [ ] **12** — you can draw the call tree for any function/method-call shape
+      by hand, and you can state the `OriginId`/attribute-store design well
+      enough to start writing `src/interp/` for real
 
 ---
 
