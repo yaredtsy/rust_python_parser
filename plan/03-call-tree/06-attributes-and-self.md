@@ -48,7 +48,7 @@ origins, so their `handler` attributes never collide.
 
 ### Writing: scan `__init__` for `self.X = ...`
 
-**Called from exactly one place:** `construct()` in
+**Called from exactly one place:** `construct_instance()` in
 [`10`](10-return-values-and-state.md#2-return-value-flow), the first time a
 given `OriginId` is touched. Not from `resolve_call`'s tree-walk branch
 directly, and not inline wherever a constructor call happens to be seen —
@@ -106,7 +106,7 @@ fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> {
             //    which really is path-and-order-dependent and lives in the
             //    env that's threaded statement by statement), then
             //    `origin_attrs` (the constructor's baseline, memoised once
-            //    per origin by `construct()` — 04, 10 §2). A later write
+            //    per origin by `construct_instance()` — 04, 10 §2). A later write
             //    shadows the constructor's value for the same name; neither
             //    layer is consulted if the other already answered.
             if let Some(v) = cx.env.attrs.get(&(origin, name.into()))

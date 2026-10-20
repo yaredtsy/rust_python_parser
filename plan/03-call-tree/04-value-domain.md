@@ -117,11 +117,11 @@ impl OriginArena {
 }
 ```
 
-`construct()` in [`10`](10-return-values-and-state.md#2-return-value-flow) is
+`construct_instance()` in [`10`](10-return-values-and-state.md#2-return-value-flow) is
 the one function that interns an origin AND, on first touch, runs
 `record_self_assignments` ([`06`](06-attributes-and-self.md#writing-scan-__init__-for-self-x--)
 — unchanged) to fill this table. Everything downstream — `resolve_call`'s
-tree-walk branch included — calls `construct()` rather than minting its own
+tree-walk branch included — calls `construct_instance()` rather than minting its own
 instance, so there is exactly one writer and every reader agrees.
 
 This is deliberately **not** the same storage as `Env.attrs`

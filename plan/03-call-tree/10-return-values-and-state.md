@@ -119,11 +119,11 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model)
 
     for callee in callees {
         match callee.as_callable(self.db) {
-            // (a) constructor → a new-or-cached instance. See `construct()`
+            // (a) constructor → a new-or-cached instance. See `construct_instance()`
             //     below — this is the ONLY place a class gets constructed;
             //     `resolve_call`'s tree-walk branch (03) calls it too.
             Some(Callable::Class(c)) => {
-                out.push(self.construct(c, &args, call, env, model));
+                out.push(self.construct_instance(c, &args, call, env, model));
             }
 
             // (b) ★ project function → interpret its returns
@@ -143,7 +143,7 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model)
 }
 ```
 
-### ★ `construct()` — the one place a class gets constructed
+### ★ `construct_instance()` — the one place a class gets constructed
 
 Fixes the bug a two-line fixture caught: `resolve_call`'s tree-walk branch
 (`03`) and `eval_call_result`'s value-query branch each used to mint their
@@ -152,7 +152,7 @@ own instance for the same `Foo()` expression, so whichever one ran
 left attrs the other could never see. Both now call this, and only this:
 
 ```rust
-fn construct(
+fn construct_instance(
     &mut self,
     class: ClassLiteral<'db>,
     args: &Args<'db>,
@@ -183,7 +183,7 @@ fn construct(
 
 **This is the only caller of `record_self_assignments`.** Not `resolve_call`,
 not inline wherever a `Foo()` call happens to appear. `resolve_call`'s
-`Callable::Class` branch (`03`) calls `construct()` to get the instance (and,
+`Callable::Class` branch (`03`) calls `construct_instance()` to get the instance (and,
 as a side effect, the memoised attrs) *before* walking `__init__`'s body for
 the frame tree — so a nested call inside `__init__` that reads `self.X` set
 earlier in the same `__init__` sees it too, for free, because it's reading
