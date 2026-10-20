@@ -133,10 +133,16 @@ impl<'db> Interp<'db> {
                 }
                 Callable::Class(class) => {
                     let child = frame.add_child(qname, format!("ClassSchema/{id}"));
+                    // ★ construct(), not a locally-minted instance — this is
+                    // the SAME function eval_call_result (10) calls for the
+                    // same call site, so both agree on origin and attrs.
+                    // See 04's `origin_attrs` note for the bug this replaces:
+                    // two independent constructions of "the same" `Foo()`
+                    // used to mint two different origins.
+                    let instance = self.construct(class, &args, call, env, model);
                     if let Some(init) = self.lookup_init(class) {
-                        let instance = AbstractValue::instance_of(class, &args);
                         let init_env = self.bind_parameters(
-                            init, &args, Some(instance),   // `self` ← the new instance
+                            init, &args, Some(instance), env,   // `self` ← the new instance
                         );
                         self.walk_body(init, &init_env, child);
                     }
