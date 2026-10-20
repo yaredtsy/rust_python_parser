@@ -19,7 +19,7 @@ Six files, each one concern, read in order:
 
 | | file | what it gives you |
 |---|---|---|
-| 1 | [`01-abstractvalue.md`](01-abstractvalue.md) | the enum itself, and why `ty::Type` alone can't do this job |
+| 1 | [`01-abstractvalue.md`](01-abstractvalue.md) | the enum itself, why `ty::Type` alone can't do this job, and ★ **the design is not flow-sensitive** — an `if`/`else` is always a union, never a choice |
 | 2 | [`02-origin-and-identity.md`](02-origin-and-identity.md) | `OriginId`, `ValueId` — staying `Copy` without losing "which one, specifically" |
 | 3 | [`03-env-and-scope.md`](03-env-and-scope.md) | `Env`, the env-first-then-ty rule, `lift()` |
 | 4 | [`04-annotation-fallback.md`](04-annotation-fallback.md) | ★ a third resolution tier: fall back to the declared annotation before giving up to `Unknown` |

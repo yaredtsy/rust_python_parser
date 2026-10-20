@@ -110,6 +110,9 @@ run them against.
       say precisely what it answers and what it deliberately leaves to you
 - [ ] you can explain the annotation-fallback tier, where it sits in the
       resolution order, and why the ordering is the entire safety argument
+- [ ] you can state, unprompted, that this design is **not flow-sensitive**
+      — an `if`/`else` is always unioned, never evaluated — and say why
+      that's a deliberate scope limit "for now," not a bug
 
 ---
 

@@ -98,6 +98,54 @@ this point in this path", not "the type".
 > moment it's inconvenient is how this whole design quietly turns back into
 > `ty_ide::outgoing_calls` (`plan/03-call-tree/02`). Keep it a `Vec`.
 
+## ★ Not flow-sensitive — for now: an `if`/`else` is a union, never a choice
+
+State this rule explicitly, because every other file in this exercise
+leans on it without re-deriving it: **this design does not evaluate
+conditions.** `if`/`else`, `and`/`or`, a ternary, a `match` — none of them
+are ever asked "which branch does this path actually take." Both (or all)
+arms are evaluated and their results **unioned** into one `Values`,
+unconditionally, every time:
+
+```python
+def build(kind):
+    return JsonWriter() if kind == "json" else CsvWriter()
+
+build("json")   # resolves to Values[Instance{JsonWriter}, Instance{CsvWriter}]
+                 # — BOTH, even though "json" is a literal and the answer
+                 #   is, in principle, fully knowable
+```
+
+This is **current behaviour**, not a shortcut invented for this exercise —
+your Jedi driver doesn't evaluate conditions either
+(`plan/03-call-tree/01`'s "what it does *not* do" list: *"No branch
+analysis. `if cond: f() else: g()` yields **both** `f` and `g` as children
+of the same frame. Conditions are never evaluated, paths never split on
+them."*). Porting it line-by-line already gets this right; the risk is
+only in "improving" it by adding condition evaluation later without
+noticing that's a scope change, not a bug fix.
+
+**"For now" is doing real work in that sentence.** Nothing about
+`AbstractValue`/`Values` *prevents* adding real condition evaluation later
+— a literal-valued condition (`if True:`, `if kind == "json":` where `kind`
+is itself a traced literal) is exactly the kind of thing this design could
+narrow, the same way `ty` narrows within one flow-insensitive scope. But
+that is a **deliberate, separate extension**, not today's baseline, and
+it's exactly the line `plan/03-call-tree/01` draws on purpose:
+
+> **Union at branches, precision at bindings.** That is the whole design
+> rule. Path conditions are what make the search explode — deciding
+> *which* branch runs requires evaluating conditions, which requires
+> modelling comparisons, which requires modelling integers, and you are
+> writing a symbolic executor.
+
+So: **if you hit an `if`/`else` (or any other branch) while building this,
+union the arms and move on.** Don't special-case a literal condition to
+"help" — that's the one shortcut this design explicitly defers.
+`01-functions/05-returns-and-value-flow.md`'s `two_returns_union` fixture
+and `02-classes/01-constructing-an-instance.md`'s factory example are both
+built to exercise exactly this.
+
 ## `Ty(Type<'db>)` — the escape hatch, used constantly
 
 You will reach for `Ty(...)` far more than any other variant: every literal,
@@ -145,8 +193,43 @@ say, the constructing arguments themselves — see the next file.
 3. `AbstractValue::Class(ClassLiteral<'db>)` and `AbstractValue::Instance { class: ClassLiteral<'db>, .. }`
    both carry a `ClassLiteral`. What's the one-sentence difference in what
    they represent?
+4. `build("json")` from the "not flow-sensitive" section above passes a
+   **literal** string, so which branch runs is, in principle, fully
+   determinable without any abstract interpretation at all — plain
+   constant folding would do it. Does this design evaluate it anyway? What
+   does it do instead, and is that a bug?
 
-(Answers in this folder's [`answers.md`](answers.md).)
+<details><summary>Answers</summary>
+
+1. Because `c` is never evaluated (the "not flow-sensitive" rule above) —
+   both `a` and `b` are reachable outcomes as far as this design is
+   concerned, so both must be kept, enumerably, for whatever consumes this
+   expression's value to build a correct subtree for each.
+2. A parameter bound to `Unknown` because the *caller's* own value couldn't
+   be determined (`00-values/04`'s `run_unresolved` passing `opaque` into
+   `needs_the_annotation`) — nobody ever asked `ty` what that parameter's
+   type is in this case; the value was `Unknown` before `ty` entered the
+   picture at all. `Ty(Type::Dynamic)` would be wrong there specifically
+   because it claims `ty` *was* asked and came back uninformative, which
+   isn't what happened.
+3. `Class(C)` represents the class object **itself** — what you get by
+   naming `C` without calling it, and what you call to produce instances.
+   `Instance{class: C, ..}` represents **one object of that class**,
+   produced by an actual `C()` call at a specific, trackable site. The
+   `ClassLiteral` in both is "which class"; `Instance` additionally carries
+   *which construction*.
+4. No — it does **not** evaluate the condition, even though `"json"` is a
+   literal and a smarter design could. It unions both arms regardless,
+   exactly like it would for a genuinely unknown `kind`. This is **not a
+   bug** — it's the explicit, documented scope limit from this section:
+   union at branches, precision at bindings, full stop, for now. Narrowing
+   literal conditions is a real, separate future extension, not something
+   silently missing today.
+
+</details>
+
+(The whole-folder [`exam.md`](exam.md) / [`answers.md`](answers.md) cover
+different, cross-cutting questions — these quick checks are per-file.)
 
 ---
 
