@@ -73,12 +73,66 @@ pub struct OriginId(u32);   // index into an arena of (File, TextRange, PathHash
 ```
 
 Without `origin`, two `JsonWriter()` instances are identical values and your
-attribute store (next chapter) merges their state. With it, they stay distinct.
+attribute store merges their state. With it, they stay distinct.
 
 **[check]** — Jedi's `TreeInstance` has exactly this property (it holds the
 constructing `arguments`), which is why your current tool works. Verify with a
 fixture: two instances of the same class configured differently in `__init__`,
 each calling a different handler.
+
+### ★ `origin_attrs` — where a constructor's writes actually live
+
+`(File, TextRange, PathHash)` is content-addressed, on purpose: the SAME
+`Foo()` call site, on the SAME path, must always mint the SAME `OriginId` —
+otherwise [`03`](03-the-abstract-interpreter.md)'s tree-walk branch (which
+constructs `Pipeline(...)` to walk `__init__` for the frame tree) and
+[`10`](10-return-values-and-state.md)'s value-query branch (which constructs
+`Pipeline(...)` because something needs its *value*, e.g. as the receiver of
+`.run()`) mint two *different* origins for what is syntactically one
+expression, and nothing either of them records about `self.handler` is ever
+visible to the other. That was an actual bug in an earlier draft of this
+plan, caught by tracing a two-line fixture by hand — see
+[`06`](06-attributes-and-self.md)'s fixture 1.
+
+The fix is to make "attrs for this origin" a cache keyed by the origin
+itself, computed once, the first time anything asks — the same shape as
+`eval_returns`'s `return_memo` in [`10`](10-return-values-and-state.md#2-return-value-flow),
+and for the same reason: a pure function of `(class, args)`, safe to memoise,
+with exactly one writer.
+
+```rust
+pub struct Interp<'db> {
+    // ...
+    origin_arena: OriginArena,     // interns (File, TextRange, PathHash) → OriginId
+    origin_attrs: rpds::HashTrieMap<(OriginId, Name), Values<'db>>,   // same shape as Env.attrs
+}
+```
+
+```rust
+impl OriginArena {
+    /// Interns `(file, call.range(), path_key)`. The `bool` is `true` only
+    /// the first time this exact triple is seen — that's the caller's
+    /// signal to actually run `__init__`, not just fetch a cached id.
+    fn intern(&mut self, call: &ast::ExprCall, path_key: PathHash) -> (OriginId, bool);
+}
+```
+
+`construct()` in [`10`](10-return-values-and-state.md#2-return-value-flow) is
+the one function that interns an origin AND, on first touch, runs
+`record_self_assignments` ([`06`](06-attributes-and-self.md#writing-scan-__init__-for-self-x--)
+— unchanged) to fill this table. Everything downstream — `resolve_call`'s
+tree-walk branch included — calls `construct()` rather than minting its own
+instance, so there is exactly one writer and every reader agrees.
+
+This is deliberately **not** the same storage as `Env.attrs`
+([`06`](06-attributes-and-self.md#the-design-an-attribute-store-keyed-on-origin)).
+`origin_attrs` holds the constructor's baseline, computed once and shared
+by every path that reaches this origin. `Env.attrs` holds *later*, sequential
+writes — `p.handler = X()` after construction — which really are
+path-and-order-dependent and have to be threaded through `Env` the way
+[`10`](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)
+already does for local bindings. `member()`'s lookup checks both, in that
+order — see [`06`](06-attributes-and-self.md#reading-member-on-a-value).
 
 ### `ValueId` — interning, to stay `Copy`
 

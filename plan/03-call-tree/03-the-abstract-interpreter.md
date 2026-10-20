@@ -128,7 +128,7 @@ impl<'db> Interp<'db> {
                 Callable::Function(func) => {
                     let child = frame.add_child(qname, format!("FunctionSchema/{id}"));
                     // ★★★ THE CONTEXT ★★★  — this is `as_context(arguments)`
-                    let callee_env = self.bind_parameters(func, &args, callee.receiver());
+                    let callee_env = self.bind_parameters(func, &args, callee.receiver(), env);
                     self.walk_body(func, &callee_env, child);
                 }
                 Callable::Class(class) => {

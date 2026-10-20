@@ -48,7 +48,14 @@ origins, so their `handler` attributes never collide.
 
 ### Writing: scan `__init__` for `self.X = ...`
 
-When you enter a class via its constructor, before walking the body normally:
+**Called from exactly one place:** `construct()` in
+[`10`](10-return-values-and-state.md#2-return-value-flow), the first time a
+given `OriginId` is touched. Not from `resolve_call`'s tree-walk branch
+directly, and not inline wherever a constructor call happens to be seen —
+see [`04`](04-value-domain.md#-origin_attrs--where-a-constructors-writes-actually-live)
+for why a second, independent caller is exactly the bug this chapter used to
+have: two callers mint two origins for one `Foo()` expression, and whichever
+one runs `record_self_assignments` leaves the other with empty attrs.
 
 ```rust
 fn record_self_assignments(
@@ -57,7 +64,7 @@ fn record_self_assignments(
     init_env: &Env<'db>,
     instance_origin: OriginId,
 ) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
-    let mut attrs = init_env.attrs.clone();
+    let mut attrs = self.origin_attrs.clone();   // ★ the Interp-level cache, not init_env's
     let self_param = init.parameters(self.db).first()?.name();
 
     // Single linear pass over __init__'s body. No flow sensitivity:
@@ -93,8 +100,18 @@ and keeps this O(size of `__init__`).
 fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> {
     match self {
         AbstractValue::Instance { class, origin } => {
-            // 1. ★ path-specific instance state — the precise answer
-            if let Some(v) = cx.env.attrs.get(&(origin, name.into())) {
+            // 1. ★ path-specific instance state — the precise answer.
+            //    Two layers, checked in order: `Env.attrs` first (sequential
+            //    writes AFTER construction — 10 §3b's `p.handler = X()`,
+            //    which really is path-and-order-dependent and lives in the
+            //    env that's threaded statement by statement), then
+            //    `origin_attrs` (the constructor's baseline, memoised once
+            //    per origin by `construct()` — 04, 10 §2). A later write
+            //    shadows the constructor's value for the same name; neither
+            //    layer is consulted if the other already answered.
+            if let Some(v) = cx.env.attrs.get(&(origin, name.into()))
+                .or_else(|| cx.origin_attrs.get(&(origin, name.into())))
+            {
                 return v.clone();
             }
 
@@ -166,7 +183,10 @@ Options:
 [`10`](10-return-values-and-state.md#3-object-state-beyond-__init__)
 generalises it further — to *any* receiver, not just `self`, so
 `p.handler = X()` from outside the class works through the same code path.
-Note it makes the env
+This writes into `Env.attrs` (the sequential layer `member()` checks first —
+see above), **not** `origin_attrs` — it's a later, order-dependent write on
+top of the constructor's memoised baseline, not a correction to it. Note it
+makes the env
 mutable *during* a body walk, which conflicts with the "envs are immutable"
 invariant from [`03`](03-the-abstract-interpreter.md). Resolve it by threading
 the env through the statement loop by value:
@@ -195,10 +215,22 @@ class Child(Base):
     def go(self): self.log.write("hi")     # ← from Base.__init__
 ```
 
-Handle by making `super().__init__()` a normal call whose receiver is **the same
-instance** (same `OriginId`). Then `Base.__init__`'s `self.log = Logger()` writes
-into the same `(origin, "log")` slot and `Child.go` sees it. Nothing special
-needed — it falls out of the design, *provided* `super()` resolves.
+**Does not fall out for free** under the memoised design above —
+`record_self_assignments` only scans the `init` it was handed
+(`body_statements(init)`), so a plain call wouldn't see past
+`Child.__init__`'s own body into `Base.__init__`'s. It needs one explicit
+case: scanning `Child.__init__`'s body, a statement that is a call to
+`super().__init__(...)` (receiver resolves, via `super()`, to the same
+instance per [`03`](03-the-abstract-interpreter.md)'s `super()` handling)
+recurses `record_self_assignments` on the resolved `Base.__init__`, folding
+its assignments into the SAME `attrs` map before continuing the scan of
+`Child.__init__`. Bounded by the MRO's length, so no fixed-point machinery —
+still one linear pass per `__init__` in the chain, still last-write-wins.
+
+With that one case added, `Base.__init__`'s `self.log = Logger()` writes into
+the same `(origin, "log")` slot and `Child.go` sees it — *provided* `super()`
+resolves. **[check]** — verify what your current driver actually produces for
+the fixture above before deciding how much to invest.
 
 ```rust
 // eval: Call { func: Name("super"), args: [] } in a method body

@@ -119,10 +119,11 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model)
 
     for callee in callees {
         match callee.as_callable(self.db) {
-            // (a) constructor → a NEW instance with a fresh origin
+            // (a) constructor → a new-or-cached instance. See `construct()`
+            //     below — this is the ONLY place a class gets constructed;
+            //     `resolve_call`'s tree-walk branch (03) calls it too.
             Some(Callable::Class(c)) => {
-                let origin = self.fresh_origin(call, env.path_key());
-                out.push(AbstractValue::Instance { class: c, origin });
+                out.push(self.construct(c, &args, call, env, model));
             }
 
             // (b) ★ project function → interpret its returns
@@ -141,6 +142,59 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model)
     self.cap_fanout(out)
 }
 ```
+
+### ★ `construct()` — the one place a class gets constructed
+
+Fixes the bug a two-line fixture caught: `resolve_call`'s tree-walk branch
+(`03`) and `eval_call_result`'s value-query branch each used to mint their
+own instance for the same `Foo()` expression, so whichever one ran
+`record_self_assignments` ([`06`](06-attributes-and-self.md#writing-scan-__init__-for-self-x--))
+left attrs the other could never see. Both now call this, and only this:
+
+```rust
+fn construct(
+    &mut self,
+    class: ClassLiteral<'db>,
+    args: &Args<'db>,
+    call: &ast::ExprCall,
+    env: &Env<'db>,
+    model: &SemanticModel<'db>,
+) -> AbstractValue<'db> {
+    // `origin_arena` interns by (File, TextRange, PathHash) — same call site,
+    // same path, same id, every time. `is_new` tells us whether THIS call is
+    // the one that must run `__init__`, or whether some earlier call already
+    // did and `self.origin_attrs` already has the answer.
+    let (origin, is_new) = self.origin_arena.intern(call, env.path_key());
+
+    if is_new {
+        if let Some(init) = self.lookup_init(class) {
+            let instance = AbstractValue::Instance { class, origin };
+            let init_env = self.bind_parameters(init, args, Some(instance), env);
+            self.origin_attrs = self.record_self_assignments(init, &init_env, origin);
+        }
+        // No `__init__` found (or none declared): origin exists, attrs stay
+        // empty for it — `member()` falls through to the class body / ty,
+        // same as any other miss.
+    }
+
+    AbstractValue::Instance { class, origin }
+}
+```
+
+**This is the only caller of `record_self_assignments`.** Not `resolve_call`,
+not inline wherever a `Foo()` call happens to appear. `resolve_call`'s
+`Callable::Class` branch (`03`) calls `construct()` to get the instance (and,
+as a side effect, the memoised attrs) *before* walking `__init__`'s body for
+the frame tree — so a nested call inside `__init__` that reads `self.X` set
+earlier in the same `__init__` sees it too, for free, because it's reading
+from the same `self.origin_attrs` this function just populated.
+
+Note this is simpler than `eval_returns`'s memo below, not harder: there is
+no in-flight/cycle case, because `__init__` constructing another instance of
+the same class at the same call site inside its own body would be unbounded
+recursion in the *source program*, not a property of this cache — ordinary
+recursion-depth budgeting ([`08`](08-termination-and-cycles.md)) already
+covers it the same way it covers any other recursive call.
 
 ```rust
 enum Memo<'db> { InFlight, Done(Values<'db>) }
