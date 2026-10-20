@@ -22,7 +22,7 @@ files lean on earlier ones:
 | 1 | [`01-calling-a-plain-function.md`](01-calling-a-plain-function.md) | ★ the base case | the full trace, step by step |
 | 2 | [`02-defaults-and-keywords.md`](02-defaults-and-keywords.md) | `f(a, b=X)` | defaults evaluate in the **defining** scope |
 | 3 | [`03-star-args-and-splats.md`](03-star-args-and-splats.md) | `*args`, `**kwargs`, `f(*items)` | bind to `Unknown` rather than guess an alignment |
-| 4 | [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md) | nested `def`, free variables, lambdas | `Env.parent` — the closure chain |
+| 4 | [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md) | nested `def`, free variables, lambdas | ★ `Env.parent` — the closure chain, and a confirmed gap in the base design's `closure_parent` |
 | 5 | [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) | ★ `w = make(); w.write()` | two independent traversals: the tree walk and the return-value query |
 | 6 | [`06-callbacks-and-higher-order.md`](06-callbacks-and-higher-order.md) | functions as values | dispatch on the **value**, never on the syntax |
 | 7 | [`07-curry-partial-and-decorators.md`](07-curry-partial-and-decorators.md) | curry, `functools.partial`, decorators | curry is free; partial stays opaque; decorators resolve undecorated |
@@ -33,7 +33,11 @@ Then [`exam.md`](exam.md) for the whole folder.
 **Files 1, 5 and 6 are the core.** 1 is the trace you'll replay in your
 head for every call site you ever debug; 5 is the single highest-value
 addition over a naive port; 6 is the one that shows the design was never
-about functions-as-syntax in the first place.
+about functions-as-syntax in the first place. **File 4 is the one with a
+confirmed, open gap** — the base design's `closure_parent` is checked
+against the real Jedi driver and shown to break the moment a closure is
+called from a different frame than the one that defined it (curry, file 7,
+inherits the same gap). Read it for the bug, not just the mechanism.
 
 ---
 

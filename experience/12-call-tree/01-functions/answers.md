@@ -35,6 +35,16 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    all, because `locals` is always checked first and would already have a
    hit.
 
+   ⚠ Caveat worth holding onto: this fixture calls `inner()` from *inside*
+   `outer`, so `caller_env` at that point already equals the defining env —
+   the lookup succeeds without the mechanism actually having to be
+   closure-aware. Call the closure from a *different* frame than the one
+   that defined it (`04`'s `make_handler`/`read_json`/`read_csv` fixture)
+   and the same reasoning breaks: `caller_env` is then wherever the call
+   happens to be textually written, not where `h` (or `n`, or `writer`) was
+   bound. See `04-closures-and-nested-functions.md`'s "escaping-closure
+   gap" section.
+
 5. `resolve_call` (the ordinary tree walk, which adds `make` as a child of
    `run`'s frame regardless of its return value) and `eval_returns` (a
    value query that interprets `make`'s `return JsonWriter()` to determine
@@ -80,12 +90,21 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    for `walk`'s return — even though `walk`'s `return Handle()` is plainly
    determinable and `r.close()` should resolve against `Handle`.
 
-10. `functools.partial` stays opaque; manual curry resolves at full
-    precision. The reason: curry's "remembered" state is just an ordinary
-    closure your interpreter already interprets completely (a nested
-    function, a free variable via `Env.parent`, a value returned via
-    `eval_returns`) — nothing about it is foreign machinery. `partial` is a
-    stdlib *function*, so `is_project_code` is false for it, and the
-    interpreter never looks inside stdlib bodies at all — it has no return
-    statements of `functools.partial`'s own to interpret, only `ty`'s
-    (usually opaque) declared type for whatever it returns.
+10. Neither resolves precisely under the base design when the returned
+    closure is called from a different frame than where it was created —
+    but for different reasons, one permanent and one fixable.
+    `functools.partial` stays opaque **permanently, by design**: it's a
+    stdlib function, `is_project_code` is false for it, and the
+    interpreter never looks inside stdlib bodies at all — there are no
+    `return` statements of `functools.partial`'s own to interpret, only
+    `ty`'s usually-opaque declared type for whatever it returns. Manual
+    curry's imprecision is a **fixable gap**, not a design limit: `inner`
+    is an ordinary project function, and the only reason `n` fails to
+    resolve is that `closure_parent(func, caller_env)` is handed the
+    *caller's* env instead of the env captured at `inner`'s definition
+    site (`04-closures-and-nested-functions.md`'s escaping-closure
+    section). Once `Closure { func, captured: EnvId }` exists, curry
+    resolves at full precision and `partial` still doesn't — which is
+    exactly the distinction worth holding onto: one imprecision is a
+    property of what `functools.partial` *is* (foreign code), the other was
+    a property of what the interpreter hadn't built yet.

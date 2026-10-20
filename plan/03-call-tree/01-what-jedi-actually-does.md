@@ -141,6 +141,23 @@ line-by-line, because the Rust version has no Jedi underneath to fall back on:
   `TreeInstance` carries the constructing `arguments`
   (`call_resolver.py:191-196`).
 
+- **Closures over enclosing-function locals.** `make_handler(writer)`
+  returning a nested `handle(data): writer.write(data)`, then calling
+  `handle` later from a *different* frame than where it was created,
+  resolves to the writer `handle` actually closed over — `read_json`'s
+  `handle` and `read_csv`'s never cross-contaminate. **[verified]** —
+  reproduced directly against `call_resolver.py`'s own algorithm (infer the
+  callee, `as_context(arguments)`, resolve inside it) with
+  `dynamic_params` off, so this is the closure mechanism itself, not
+  Jedi's heuristic root search papering over it. This is the same
+  `as_context` machinery as the two rows above, not a third, unrelated
+  behaviour: all three rows are one Jedi mechanism (a context's parent
+  points to where it was *defined*) showing up in three places. A port
+  that gets return-value flow and attribute state right but still resolves
+  a free variable against the *caller's* environment rather than the
+  *defining* one has ported two-thirds of one idea and silently dropped
+  the rest of it.
+
 > ty replaces Jedi's *type* answers but not its *value* answers. Anywhere the
 > current behaviour depends on Jedi's lazy in-context inference rather than on
 > your explicit binding code, you must build the equivalent yourself or lose it.

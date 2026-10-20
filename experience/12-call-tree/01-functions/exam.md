@@ -89,11 +89,13 @@ def h(): g()
    produce a *wrong* answer in each direction (one fixture per direction is
    fine).
 
-10. `functools.partial(f, x)` and manual curry (`def make(): def inner():
+10. `functools.partial(f, x)` and manual curry (`def make(n): def inner():
     ...; return inner`) both "return a function that remembers an earlier
-    argument." One resolves at full precision in this design; the other
-    stays opaque. Which is which, and what's the one-sentence reason for the
-    difference?
+    argument." Under the **base** design (before `04`'s `Closure`/`EnvId`
+    fix), does either resolve precisely when called from a different frame
+    than where it was created? Which one's imprecision is permanent by
+    design, and which one's is a fixable gap — and why that distinction
+    matters?
 
 ---
 

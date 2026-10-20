@@ -11,7 +11,7 @@ knowing which case you're in.
 
 ---
 
-## Curry — resolves fully, for free
+## Curry — the escaping-closure case, not a free pass
 
 ```python
 def make_adder(n):
@@ -23,27 +23,50 @@ add_one = make_adder(1)
 add_one(5)
 ```
 
-This needs **no new machinery at all** — it's
+This *looks* like it should need no new machinery — just
 [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) (a function
 returning a value) composed with
 [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md)
-(the returned value is itself a nested function, closing over `n`):
+(the returned value is itself a nested function, closing over `n`). That
+was this file's original claim. **It's wrong, for the exact reason
+`04`'s "escaping-closure gap" section exists** — and this fixture is a
+sharper example of it than `04`'s own, because curry's whole *point* is
+assigning the closure to a name and calling it **later, from somewhere
+else**. `add_one(5)` runs inside `use_curry`'s frame — a different frame
+from `make_adder`'s, which is the one that actually bound `n`.
 
 ```
 eval_call_result(make_adder(1))
   → case (b): project function → eval_returns(make_adder, env{n: Ty(int)})
-  → the body's one `return add` → eval(Name "add") → env hit (add is a
-    local of make_adder, bound by the `def add:` statement itself) →
-    AbstractValue::Function(add)
+  → the body's one `return add` → eval(Name "add")
+    → NOT an env hit — record_bindings has no arm for `def add:`, so
+      nothing in env.locals was ever set for the name "add"
+    → falls to the ty-fallback: ty's own lexical scoping finds the nested
+      def regardless of our env → Type::FunctionLiteral(add) → lift
+    → AbstractValue::Function(add)        — a BARE handle, no captured env
 add_one = Function(add)
 add_one(5)
   → eval_callee(add_one) → env hit → Function(add)
-  → resolve_call descends into add, exactly like any other function call
+  → bind_parameters(add, args, None, caller_env = use_curry's env)
+  → parent: closure_parent(add, caller_env)
+    → caller_env is use_curry's env, which never had `n` in it —
+      `n` was a parameter of make_adder, a call that already returned
+  → inside add's body, env.lookup("n") → MISSES, both locals and parent
 ```
 
-`n` inside `add`'s body resolves through `Env.parent`, same mechanism as
-`04`'s `h` — curry is not a new case, it's two cases you already built,
-composed.
+Under the base design, **`add_one(5)`'s `x + n` cannot resolve `n`
+correctly** — `n` falls through to whatever `ty` infers for a bare,
+unbound name in that position, which is not going to be `1`. This needs
+exactly the fix `04` sketches: bind `add` to
+`Closure { func: add, captured: EnvId }` at the point the `def add:`
+statement is walked (while `n` is still in `make_adder`'s own `locals`),
+and use that captured env — not whichever frame `add_one` is later called
+from — as `add`'s `parent` every time it's invoked.
+
+With that fix in place, curry resolves at full precision, and *then* the
+original framing holds: it's `05` and `04` composed, no new case. Without
+it, curry is the fixture that makes the escaping-closure gap impossible to
+ignore, because it's not an edge case here — it's the entire idiom.
 
 ## `functools.partial` — resolves to nothing, on purpose
 
@@ -104,9 +127,10 @@ everything `Unknown`") is the safety valve for that case specifically.
 
 Using `python/curry.py`:
 
-1. `use_curry()` — does resolving `add_one(5)` ever touch `ty`'s inference
-   at all, or does every step stay inside your own `env`/`eval_returns`
-   machinery? Why does that matter for precision?
+1. `use_curry()` — under the **unfixed** base design, does `add_one(5)`
+   resolve `n` correctly? Walk the trace above and say exactly where it
+   goes wrong. Then say what changes once the `Closure`/`EnvId` fix from
+   `04` is in place.
 2. `use_partial()` — what does the tree look like for `bound(5)`? Is
    `Handler.go` reachable from this call at all, under the base design?
 3. `use_decorated()` calls `fetch()`. Per the undecorated-function rule,
@@ -116,12 +140,19 @@ Using `python/curry.py`:
 
 <details><summary>Answers</summary>
 
-1. Never touches `ty` — `make_adder`'s return is interpreted directly
-   (`eval_returns`), `add_one` lands in `env` as a traced `Function` value,
-   and `add_one(5)`'s callee lookup is an `env` hit. This matters because
-   it means curry patterns resolve at **full precision** — no union, no
-   opaque fallback — purely because every step happens to be something your
-   own machinery already tracks precisely.
+1. No — it goes wrong at the point `add`'s body looks up `n`.
+   `bind_parameters(add, args, None, caller_env)` is called with
+   `caller_env = use_curry`'s env (wherever `add_one(5)` textually is),
+   not `make_adder`'s env (where `n` was actually bound and had already
+   returned by this point). `closure_parent(add, caller_env)` has no way
+   to recover `make_adder`'s env from that input, so `env.lookup("n")`
+   inside `add` misses both `locals` and `parent`, and falls through to
+   whatever `ty` infers for a bare name in that position — not `1`. Once
+   the `Closure { func, captured: EnvId }` fix is in place, `add` is bound
+   to that closure (with `n` captured) at the point `def add:` is walked
+   inside `make_adder`, and `add_one(5)` uses the *captured* env
+   regardless of which frame it's called from — resolving to `1 + 5`
+   precisely, with no union and no opaque fallback.
 2. No — the tree stops at `functools.partial(takes_two, Handler())`,
    because `functools.partial` itself is not project code. `bound(5)`
    produces no children; `Handler.go` is not reachable through this call in
