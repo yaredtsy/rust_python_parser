@@ -39,6 +39,35 @@ multiplicatively — a chain where each link has 3 possibilities is 27 paths
 by the third hop. `00-values/06`'s `MAX_CHAIN_FANOUT` exists specifically
 for this; cap it there, not here.
 
+## Depth is recursion, not a store feature
+
+`Env` maps names to `Values`, and an `Instance` carries its own `OriginId`, so
+hop *n+1* is the same lookup as hop *n*. The only depth-related code is that
+`eval` of `Expr::Attribute` recurses on `attr.value`:
+
+```rust
+Expr::Attribute(attr) => {
+    let recvs = self.eval(&attr.value, env, model);     // `a.b.c` -> eval `a.b` -> eval `a`
+    let mut out = Values::new();
+    for recv in recvs.into_iter().take(MAX_CHAIN_FANOUT) {
+        out.extend(recv.member(cx, &attr.attr.id));
+        if out.len() >= MAX_CHAIN_FANOUT { break; }
+    }
+    dedup(&mut out);
+    if out.is_empty() { smallvec![Unknown] } else { out }
+}
+```
+
+- **Mid-chain `Unknown`:** `Unknown.member(..)` is `[Unknown]`, so the chain
+  quietly dies and the final call has no edge (`unknown_mid_chain` in
+  `python/deep_chain.py`).
+- **Cap per hop, after dedup:** two paths to the same instance cost nothing.
+- **Mixed hops:** each hop looks only at its own receiver's variant, so
+  `config.SERVICE.client.send()` (module -> instance -> instance) needs
+  nothing extra. A module hop also resolves **submodules** that the program
+  imported (`pkg.sub.mod.f()`), see the plan's "Module chains".
+- **Writes at depth** are `05` §(c).
+
 ## Bound methods as callbacks — closing the loop with `01-functions/06`
 
 ```python
@@ -130,6 +159,10 @@ Using `python/inheritance.py`:
    `member()` calls does resolving the callee of
    `session.service.handler.handle(4)` require? Which one(s) hit `attrs`,
    and which hit the MRO walk?
+4. In `deep_chain.py`'s `ambiguous_link`, `holder` has two possible values.
+   What does `holder.service.handler.handle(3)` produce, and what bounds it?
+5. In `unknown_mid_chain`, which hop yields `Unknown`, and what happens to the
+   hops after it?
 
 <details><summary>Answers</summary>
 
@@ -153,6 +186,17 @@ Using `python/inheritance.py`:
    entry for `Handler`'s instance (nothing ever assigned `self.handle =
    ...`), so it falls through to the MRO walk, which finds `handle` defined
    directly on the `Handler` class body.
+
+4. Two `Session()` call sites mint two origins, `O_a` and `O_b`, so `holder`
+   is a 2-value `Values`. Hop 1 gives two `Service` instances, hop 2 gives
+   two `LoudHandler` instances (`Session.__init__`'s depth-2 write replaced
+   `Service`'s `Handler()` on each), and hop 3 finds the same
+   `LoudHandler.handle` for both. Two paths, **one distinct callee** after
+   dedup, so the fan-out costs nothing against `MAX_CHAIN_FANOUT` (8). The
+   cap only bites when distinct values pile up.
+5. `thing.service`: `thing` is a bare parameter with no annotation, so it is
+   `Unknown`. `Unknown.member("service")` is `Unknown`, and so on to the end.
+   The call has no edge, and nothing panics or guesses.
 
 </details>
 

@@ -26,7 +26,7 @@ Seven files, in the order you should read them:
 | 4 | [`04-two-instances-and-origin-isolation.md`](04-two-instances-and-origin-isolation.md) | ★★ two instances, no cross-talk | **the fixture to write first** — proves 3 is actually correct |
 | 5 | [`05-assignment-outside-init-and-external-mutation.md`](05-assignment-outside-init-and-external-mutation.md) | writes outside `__init__`, writes from outside the class | one generalisation, one deliberate refusal to generalise further |
 | 6 | [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md) | `@staticmethod`/`@classmethod`/`@property` | three more receiver-binding rules, one reachability rule |
-| 7 | [`07-bound-methods-chains-and-mro-dispatch.md`](07-bound-methods-chains-and-mro-dispatch.md) | `a.b.c()`, `super()`, bound methods as callbacks | the MRO walk is **one already-merged wrapper**, not code you write |
+| 7 | [`07-bound-methods-chains-and-mro-dispatch.md`](07-bound-methods-chains-and-mro-dispatch.md) | `a.b.c.f()` at any depth, `super()`, bound methods as callbacks | chain depth is `eval` recursion; the MRO walk is **one already-merged wrapper**, not code you write |
 
 Then [`exam.md`](exam.md) for the whole folder — and
 [`../exam.md`](../exam.md) for the whole exercise, combining both folders.
@@ -62,6 +62,8 @@ Then [`exam.md`](exam.md) for the whole folder — and
 - [ ] you can produce the locals map for a `@staticmethod` call and for a
       `@classmethod` call, and say why `@property` is a reachability
       question, not a binding one
+- [ ] you can explain why `a.b.c.f()` and `a.b.c = v` work at any depth
+      without any depth-specific code, and what happens at an `Unknown` hop
 - [ ] you can name the real file (`vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs`)
       that answers "what is `.name` on this type" and explain what it does
       *not* answer

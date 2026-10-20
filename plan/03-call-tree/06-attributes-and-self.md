@@ -64,27 +64,20 @@ fn record_self_assignments(
     init_env: &Env<'db>,
     instance_origin: OriginId,
 ) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
-    let mut attrs = self.origin_attrs.clone();   // ★ the Interp-level cache, not init_env's
-    let self_param = init.parameters(self.db).first()?.name();
-
-    // Single linear pass over __init__'s body. No flow sensitivity:
-    // later assignments simply overwrite earlier ones, matching the
-    // "no branch analysis" limit from 03-call-tree/01.
-    for stmt in body_statements(init) {
-        if let ast::Stmt::Assign(assign) = stmt {
-            for target in &assign.targets {
-                if let ast::Expr::Attribute(attr) = target {
-                    if is_name(&attr.value, self_param) {
-                        let v = self.eval(&assign.value, init_env, model);
-                        attrs.insert_mut((instance_origin, attr.attr.id.clone()), v);
-                    }
-                }
-            }
-        }
-        // also: AnnAssign (`self.x: T = v`), and walk into `if`/`try` bodies
-        // one level — constructors commonly guard assignments.
+    // ★ No `is_name(&attr.value, self_param)` filter. That filter capped writes
+    //   at depth 1 (`self.x = v`) and silently dropped `self.a.b = v`. Every
+    //   attribute target goes through `bind_attribute` (below), the SAME write
+    //   path used outside `__init__`, so any depth works and the two
+    //   cannot drift apart.
+    //
+    // `init_env` already binds `self` -> Instance{C, instance_origin}, so
+    // `self.x = v` is just the receiver `self` evaluating to that origin.
+    let mut env = init_env.clone();
+    env.attrs = self.origin_attrs.clone();       // the Interp-level cache, not init_env's
+    for stmt in body_statements(init) {          // descends into if/try one level
+        env = self.record_bindings(stmt, env);   // Name AND Attribute targets
     }
-    attrs
+    env.attrs
 }
 ```
 
@@ -154,13 +147,95 @@ binds `self` correctly inside `process`.
 
 ---
 
-## Attribute chains
+## Attribute chains: any depth, read and write
 
-`self.a.b.c()` is just `member` three times, each on the result of the last.
-Because `member` returns `Values` (plural), a chain over an ambiguous link
-fans out. **Cap the fan-out** — a chain where each link has 3 possibilities is
-27 paths. `MAX_CHAIN_FANOUT` alongside `MAX_UNION_FANOUT` from
-[`04`](04-value-domain.md).
+`Env` maps names to `Values`, and an `Instance` value carries its own
+`OriginId`, so every hop of `a.b.c.f` is the same one-step lookup. Depth is
+not a property of the store. It falls out of `eval` being recursive on
+`attr.value`.
+
+### Read: the `Expr::Attribute` arm of `eval`
+
+```rust
+Expr::Attribute(attr) => {
+    // recurse FIRST: `a.b.c` evaluates `a.b`, which evaluates `a`
+    let recvs = self.eval(&attr.value, env, model);
+    let mut out = Values::new();
+    for recv in recvs.into_iter().take(MAX_CHAIN_FANOUT) {     // cap per hop
+        out.extend(recv.member(cx, &attr.attr.id));            // tiers 1-3
+        if out.len() >= MAX_CHAIN_FANOUT { self.stats.chain_fanout_hits += 1; break; }
+    }
+    dedup(&mut out);
+    if out.is_empty() { smallvec![AbstractValue::Unknown] } else { out }
+}
+```
+
+- **Mid-chain `Unknown`:** `Unknown.member(..)` is `[Unknown]` (the `_` arm of
+  `member`), so the rest of the chain stays `Unknown` and the call at the end
+  is simply unresolved. Nothing panics, nothing is guessed.
+- **Cap:** applied on every hop, after dedup. Duplicates (two paths reaching the
+  same instance) cost nothing. Only genuinely distinct values count toward the
+  cap.
+- **A `@property` hop:** `member` yields a property marker and this arm
+  invokes the getter ([`06`-classmethod exercise](../../experience/12-call-tree/02-classes/06-classmethod-staticmethod-property.md)),
+  so `s.active_handler.handle(3)` is also a chain.
+- **A call mid-chain** (`make().b.c()`): `attr.value` is a `Call`, which `eval`
+  already resolves via return-value flow ([`10`](10-return-values-and-state.md)).
+
+### Write: `bind_attribute`, one function for every depth
+
+```rust
+fn bind_attribute(&mut self, attr: &ast::ExprAttribute, v: Values<'db>, mut env: Env<'db>) -> Env<'db> {
+    // `a.b.c = v` : the receiver is `a.b`, evaluated by the chain rule above.
+    let recvs: Vec<_> = self.eval(&attr.value, &env, model).into_iter()
+        .filter_map(|r| match r { AbstractValue::Instance { origin, .. } => Some(origin), _ => None })
+        .collect();
+    let strong = recvs.len() == 1;                       // exactly one candidate -> replace
+    for origin in recvs {
+        env = env.bind_attr(origin, &attr.attr.id, v.clone(), strong);   // else union with old
+    }
+    env    // no Instance in the receiver values -> write dropped (deliberate, 10 §3b)
+}
+```
+
+Only the LAST name is written. Everything before it is a read. `a.b.c = X()`
+writes `(origin_of(a.b), "c")`, and a later `a.b.c.f()` reads it back through
+the same origin, so write and read agree at any depth.
+
+Two points that differ from a naive version:
+
+- **Write to every Instance receiver**, not just the first. If `a.b` is ambiguous
+  between two instances, either may have been mutated. Binding both is a sound
+  over-approximation, and it keeps the "no sound way to invalidate" refusal for
+  *unknown* receivers separate from the *ambiguous but known* case. This is a
+  weak update (union with the old value), not a replacement, unless exactly one
+  Instance matched.
+- **Intermediate hops are never created.** `a.b.c = v` where `a.b` has no
+  entry does NOT mint a `b`. `a.b` evaluates to `Unknown`, so the write drops.
+  Python raises `AttributeError` there too.
+
+### Module chains: `pkg.sub.mod.f()`
+
+`member` on `Module(m)`:
+
+1. a symbol `name` defined in `m` -> `lift` it (function, class, constant);
+2. else a **submodule** named `m.name` that the program has imported
+   (`import pkg.sub.mod` binds `pkg`, and makes `pkg.sub` and `pkg.sub.mod`
+   reachable as attributes) -> `Module(that)`;
+3. else `cx.ty_member(Type::module(m), name)`.
+
+Tier 2 is what makes a 3-deep module chain work. Without it `pkg.sub`
+resolves to nothing, because `sub` is not a symbol *in* `pkg/__init__.py`.
+Whether a submodule is reachable depends on the importing statements in
+scope. `import pkg` alone does NOT expose `pkg.sub` unless `pkg/__init__.py`
+itself imports it, and the lookup must not either.
+
+Module and instance hops mix freely (`config.SERVICE.client.send()`), since
+each hop only looks at its own receiver's variant.
+
+> **Decision — weak updates.** `bind_attr(.., strong)` replaces the old value
+> only when exactly one Instance matched. With several candidates, python may
+> have written only one of them, so each gets `old ∪ new`.
 
 ---
 
@@ -321,8 +396,12 @@ Pipeline(CsvHandler()).run(y)
 a = Pipeline(JsonHandler()); b = Pipeline(CsvHandler())
 a.run(1); b.run(2)                     # must NOT cross-contaminate
 
-# 3. attribute chain
+# 3. attribute chain, read
 self.client.session.send(req)
+# 3b. attribute chain, write then read, mid-chain Unknown, ambiguous link
+a.b.c = X(); a.b.c.f()
+# 3c. module chain
+pkg.sub.mod.f()
 
 # 4. inherited attribute via super().__init__()
 # 5. assignment outside __init__

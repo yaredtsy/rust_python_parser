@@ -76,6 +76,32 @@ whatever `env` has for it), and if that's a traced `Instance`, the write
 lands in `attrs` keyed on *that instance's* origin, exactly like any
 `__init__` write would.
 
+## (c) A write at depth: `a.b.c = v`
+
+```python
+s = Session()
+s.service.handler = Handler()    # receiver is `s.service`, not `s`
+s.service.handler.handle(2)
+```
+
+Same `bind_attribute`, no new code. Only the **last** name is the write
+target. The receiver expression, `s.service`, is evaluated with the ordinary
+chain rule ([`07`](07-bound-methods-chains-and-mro-dispatch.md)), lands on
+`Instance{Service, O2}`, and the write is `(O2, "handler")`. The next
+`s.service.handler` read goes through the same `O2`, so write and read agree
+at any depth.
+
+Three rules to know:
+
+1. **Intermediate hops are never created.** If `s.service` evaluates to
+   `Unknown`, the write drops, as in Python, which raises `AttributeError`.
+2. **Ambiguous receiver -> weak update.** If `s.service` is two instances,
+   bind to both with `old ∪ new`. Replace (strong update) only when exactly
+   one Instance matched.
+3. **Inside `__init__` too.** `self.service.handler = LoudHandler()` is the
+   same call. `Session.go` then resolves to `LoudHandler.handle`, not
+   `Handler.handle`, which is the one a depth-1-only write scan gets wrong.
+
 ## The one thing this does **not** attempt
 
 > **Dropping writes to unknown receivers is deliberate.** If `self.eval(&attr.value, ...)`
@@ -91,7 +117,7 @@ smaller cost than that.
 
 ## Exercise
 
-Using `python/external_mutation.py`:
+Using `python/external_mutation.py` (1-3) and `python/deep_chain.py` (4-5):
 
 1. Trace `write_outside_init()`. At what point does `(origin, "handler")`
    first get an entry in `attrs` — is it before or after `p.configure()`
@@ -106,6 +132,11 @@ Using `python/external_mutation.py`:
    `p.configure()`'s write to `self.handler` in that case? (Hint: trace
    through what `self` is bound to inside `configure` when the receiver
    itself is `Unknown`, and re-read "dropping writes to unknown receivers.")
+4. In `deep_chain.py`, `Session.__init__` does `self.service.handler =
+   LoudHandler()`. Which receiver does `bind_attribute` evaluate, and which
+   key does it write? What does `Session().go()` resolve to?
+5. In `write_deep_then_read`, which `(origin, name)` entry is overwritten by
+   `s.service.handler = Handler()`, and is it a strong or weak update?
 
 <details><summary>Answers</summary>
 
@@ -130,6 +161,13 @@ Using `python/external_mutation.py`:
    find no `Instance` variant among the receiver's possibilities, and the
    write would be silently dropped — exactly the "unknown receiver" rule
    this file names explicitly.
+4. Receiver `self.service` -> `Instance{Service, O2}` (written by the first
+   line of `__init__`); key `(O2, "handler")` -> `LoudHandler`. This replaces
+   the `Handler()` that `Service.__init__` wrote under the same key, so
+   `go()` resolves to `LoudHandler.handle`. A scan that only accepts the
+   bare `self` as receiver would drop this write and resolve `Handler.handle`.
+5. `(O2, "handler")` again, with `Handler` replacing `LoudHandler`. Strong:
+   `s.service` has exactly one Instance candidate.
 
 </details>
 

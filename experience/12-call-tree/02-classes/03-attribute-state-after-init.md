@@ -49,24 +49,21 @@ unchanged; only `locals` starts fresh.
 fn record_self_assignments(
     &self, init: FunctionDef<'db>, init_env: &Env<'db>, instance_origin: OriginId,
 ) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
-    let mut attrs = init_env.attrs.clone();
-    let self_param = init.parameters(self.db).first()?.name();
-
+    let mut env = init_env.clone();
     for stmt in body_statements(init) {
-        if let ast::Stmt::Assign(assign) = stmt {
-            for target in &assign.targets {
-                if let ast::Expr::Attribute(attr) = target {
-                    if is_name(&attr.value, self_param) {
-                        let v = self.eval(&assign.value, init_env, model);
-                        attrs.insert_mut((instance_origin, attr.attr.id.clone()), v);
-                    }
-                }
-            }
-        }
+        env = self.record_bindings(stmt, env);   // every Attribute target -> bind_attribute
     }
-    attrs
+    env.attrs
 }
 ```
+
+There is deliberately **no** `is_name(&attr.value, self_param)` check. `self`
+is already bound in `init_env`, so `self.x = v` is just `bind_attribute`
+evaluating the receiver `self` to `(…, instance_origin)`. The same call also
+handles `self.service.handler = v` (receiver `self.service`, evaluated by the
+chain rule, [`07`](07-bound-methods-chains-and-mro-dispatch.md)). A
+filter on the receiver being the bare `self` name would cap writes at depth 1
+and silently drop the second case. See [`05`](05-assignment-outside-init-and-external-mutation.md).
 
 **Deliberately not a fixed-point analysis.** One linear pass, last write
 wins, matching the "no branch analysis" scope limit from `00-values/01`'s
