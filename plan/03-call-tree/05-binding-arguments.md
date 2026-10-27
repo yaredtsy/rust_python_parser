@@ -26,10 +26,125 @@ pub struct Env<'db> {
     /// leaking into frame B when both happen to use `x`.
     scope: ScopeId<'db>,
 
-    /// Enclosing frame's env, for closures over enclosing-function names.
-    parent: Option<Arc<Env<'db>>>,
+    /// The RUN of the lexically enclosing function in which THIS function's
+    /// `def` statement ran (10 § ActivationId). Lookup reads that run's slot,
+    /// i.e. its env as it is NOW, not a copy from definition time.
+    /// NEVER the caller. `None` for module-level functions, whose free names
+    /// are module globals and go to ty.
+    enclosing: Option<ActivationId>,
 }
 ```
+
+**There is no caller link in `Env`, on purpose.** Two different things
+could be called "parent", and only one belongs here:
+
+| | follows | lives in | used for |
+|---|---|---|---|
+| **enclosing** | where the function was *defined* | `Env.enclosing` | free-variable lookup in closures |
+| **caller** | where the function was *called from* | `Frame.parent` ([`09`](09-path-identity.md#serialisation)) | the call tree, `is_ancestor` |
+
+Values from the caller arrive one way only: `bind_parameters` evaluates the
+arguments in the caller's env and copies the *values* into the callee's
+`locals` (and carries `attrs` forward). Nothing ever looks a name up
+through the caller. If it did, `g` would see `f`'s `x` in the scope-guard
+example below — the exact bug this section exists to prevent.
+
+```python
+def make_handler(writer):
+    def handle(data):
+        writer.write(data)     # free variable → enclosing = make_handler's run
+    return handle
+
+def read_json():
+    h = make_handler(JsonWriter())
+    h(1)                       # caller = read_json, which has no `writer` at all
+```
+
+`handle`'s `enclosing` must be the run of `make_handler` that bound
+`writer → JsonWriter`, so `read_json`'s `h(1)` resolves to `JsonWriter.write`.
+That run reaches `bind_parameters` on the callee *value*: the `def handle`
+statement binds `handle` to `Closure { func, activation }`
+([`04`](04-value-domain.md), [`10` §1](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)),
+and the call passes `callee.enclosing()` through. This is the behaviour
+plan [`01`](01-what-jedi-actually-does.md#present-via-jedi-not-via-the-resolver-)
+records Jedi as having today.
+
+(Two earlier designs are retired. `closure_parent(func, caller_env)` built
+this from the caller; it only looked right when the closure was defined and
+called in the same frame — `experience/12-call-tree/01-functions/04` has the
+trace that caught it. Then `Closure { func, captured: EnvId }` froze a copy
+of the env at the `def`, which missed later assignments and couldn't see the
+function's own name, so a nested recursive `def` couldn't call itself.)
+
+#### Why the slot is per run, not per tree frame
+
+The closure points at the enclosing function's *current* env, the way a
+Python closure shares the variable rather than copying it. Python reads a
+cell at call time, and so does this:
+
+```
+def make():
+    handler = None            → slot: {handler: None}
+    def run(): handler.go()   → Closure { run, activation: <this run> }
+    handler = JsonHandler()   → slot: {handler: JsonHandler}
+    return run                → slot keeps its final version
+make()()                      → reads slot → JsonHandler.go
+```
+
+The slot has to belong to one *run* of `make`. A tree `FrameId` would be
+wrong in two ways:
+
+1. **Frames merge.** Frame identity is `(parent, qname)`
+   ([`09`](09-path-identity.md#the-merge-rule)), so
+   `a = make_handler(JsonWriter()); b = make_handler(CsvWriter())` in one
+   function walk the *same* `make_handler` frame twice. One slot per frame
+   would end up holding `CsvWriter`, and `a(1)` would resolve to
+   `CsvWriter.write`.
+2. **A walk with node output off has no frame.** Rare
+   ([`10` §2](10-return-values-and-state.md#nothing-stored-means-unknown)),
+   but a closure it produces still needs a slot.
+
+The tree in the DB still stores one merged node per call site. The
+analyser keeps each run separate *while walking*, so `a` and `b` don't
+overwrite each other before the merge. An `ActivationId` is minted for
+every run, so both cases get their own slot.
+
+### Lookup: locals, then `enclosing` only for a free variable
+
+```rust
+impl<'db> Interp<'db> {
+    /// On `Interp`, not `Env`: following `enclosing` reads the activations table.
+    fn lookup<'e>(&'e self, env: &'e Env<'db>, name: &Name) -> Option<&'e Values<'db>> {
+        if let Some(v) = env.locals.get(name) { return Some(v) }
+
+        // Not local. Walk outward ONLY if ty's semantic index says `name` is a
+        // free variable of this scope, bound in an enclosing FUNCTION scope.
+        // Never a generic "keep looking outward" fallback.
+        let def_scope = free_variable_binding_scope(self.db, env.scope, name)?;
+        let mut cur = env.enclosing;
+        while let Some(act) = cur {
+            let outer = &self.activations[act];      // that run's env RIGHT NOW
+            if outer.scope == def_scope { return outer.locals.get(name) }
+            cur = outer.enclosing;
+        }
+        None   // a plain Function, no run to read → caller falls back to ty
+    }
+}
+```
+
+**[check]** — `free_variable_binding_scope` stands for ty's own answer to
+"which enclosing scope binds this name". ty must compute it to resolve names
+at all; confirm the accessor at `ac201b8`, and whether it needs a
+`types/vnoc.rs` wrapper.
+
+Reading the slot at call time gets late binding right in both places it
+matters: `h = A(); def inner(): h.go(); h = B(); inner()` resolves to
+`B.go` as in Python, and a nested `def walk(n): walk(n.child)` finds itself,
+because `walk` is in the slot by the time its body runs.
+
+Inside an `if` arm the slot holds *that arm's* env (`walk_stmts` updates it
+per statement, and each arm starts from "before"), so a closure called in
+the `else` arm can't see a write from the `if` arm.
 
 **Why persistent maps (`rpds` / `im`) rather than `FxHashMap` + clone:** you
 create one `Env` per call site, and frames share most of their content. `rpds`
@@ -40,7 +155,7 @@ port being fast and being embarrassing.
 
 **Why `scope` is a field:** without it, `x` bound in `outer` would be visible in
 an unrelated callee that also names a local `x`. Look-ups must check the scope
-matches, or walk `parent` only for genuine closure captures. This is the bug you
+matches, or walk `enclosing` only for genuine closure captures. This is the bug you
 will hit around week two if you skip it.
 
 ---
@@ -50,13 +165,14 @@ will hit around week two if you skip it.
 ```rust
 fn bind_parameters(
     &self,
-    func: FunctionDef<'db>,
+    func: Definition<'db>,                  // the `def` (04: functions are Definitions)
     args: &EvaluatedArgs<'db>,
     receiver: Option<AbstractValue<'db>>,   // Some(_) for methods
-    caller_env: &Env<'db>,
+    enclosing: Option<ActivationId>,        // Some(_) only for a Closure: callee.enclosing()
+    caller_env: &Env<'db>,                  // read ONLY for `attrs` — never for name lookup
 ) -> Env<'db> {
     let mut locals = rpds::HashTrieMap::new();
-    let params = func.parameters(self.db);
+    let params = &self.function_node(func).parameters;   // from the def's AST node
 
     let mut positional = args.positional.iter();
 
@@ -79,6 +195,7 @@ fn bind_parameters(
             locals.insert_mut(param.name().clone(), v.clone());
         } else if let Some(default) = param.default() {
             // ★ defaults evaluate in the DEFINING scope, not the caller's
+            //   (for a nested def, that's the same env as `enclosing`)
             let v = self.eval(default, &self.env_of_defining_scope(func));
             locals.insert_mut(param.name().clone(), v);
         } else {
@@ -96,7 +213,7 @@ fn bind_parameters(
         locals,
         attrs: caller_env.attrs.clone(),   // ★ carry object state forward. → 06
         scope: func.body_scope(self.db),
-        parent: self.closure_parent(func, caller_env),
+        enclosing,                          // the DEFINING run — never the caller
     }
 }
 ```
@@ -135,7 +252,7 @@ unknown. Bind **all** remaining parameters to `Unknown` rather than guessing an
 alignment. A wrong alignment produces a confidently wrong tree, which is worse
 than an imprecise one.
 
-**5. Decorated functions.** `func.parameters()` is the *undecorated* signature.
+**5. Decorated functions.** The `def`'s own parameters are the *undecorated* signature.
 If the decorator changes arity (`functools.partial`-like), bindings shift.
 Detect a non-trivial decorator list and fall back to binding everything
 `Unknown`. Cheap insurance. Note that `@staticmethod` / `@classmethod` /
@@ -193,8 +310,8 @@ fn eval(&self, expr: &ast::Expr, env: &Env<'db>, model: &SemanticModel<'db>) -> 
     match expr {
         // ★ env first — the whole point
         ast::Expr::Name(n) => {
-            if let Some(v) = env.lookup(&n.id) { return v.clone() }
-            lift(self.db, self.env(), n.inferred_type(model).unwrap_or(Type::unknown()))
+            if let Some(v) = self.lookup(env, &n.id) { return v.clone() }
+            self.lift(n.inferred_type(model).unwrap_or(Type::unknown()))
         }
 
         // ★ construction: creates a NEW instance with a fresh origin
@@ -218,8 +335,7 @@ fn eval(&self, expr: &ast::Expr, env: &Env<'db>, model: &SemanticModel<'db>) -> 
         ast::Expr::BoolOp(b) => b.values.iter().flat_map(|e| self.eval(e, env, model)).collect(),
 
         // everything else: ty's problem
-        other => lift(self.db, self.env(),
-                      other.inferred_type(model).unwrap_or(Type::unknown())),
+        other => self.lift(other.inferred_type(model).unwrap_or(Type::unknown())),
     }
 }
 ```
@@ -271,6 +387,38 @@ C.klass(X())                # @classmethod: cls←C, a←X
 
 Nine cases. Write them first, as a table-driven test. They will catch every
 binding bug you are going to write, and they run in microseconds.
+
+Plus four for `enclosing`, all cross-frame or cross-run (a same-frame closure passes
+even if `enclosing` is wired to the caller):
+
+```python
+# 10. escaping closure — enclosing is the DEFINING activation
+def make_handler(writer):
+    def handle(data): writer.write(data)
+    return handle
+def read_json(): make_handler(JsonWriter())(1)   # → JsonWriter.write
+def read_csv():  make_handler(CsvWriter())(2)    # → CsvWriter.write
+
+# 11. no caller lookup — a name the CALLER has must not leak in
+def g(): x.write()          # x is not local and not free here → ty, NOT f's x
+def f(x): g()
+f(JsonWriter())             # g's x.write must not resolve via f's env
+
+# 12. late binding — the closure reads the enclosing run's CURRENT env
+def make():
+    handler = None
+    def run(): handler.go()
+    handler = JsonHandler()
+    return run
+make()()                    # → JsonHandler.go (a frozen copy would see None)
+
+# 13. one frame, two runs — the slot is per run, not per tree frame
+def main():
+    a = make_handler(JsonWriter())
+    b = make_handler(CsvWriter())   # same (parent, qname) frame as the line above
+    a(1)                            # → JsonWriter.write, NOT CsvWriter.write
+    b(2)                            # → CsvWriter.write
+```
 
 ---
 

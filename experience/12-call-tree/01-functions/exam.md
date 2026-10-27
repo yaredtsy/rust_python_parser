@@ -41,7 +41,7 @@ def outer():
     inner()
 ```
 
-4. Does `h` get looked up through `Env.parent`, or does it arrive as an
+4. Does `h` get looked up through `Env.enclosing`, or does it arrive as an
    eagerly-bound argument? What would change if `inner` instead took `h` as
    a parameter, called as `inner(h)`?
 
@@ -52,8 +52,9 @@ def run():
     w.write(1)
 ```
 
-5. Name the two independent traversals involved in resolving `w.write(1)`'s
-   receiver, and say what would go wrong if you merged them into one pass.
+5. Resolving `w.write(1)`'s receiver needs `make`'s return value. Where
+   does that value come from, why is it there by the time `w` is bound, and
+   why doesn't reading it add a second `make` node?
 
 ```python
 def on_success(r): audit.record(r)
@@ -84,14 +85,12 @@ def h(): g()
 8. For each of `f` and `g`/`h`, say how many nodes appear in the tree and at
    what depth the ancestor guard fires.
 
-9. Give one fixture — from anywhere in this folder — where `is_ancestor`
-   and the return-value in-flight memo would, if swapped for each other,
-   produce a *wrong* answer in each direction (one fixture per direction is
-   fine).
+9. Recursion is walked once. Give the fixture from this folder where that
+   costs precision, say which call loses its edge, and why.
 
 10. `functools.partial(f, x)` and manual curry (`def make(n): def inner():
     ...; return inner`) both "return a function that remembers an earlier
-    argument." Under the **base** design (before `04`'s `Closure`/`EnvId`
+    argument." Under the **base** design (before `04`'s `Closure`/`ActivationId`
     fix), does either resolve precisely when called from a different frame
     than where it was created? Which one's imprecision is permanent by
     design, and which one's is a fixable gap — and why that distinction

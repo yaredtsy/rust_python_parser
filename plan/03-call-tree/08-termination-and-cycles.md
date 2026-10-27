@@ -59,12 +59,14 @@ constantly, and string comparison in this loop is pure waste.
 what "unique path per function" means (`call_resolver.py:157`) and is visible in
 the JSON — so it is part of the contract and not yours to redesign.
 
-Termination for the *value* queries in
-[`10`](10-return-values-and-state.md#the-five-things-to-get-right) is a separate,
-unobservable concern, handled by an in-flight memo entry rather than an ancestor
-check. Reusing `is_ancestor` there is wrong in both directions — it misses
-`f→g→f` through returns, and it blanks out recursive functions whose return
-value is perfectly determinable.
+Return values don't need a guard of their own: they come out of this same
+walk ([`10` §2](10-return-values-and-state.md#2-return-value-flow)), so the
+ancestor cut that stops the tree also stops them. At the cut, the inner
+call reads whatever value is stored for it — nothing yet, so `Unknown`.
+That costs precision on recursive functions whose return *could* be
+determined (`10` fixture 21, a known gap) but never termination. (An
+earlier draft had a separate value-query traversal with its own in-flight
+memo for this. Retired.)
 
 ## Layer 2 — depth cap
 

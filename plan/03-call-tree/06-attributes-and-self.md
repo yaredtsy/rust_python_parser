@@ -60,7 +60,7 @@ one runs `record_self_assignments` leaves the other with empty attrs.
 ```rust
 fn record_self_assignments(
     &self,
-    init: FunctionDef<'db>,
+    init: Definition<'db>,
     init_env: &Env<'db>,
     instance_origin: OriginId,
 ) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
@@ -74,18 +74,30 @@ fn record_self_assignments(
     // `self.x = v` is just the receiver `self` evaluating to that origin.
     let mut env = init_env.clone();
     env.attrs = self.origin_attrs.clone();       // the Interp-level cache, not init_env's
-    for stmt in body_statements(init) {          // descends into if/try one level
-        env = self.record_bindings(stmt, env);   // Name AND Attribute targets
+    // The SAME walker as every other body (10 § walk_function): sequential
+    // writes replace, `if`/`else` arms fork and join. In practice this runs
+    // as part of the tree walk of `__init__` — see 10's construct_instance —
+    // and only runs with node output off for a construction the tree didn't reach.
+    match self.walk_function(init, &env, Mode::value()) {
+        Some(end) => end.attrs,
+        None      => env.attrs,    // every path returns early — keep the baseline
     }
-    env.attrs
 }
 ```
 
-**Deliberately not a fixed-point analysis.** One linear pass, last write wins,
-descend into `if`/`try` bodies but don't model conditions. That matches the
-"no branch analysis" scope limit from
-[`01`](01-what-jedi-actually-does.md#what-it-does-not-do-scope-limits--respect-them)
-and keeps this O(size of `__init__`).
+**Deliberately not a fixed-point analysis.** One pass: a later write
+replaces an earlier one, and `if self.json: self.h = JsonHandler() else:
+self.h = CsvHandler()` gives `self.h` **both** — every arm from the state
+before the `if`, unioned at the join, conditions never evaluated. That is
+the "no branch analysis" scope limit from
+[`01`](01-what-jedi-actually-does.md#what-it-does-not-do-scope-limits--respect-them),
+and it keeps this O(size of `__init__`). (An earlier draft did "one linear
+pass, last write wins" through the arms too, which kept only the `else`
+handler. Retired with the old `body_statements` loop.)
+
+Known limit: writes made on an arm that then `return`s early
+(`if not cfg: self.h = None; return`) don't reach the end env, so they're
+lost. Only the paths that reach the end of `__init__` count.
 
 ### Reading: `member()` on a value
 
@@ -112,18 +124,13 @@ fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> {
                 }
             }
 
-            // 2. class body: methods, class vars — walk the MRO
-            for base in class.iter_mro(cx.db, cx.env()) {
-                if let Some(sym) = base.own_member(cx.db, name) {
-                    return match sym {
-                        Member::Function(f) => smallvec![AbstractValue::BoundMethod {
-                            func: f,
-                            receiver: cx.intern(self),   // ★ bind the receiver
-                        }],
-                        Member::Class(c) => smallvec![AbstractValue::Class(c)],
-                        Member::Other(t)  => lift(cx.db, cx.env(), t),
-                    };
-                }
+            // 2. class body: methods, class vars, MRO — ty's own lookup via
+            //    vnoc::member, with OUR receiver bound on a method. Full code in
+            //    § "Bind your receiver, not ty's" below. (`class` is a
+            //    Definition, 04; `pylspt` can't name ty's ClassLiteral, so it
+            //    can't walk the MRO by hand — the wrapper is the only route.)
+            if let Some(v) = cx.class_member_with_receiver(self, class, name) {
+                return v;
             }
 
             // 3. give up gracefully — ty knows about descriptors, __getattr__,
@@ -278,13 +285,11 @@ mutable *during* a body walk, which conflicts with the "envs are immutable"
 invariant from [`03`](03-the-abstract-interpreter.md). Resolve it by threading
 the env through the statement loop by value:
 
-```rust
-let mut env = env.clone();      // cheap: rpds
-for stmt in body {
-    if let Some(updated) = self.record_assignments(stmt, &env) { env = updated; }
-    self.visit_calls_in(stmt, &env, frame);
-}
-```
+That loop is [`10` §1](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)'s
+`walk_stmts`: calls in a statement first, using the env before it, then
+the statement's bindings; `if`/`else` arms forked from the same "before"
+and joined after. (An earlier sketch here recorded bindings *before*
+resolving the statement's calls, the opposite order. Use `10`'s.)
 
 That keeps each env immutable once shared with a child frame, while allowing
 sequential refinement within one body. Statement order becomes meaningful —
@@ -303,8 +308,8 @@ class Child(Base):
 ```
 
 **Does not fall out for free** under the memoised design above —
-`record_self_assignments` only scans the `init` it was handed
-(`body_statements(init)`), so a plain call wouldn't see past
+`record_self_assignments` only walks the `init` it was handed
+(`body(init)`), so a plain call wouldn't see past
 `Child.__init__`'s own body into `Base.__init__`'s. It needs one explicit
 case: scanning `Child.__init__`'s body, a statement that is a call to
 `super().__init__(...)` (receiver resolves, via `super()`, to the same
@@ -312,7 +317,7 @@ instance per [`03`](03-the-abstract-interpreter.md)'s `super()` handling)
 recurses `record_self_assignments` on the resolved `Base.__init__`, folding
 its assignments into the SAME `attrs` map before continuing the scan of
 `Child.__init__`. Bounded by the MRO's length, so no fixed-point machinery —
-still one linear pass per `__init__` in the chain, still last-write-wins.
+still one pass per `__init__` in the chain, same join rules.
 
 With that one case added, `Base.__init__`'s `self.log = Logger()` writes into
 the same `(origin, "log")` slot and `Child.go` sees it — *provided* `super()`
@@ -366,6 +371,36 @@ the descriptor protocol, properties, `__getattr__`, metaclasses — is a second
 copy of Python's attribute semantics, and it would disagree with ty precisely
 where ty is right. It is gone. `vnoc::member` is ty's own lookup, on a receiver
 **you** chose.
+
+### ⚠ Bind *your* receiver, not ty's
+
+For a method, `vnoc::member` returns a `Type::BoundMethod` whose receiver is
+ty's idea of the instance — a plain `Pipeline` type, no origin. Passing that
+through `lift` ([`04`](04-value-domain.md#converting-from-ty--the-boundary))
+would give `BoundMethod { func, receiver: Instance{Pipeline, OPAQUE} }`, and
+inside `run`, `self.handler` would find no state: opaque instances have none.
+So when step 2's answer is a bound method, keep only its function and bind
+the receiver `member()` was called on:
+
+```rust
+// step 2, on AbstractValue::Instance { class, origin } = self — `class` is a Definition
+let class_ty = vnoc::type_of_definition(cx.db, class);             // 04 § Going back to ty
+let Some(recv_ty) = vnoc::instance_of(cx.db, cx.env(), class_ty)
+    else { return smallvec![AbstractValue::Unknown] };
+match vnoc::member(cx.db, cx.env(), recv_ty, name) {
+    Some(t @ Type::BoundMethod(_)) => match cx.function_def(t) {     // public Type::definition
+        Some(func) =>
+            smallvec![AbstractValue::BoundMethod { func, receiver: cx.intern(self) }],  // ★ OUR origin
+        None => cx.lift(t),
+    },
+    Some(t) => cx.lift(t),          // class var, nested class, property, …
+    None    => smallvec![AbstractValue::Unknown],
+}
+```
+
+`lift`'s own `BoundMethod` arm is for bound methods ty hands you *without*
+a receiver of yours: `f = get_obj().method`, a bound method stored in a
+module global, or a return value ty typed.
 
 ### What it does **not** delete
 

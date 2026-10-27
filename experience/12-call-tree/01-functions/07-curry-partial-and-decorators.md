@@ -37,31 +37,32 @@ from `make_adder`'s, which is the one that actually bound `n`.
 
 ```
 eval_call_result(make_adder(1))
-  → case (b): project function → eval_returns(make_adder, env{n: Ty(int)})
+  → case (b): project function → read make_adder's stored return (walked just before)
   → the body's one `return add` → eval(Name "add")
     → NOT an env hit — record_bindings has no arm for `def add:`, so
       nothing in env.locals was ever set for the name "add"
     → falls to the ty-fallback: ty's own lexical scoping finds the nested
       def regardless of our env → Type::FunctionLiteral(add) → lift
-    → AbstractValue::Function(add)        — a BARE handle, no captured env
+    → AbstractValue::Function(add)        — a BARE handle, no enclosing run
 add_one = Function(add)
 add_one(5)
   → eval_callee(add_one) → env hit → Function(add)
   → bind_parameters(add, args, None, caller_env = use_curry's env)
-  → parent: closure_parent(add, caller_env)
+  → parent: closure_parent(add, caller_env)      ← EARLIER DRAFT; the plan now
+                                                   uses Closure.activation as `enclosing`
     → caller_env is use_curry's env, which never had `n` in it —
       `n` was a parameter of make_adder, a call that already returned
-  → inside add's body, env.lookup("n") → MISSES, both locals and parent
+  → inside add's body, env.lookup("n") → MISSES, both locals and enclosing
 ```
 
-Under the base design, **`add_one(5)`'s `x + n` cannot resolve `n`
+Under the earlier draft, **`add_one(5)`'s `x + n` cannot resolve `n`
 correctly** — `n` falls through to whatever `ty` infers for a bare,
-unbound name in that position, which is not going to be `1`. This needs
-exactly the fix `04` sketches: bind `add` to
-`Closure { func: add, captured: EnvId }` at the point the `def add:`
+unbound name in that position, which is not going to be `1`. That's why the
+plan now has the fix `04` describes: bind `add` to
+`Closure { func: add, activation: <this run of make_adder> }` at the point the `def add:`
 statement is walked (while `n` is still in `make_adder`'s own `locals`),
-and use that captured env — not whichever frame `add_one` is later called
-from — as `add`'s `parent` every time it's invoked.
+and read that run's env — not whichever frame `add_one` is later called
+from — as `add`'s `enclosing` every time it's invoked.
 
 With that fix in place, curry resolves at full precision, and *then* the
 original framing holds: it's `05` and `04` composed, no new case. Without
@@ -129,7 +130,7 @@ Using `python/curry.py`:
 
 1. `use_curry()` — under the **unfixed** base design, does `add_one(5)`
    resolve `n` correctly? Walk the trace above and say exactly where it
-   goes wrong. Then say what changes once the `Closure`/`EnvId` fix from
+   goes wrong. Then say what changes once the `Closure`/`ActivationId` fix from
    `04` is in place.
 2. `use_partial()` — what does the tree look like for `bound(5)`? Is
    `Handler.go` reachable from this call at all, under the base design?
@@ -146,11 +147,11 @@ Using `python/curry.py`:
    not `make_adder`'s env (where `n` was actually bound and had already
    returned by this point). `closure_parent(add, caller_env)` has no way
    to recover `make_adder`'s env from that input, so `env.lookup("n")`
-   inside `add` misses both `locals` and `parent`, and falls through to
+   inside `add` misses both `locals` and `enclosing`, and falls through to
    whatever `ty` infers for a bare name in that position — not `1`. Once
-   the `Closure { func, captured: EnvId }` fix is in place, `add` is bound
-   to that closure (with `n` captured) at the point `def add:` is walked
-   inside `make_adder`, and `add_one(5)` uses the *captured* env
+   the `Closure { func, activation }` fix is in place, `add` is bound
+   to that closure (pointing at the run where `n = 1`) at the point `def add:` is walked
+   inside `make_adder`, and `add_one(5)` reads *that run's* env
    regardless of which frame it's called from — resolving to `1 + 5`
    precisely, with no union and no opaque fallback.
 2. No — the tree stops at `functools.partial(takes_two, Handler())`,

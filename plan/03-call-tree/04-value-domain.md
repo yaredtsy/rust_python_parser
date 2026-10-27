@@ -28,24 +28,43 @@ So: **your own enum, with ty types embedded as an escape hatch.**
 
 ## The type
 
+**Functions and classes are identified by `Definition<'db>`**, not by ty's
+`FunctionType` / `ClassLiteral`. Those two can't be named outside
+`ty_python_semantic`: `ClassLiteral` is re-exported `pub(crate)`
+(`types.rs:118`) and `FunctionType` is a private `use` (`types.rs:85`), so
+`pylspt` can't write them as field types — `types/vnoc.rs` rule 3 says the
+same. `Definition<'db>` (`ty_python_core::definition`) is public, a 4-byte
+salsa id, and is what the qname, docstring ID and project check start from
+anyway. No fork change needed.
+
 ```rust
 /// A value as seen by the interpreter on one specific path.
 /// Small and `Copy` — a few words. Never owns strings or Vecs directly.
+/// ★ Private to `interp::value`. Only `lift` and a few helpers there build
+///   or match on it; everything else uses those helpers.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum AbstractValue<'db> {
-    /// A specific function object (possibly a nested def or a lambda).
-    Function(FunctionType<'db>),
+pub(in crate::interp) enum AbstractValue<'db> {
+    /// A function with nothing captured: a module-level def, or a function
+    /// ty handed us. Its free names are module globals → ty answers them.
+    /// The `def` statement's Definition — for a DECORATED function too (below).
+    Function(Definition<'db>),
+
+    /// A nested def, as bound by the `def` statement running inside another
+    /// function's body. `activation` is THAT run of the enclosing function —
+    /// where the def ran, not where it is later called. Lookup reads the run's
+    /// current env, so later assignments are seen. See `05` § `enclosing`.
+    Closure { func: Definition<'db>, activation: ActivationId },
 
     /// A class object, i.e. the thing you call to construct.
-    Class(ClassLiteral<'db>),
+    Class(Definition<'db>),
 
     /// An instance of a class. `origin` distinguishes two instances of the same
     /// class constructed at different sites — this is what keeps paths apart.
-    Instance { class: ClassLiteral<'db>, origin: OriginId },
+    Instance { class: Definition<'db>, origin: OriginId },
 
     /// `receiver.method` — a method with its receiver already bound.
     /// The receiver is interned so this stays Copy.
-    BoundMethod { func: FunctionType<'db>, receiver: ValueId },
+    BoundMethod { func: Definition<'db>, receiver: ValueId },
 
     /// A module object, for `mod.func()` call chains.
     Module(Module<'db>),
@@ -87,7 +106,7 @@ The origin is content-addressed, on purpose: the SAME `Foo()` construction
 must always mint the SAME `OriginId` — otherwise
 [`03`](03-the-abstract-interpreter.md)'s tree-walk branch (which
 constructs `Pipeline(...)` to walk `__init__` for the frame tree) and
-[`10`](10-return-values-and-state.md)'s value-query branch (which constructs
+[`10`](10-return-values-and-state.md)'s value read (which constructs
 `Pipeline(...)` because something needs its *value*, e.g. as the receiver of
 `.run()`) mint two *different* origins for what is syntactically one
 expression, and nothing either of them records about `self.handler` is ever
@@ -97,7 +116,7 @@ plan, caught by tracing a two-line fixture by hand — see
 
 The fix is to make "attrs for this origin" a cache keyed by the origin
 itself, computed once, the first time anything asks — the same shape as
-`eval_returns`'s `return_memo` in [`10`](10-return-values-and-state.md#2-return-value-flow),
+`10`'s return store (`ReturnKey`) in [`10`](10-return-values-and-state.md#2-return-value-flow),
 and for the same reason: a pure function of `(class, args)`, safe to memoise,
 with exactly one writer.
 
@@ -122,7 +141,7 @@ values, not hashed:
 pub struct OriginKey<'db> {
     file:  File,
     range: TextRange,           // the `Foo(...)` call expression
-    class: ClassLiteral<'db>,   // the class being built at that site
+    class: Definition<'db>,     // the class being built at that site
     args:  EvaluatedArgs<'db>,  // eval_arguments' output, unchanged
 }
 
@@ -157,12 +176,13 @@ don't leak between paths.
 
 **[check]** — a class defined *inside* a function can read the enclosing
 function's locals in its `__init__`. If [`07`](07-callbacks-and-higher-order.md)'s
-closure handling gives such a class a captured env, that env is an input
-too and goes in the key. Module-level classes (nearly all of them) have
+closure handling gives such a class an enclosing run (an `ActivationId`,
+[`05`](05-binding-arguments.md#the-environment)), that run is an input too
+and goes in the key. Module-level classes (nearly all of them) have
 nothing captured.
 
 **Why the two code paths can't disagree.** Only `construct_instance()` builds
-an `OriginKey`, and both the tree walk and the value query call it with
+an `OriginKey`, and both the tree walk and the value read call it with
 `eval_arguments(&call.arguments, env)` for the same `env` (the env *before*
 the statement — [`10` §1](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)).
 Same expression, same env → same `EvaluatedArgs` → same key. Nothing else in the
@@ -177,7 +197,7 @@ class Pipeline:
     def run(self): self.h.process()
 
 def main():
-    p = Pipeline(JsonHandler())   # tree walk AND value query both build this
+    p = Pipeline(JsonHandler())   # tree walk AND value read both build this
     p.run()                       # → JsonHandler.process (only if they agree)
 
 # B. same expression, different args — must NOT share an origin
@@ -227,6 +247,17 @@ pub struct ValueArena<'db> {
 One arena per request. `ValueId` is a `u32`. Deduping is worth it — receivers
 repeat constantly.
 
+### `ActivationId` — which run a `Closure` belongs to
+
+`Closure` points at one *run* of its enclosing function — one walk of that
+body ([`10` §1](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)).
+Two calls merged into one tree frame are two runs.
+`Interp.activations` is a per-request `Vec<Env<'db>>`, one slot per run,
+holding that run's current env; `ActivationId` is a `u32` index into it.
+Slots are never freed before the request ends, because a stored return
+value can still point at one ([`10` §2, point 6](10-return-values-and-state.md#the-things-to-get-right)).
+Why per run and not per tree frame: [`05`](05-binding-arguments.md#why-the-slot-is-per-run-not-per-tree-frame).
+
 ---
 
 ## The operations
@@ -250,11 +281,36 @@ impl<'db> AbstractValue<'db> {
 }
 
 pub enum Callable<'db> {
-    Function(FunctionType<'db>),
-    Class(ClassLiteral<'db>),
-    Bound { func: FunctionType<'db>, receiver: ValueId },
+    Function(Definition<'db>),
+    Closure { func: Definition<'db>, activation: ActivationId },
+    Class(Definition<'db>),
+    Bound { func: Definition<'db>, receiver: ValueId },
 }
 ```
+
+**Going back to ty.** `vnoc::member` and `vnoc::instance_of` take a
+`Type`, so a `Class(def)` or `Instance { class: def, .. }` needs the class's
+`Type` again. That's `binding_type(db, def)` — `pub(crate)`
+(`types.rs:235`), so one more `vnoc` wrapper, one internal call:
+`vnoc::type_of_definition(db, def) -> Type`. **[check]** add it with the
+others below.
+
+**Edge-case rules** (checked against the Jedi driver):
+
+- **A decorated function points at its `def`.** ty types a decorated name as
+  whatever the decorator returns (`@lru_cache` → a wrapper object), so
+  `lift` on ty's type would point at the decorator's class. When the name's
+  binding is a `def` statement, use that statement's `Definition` directly.
+- **A dataclass gives an edge to the class.** Its `__init__` is synthesised,
+  so there's no body: the class node is added, nothing is walked, and the
+  instance's attrs stay empty (`member()` falls through to ty's field
+  types). Same for `NamedTuple` and other synthesised `__init__`s.
+
+`Closure` behaves exactly like `Function` everywhere (qname, project check,
+docstring ID, `definition()`) except one place: `bind_parameters` uses
+`activation` as the callee's `enclosing`
+([`05`](05-binding-arguments.md#the-environment)). `callee.enclosing()`
+returns `Some(activation)` for a `Closure` and `None` for everything else.
 
 `definition()` is the join point with everything in
 [`01-what-jedi-actually-does.md`](01-what-jedi-actually-does.md): from a
@@ -269,45 +325,159 @@ When the environment misses and you ask ty, you get a `Type<'db>` and must lift
 it back into your domain:
 
 ```rust
-fn lift(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Values<'db> {
+const MAX_LIFT_DEPTH: u8 = 8;   // only recursive type aliases get near this
+
+fn lift(&mut self, ty: Type<'db>) -> Values<'db> { self.lift_at(ty, 0) }
+
+/// `Type::definition` is PUBLIC (`types.rs:9216`) and returns a public
+/// `TypeDefinition`. It already maps: a function or bound method → the
+/// function's def; a class, `Box[int]`, or `type[X]` → the class's def; an
+/// instance → its class's def; a module → the module. `lift` leans on it so
+/// almost nothing here needs a wrapper.
+fn def_of(&self, ty: Type<'db>) -> Option<TypeDefinition<'db>> { ty.definition(self.db, self.env()) }
+fn class_def(&self, ty: Type<'db>) -> Option<Definition<'db>> {
+    match self.def_of(ty)? { TypeDefinition::StaticClass(d) | TypeDefinition::DynamicClass(d) => Some(d), _ => None }
+}
+fn function_def(&self, ty: Type<'db>) -> Option<Definition<'db>> {
+    match self.def_of(ty)? { TypeDefinition::Function(d) => Some(d), _ => None }
+}
+
+fn lift_at(&mut self, ty: Type<'db>, depth: u8) -> Values<'db> {
+    use AbstractValue::*;
+    if depth > MAX_LIFT_DEPTH { return smallvec![Unknown] }
+    let or_ty = |v: Option<AbstractValue<'db>>| smallvec![v.unwrap_or(Ty(ty))];
     match ty {
-        Type::FunctionLiteral(f)   => smallvec![AbstractValue::Function(f)],
-        Type::ClassLiteral(c)      => smallvec![AbstractValue::Class(c)],
-        Type::BoundMethod(m)       => { /* Function + interned receiver */ }
-        Type::ModuleLiteral(m)     => smallvec![AbstractValue::Module(m.module(db))],
+        Type::FunctionLiteral(_)   => or_ty(self.function_def(ty).map(Function)),
 
-        // ★ the important case: keep alternatives SEPARATE
-        Type::Union(u)             => u.elements(db).iter()
-                                        .flat_map(|t| lift(db, env, *t))
-                                        .collect(),
+        // A class, or a class-ish type that isn't a ClassLiteral. `Box[int]()`
+        // → Box's def → an edge to Box.__init__. (`list[Foo]()` → list,
+        // stdlib, so no edge, which is right.)
+        Type::ClassLiteral(_) | Type::GenericAlias(_)
+                                   => or_ty(self.class_def(ty).map(Class)),
 
-        Type::NominalInstance(i)   => {
-            // No origin — this instance didn't come from a construction site
-            // we saw. Use a sentinel origin so it can't be confused with one
-            // we did see. ⚠ Every opaque instance shares this ONE sentinel,
-            // so it must never key attribute state — see below.
-            smallvec![AbstractValue::Instance {
-                class: i.class(db, env).class_literal(db),
-                origin: OriginId::OPAQUE,
-            }]
+        // `type[Base]` — usually a parameter annotation, reached through the
+        // annotation fallback (experience/12-call-tree/00-values/04):
+        // `def make(cls: type[Base]): cls()` with no known caller → Class(Base),
+        // so `cls()` still gets a `Base.__init__` edge. It means "Base or a
+        // subclass"; we take Base, the same way `x: Base` gives a Base instance.
+        // `type[Any]` → no def, `type[T]` → a TypeVar def: both Unknown.
+        Type::SubclassOf(_) => match self.class_def(ty) {
+            Some(d) => smallvec![Class(d)],
+            None    => smallvec![Unknown],
+        },
+
+        Type::ModuleLiteral(_) => match self.def_of(ty) {
+            Some(TypeDefinition::Module(m)) => smallvec![Module(m)],
+            _                               => smallvec![Ty(ty)],
+        },
+
+        // `obj.method` that ty already bound. Without this arm it becomes
+        // Ty(BoundMethod), `as_callable` says no, and the call gets NO edge.
+        // The receiver here is ty's `self_instance`, so it lifts to an OPAQUE
+        // instance. That's right for a value ty handed us; `member()` on one
+        // of OUR instances does not come through here — it binds its own
+        // receiver (06 § "Bind your receiver, not ty's").
+        Type::BoundMethod(_) => {
+            let (Some(func), Some(recv)) = (self.function_def(ty), vnoc::bound_method_self(self.db, ty))
+                else { return smallvec![Ty(ty)] };
+            self.lift_at(recv, depth + 1).into_iter()      // a union receiver → one each
+                .map(|r| BoundMethod { func, receiver: self.intern(r) })
+                .collect()
         }
 
-        Type::GenericAlias(_) | Type::SubclassOf(_) | Type::TypeAlias(_)
-                                   => { /* unwrap to the underlying class */ }
+        // ★ the important case: keep alternatives SEPARATE
+        // (`elements` is a pub field, set_theoretic.rs:24)
+        Type::Union(u)             => u.elements(self.db).iter()
+                                        .flat_map(|t| self.lift_at(*t, depth + 1))
+                                        .collect(),
+
+        // No origin — this instance didn't come from a construction site we
+        // saw. Use a sentinel origin so it can't be confused with one we did
+        // see. ⚠ Every opaque instance shares this ONE sentinel, so it must
+        // never key attribute state — see below.
+        // ⚠ Known gap: a SPECIALISED instance (`b: Box[Foo]`) becomes plain
+        // `Instance{Box}` — the `[Foo]` is lost, so `b.get().handle()` has no
+        // edge. Later fix, no enum change: keep a specialised opaque instance
+        // as `Ty(ty)`, where ty's own member lookup keeps the specialisation.
+        Type::NominalInstance(_)   => or_ty(self.class_def(ty)
+                                        .map(|class| Instance { class, origin: OriginId::OPAQUE })),
+
+        // `type Handlers = A | B` — lift what it stands for. A union alias
+        // explodes through the Union arm like any other union. `value_type`
+        // is already `pub` (`types/type_alias.rs:454`), no wrapper needed.
+        // Recursive aliases are what MAX_LIFT_DEPTH is for.
+        Type::TypeAlias(a)         => self.lift_at(a.value_type(self.db), depth + 1),
 
         Type::Dynamic(_) | Type::Never | Type::Divergent(_)
-                                   => smallvec![AbstractValue::Unknown],
+                                   => smallvec![Unknown],
 
-        other                      => smallvec![AbstractValue::Ty(other)],
+        // Deliberately Ty for now: KnownBoundMethod (stdlib special methods),
+        // Callable (`cb: Callable[...]` — no definition to point at), TypeVar,
+        // Intersection, ProtocolInstance, PropertyInstance (06 handles
+        // properties at `member()`), literals. Add an arm only with a fixture
+        // that shows a lost project edge.
+        other                      => smallvec![Ty(other)],
     }
 }
+```
+
+**[check]** — two `vnoc` wrappers this needs don't exist yet. Add them
+when `lift` is written, one internal call each, public types only (rule 3 at
+the top of `types/vnoc.rs`):
+
+| wrapper | wraps | visibility today |
+|---|---|---|
+| `bound_method_self(db, ty) -> Option<Type>` | `BoundMethodType::self_instance` | `pub(super)` (`types/method.rs:29`) — reachable from `types::vnoc` |
+| `type_of_definition(db, def) -> Type` | `binding_type(db, def)` — the way back, for `vnoc::member` | `pub(crate)` (`types.rs:235`) |
+
+(An earlier version of this section needed four wrappers to dig class
+literals and functions out of `GenericAlias`, `SubclassOf` and
+`BoundMethod`. `Type::definition` already does all of that publicly.)
+
+Fixtures — one per arm, each one a call edge that silently disappears if
+the arm is missing:
+
+```python
+# 1. BoundMethod from ty (not from our member()) — edge to Handler.handle
+handler = Handler()
+dispatch = handler.handle      # module global: env never sees it, ty types it
+def use():
+    dispatch(1)                # ty: Type::BoundMethod → lift → callable
+
+# 2. GenericAlias — edge to Box.__init__
+class Box(Generic[T]):
+    def __init__(self, v: T): ...
+def make(): return Box[int](1)
+
+# 3. SubclassOf, no known caller — edge to Base.__init__
+def build(cls: type[Base]):
+    return cls()
+
+# 4. TypeAlias to a union — edges to A.run AND B.run
+type H = A | B
+def go(h: H):
+    h.run()
+
+# 5. KNOWN GAP — specialisation lost on an annotated value. Today: no
+#    Foo.handle edge. Pins the gap; flips when lift keeps `Ty(Box[Foo])`.
+def run(b: Box[Foo]):
+    b.get().handle()
+
+# 6. decorated function → edge to the `def`, not the decorator's wrapper class
+@lru_cache
+def load(): ...
+def use(): load()
+
+# 7. dataclass → edge to the class; no __init__ body to walk
+@dataclass
+class Job: handler: Handler
+def make(): Job(Handler())
 ```
 
 **The `Union` arm is the one that matters.** ty hands you a set; you must
 explode it into separate values so each produces its own subtree. Flatten it
 into `Type::Union` again anywhere and you've silently rebuilt
-`ty_ide::outgoing_calls`. **[check]** exact accessor names (`elements`,
-`class_literal`) at your revision.
+`ty_ide::outgoing_calls`.
 
 `lift` itself does **not** cap. Producing 40 `AbstractValue`s is cheap; what
 costs is the 40 subtrees below them. The cap is applied once, by the caller,
@@ -347,7 +517,7 @@ env (key: the expression's file and range), never by sharing one.
 ### ★ The union cap: `cap_fanout`
 
 One function, applied wherever `Values` are produced — after `lift`, in
-`eval_call_result`, in `eval_returns`
+`eval_call_result`, in `walk_function`
 ([`10`](10-return-values-and-state.md#2-return-value-flow)). No other code
 checks the union size.
 
@@ -439,15 +609,17 @@ millions of times, and the moment it grows a heap allocation (`String`,
 | variant | payload | size |
 |---|---|---|
 | `Ty(Type)` | a whole ty `Type` | **16** — ty asserts this (`types.rs:11192`, release + 64-bit only) |
-| `Instance` | `ClassLiteral` + `OriginId` | ~12 — `ClassLiteral` is a 4-variant enum (`types/class.rs:574`), so ~8, not 4 |
-| `BoundMethod` | `FunctionType` + `ValueId` | 8 |
+| `Instance` | `Definition` + `OriginId` | 8 |
+| `BoundMethod` | `Definition` + `ValueId` | 8 |
+| `Closure` | `Definition` + `ActivationId` | 8 |
 | `Module` | `Module` (2-variant enum) | ~8 |
 | others | one salsa id, or nothing | ≤ 8 |
 
 `Ty(Type)` alone fills 16 bytes, so `AbstractValue` stays at 16 only if rustc
 stores the outer tag in `Type`'s unused tag values and fits the other
 variants around it (niche filling). That is likely here — `Type`'s tag byte
-has spare values and the other payloads fit in the remaining 12 bytes — but
+has spare values and the other payloads (8 bytes at most, now that
+functions and classes are `Definition`s) fit in the remaining 12 — but
 rustc doesn't promise it, and the answer could change with a compiler
 upgrade. Otherwise it lands at 20–24.
 
@@ -467,8 +639,8 @@ Run it with `cargo test --release value_is_small`.
 
 **If it fails:** move `Type` out of the enum. `Ty(TyId)`, where `TyId` is a
 `u32` index into a per-request `Vec<Type<'db>>` with a dedup map — the same
-pattern as `ValueArena` below. Then the largest payload is `Instance`'s ~12
-bytes and the enum fits in 16 without help from the compiler. The cost is
+pattern as `ValueArena` below. Then the largest payload is 8 bytes and the
+enum fits in 16 without help from the compiler. The cost is
 one array lookup when reading a `Ty` value, and `Ty` is the "we don't model
 this" case, not the hot path.
 

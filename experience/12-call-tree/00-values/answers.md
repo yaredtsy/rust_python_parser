@@ -68,19 +68,13 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    frame: **one** child, `call_count == 2` (starts at 0, bumped on each
    call past the first).
 
-8. ```python
-   def f(): return g()
-   def g(): return f()
-   def main():
-       x = f()     # a VALUE query — no tree frame pushed for this
-       x.run()
-   ```
-   `is_ancestor` only tracks the **tree's** call frames, and a value query
-   like `f()`'s return-value evaluation never pushes one. So an
-   `is_ancestor`-based guard here never fires at all, and `f → g → f → g →
-   …` recurses forever trying to compute a return value. The in-flight memo
-   is a *separate* mechanism precisely because it guards the value-query
-   recursion that `is_ancestor` (a tree-walk-only mechanism) can't see.
+8. Return values come out of the tree walk (`01-functions/05`), so the
+   tree's own `is_ancestor` cut is the only guard needed. The walk enters
+   `f`, then `g`, then reaches `f()` again — `f` is an ancestor, so it's
+   cut: no node, no walk. That call's value read finds nothing stored (the
+   outer `f` hasn't finished), so it's `Unknown`. `g` returns `Unknown`,
+   `f` returns `Unknown`, and **`x` is `Unknown`**. It terminates because
+   there is only one walk and it was cut.
 
 9. **Depth cap, node budget, union fan-out cap, chain fan-out cap** (plus
    the ancestor guard from the previous file and the wall-clock check —

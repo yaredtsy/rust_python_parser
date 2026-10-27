@@ -67,7 +67,7 @@ def chained_returns():
 
 def rec(n):
     """4. Recursive through its OWN return value -- must terminate at
-    Unknown via the in-flight memo, not loop forever.
+    Unknown: the inner call is cut by is_ancestor and reads nothing stored.
 
     ID: f5000000-000b-0000-0000-000000000000
     """

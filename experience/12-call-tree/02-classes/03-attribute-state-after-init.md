@@ -43,17 +43,16 @@ Keyed on `OriginId`, **not** on scope — this is the field that's shared
 `Env::clone()` when entering `run`'s frame carries `attrs` forward
 unchanged; only `locals` starts fresh.
 
-## Writing: one linear pass over `__init__`'s body
+## Writing: one pass over `__init__`'s body
 
 ```rust
 fn record_self_assignments(
-    &self, init: FunctionDef<'db>, init_env: &Env<'db>, instance_origin: OriginId,
+    &self, init: Definition<'db>, init_env: &Env<'db>, instance_origin: OriginId,
 ) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
-    let mut env = init_env.clone();
-    for stmt in body_statements(init) {
-        env = self.record_bindings(stmt, env);   // every Attribute target -> bind_attribute
-    }
-    env.attrs
+    // the same walker as every body (plan/03-call-tree/10 § walk_function);
+    // every Attribute target goes through bind_attribute
+    let end = self.walk_function(init, init_env, Mode::value());
+    end.map_or(init_env.attrs.clone(), |e| e.attrs)
 }
 ```
 
@@ -65,9 +64,13 @@ chain rule, [`07`](07-bound-methods-chains-and-mro-dispatch.md)). A
 filter on the receiver being the bare `self` name would cap writes at depth 1
 and silently drop the second case. See [`05`](05-assignment-outside-init-and-external-mutation.md).
 
-**Deliberately not a fixed-point analysis.** One linear pass, last write
-wins, matching the "no branch analysis" scope limit from `00-values/01`'s
-domain design — this is O(size of `__init__`), not O(size of the program).
+**Deliberately not a fixed-point analysis.** One pass. Sequential writes:
+the later one wins. Branches: each arm starts from the state before the
+`if`, and the arms are unioned at the join, so
+`if json: self.h = JsonHandler() else: self.h = CsvHandler()` gives `self.h`
+both. That's the "no branch analysis" rule from `00-values/01`: conditions
+are never evaluated, so every arm is possible — not "the arms run one after
+another". This is O(size of `__init__`), not O(size of the program).
 
 ## Reading: `member()`'s priority order
 
@@ -118,7 +121,7 @@ Using `python/pipeline.py`'s `main()`:
 
 <details><summary>Answers</summary>
 
-1. During — each assignment statement in the linear pass updates `attrs`
+1. During — each assignment statement in the pass updates `attrs`
    as it's encountered, so by the time the pass finishes, both `self.handler`
    and `self.name` have entries (`record_self_assignments` doesn't special-case
    which attribute name it is — every `self.X = ...` assignment is recorded).

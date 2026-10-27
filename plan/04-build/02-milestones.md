@@ -105,9 +105,9 @@ Sub-steps, each independently testable:
 | M6.3 | callee resolution from env | fixtures 1, 2 (cross-scope `emit`, 3-deep pass-through) |
 | M6.4 | attributes + `self` + origin | the 8 attribute fixtures, esp. #2 (two live instances) |
 | M6.5 | callbacks | the 8 callback fixtures |
-| M6.6 | local assignment tracking | ch.10 fixtures 7, 8 |
-| M6.7 | return-value flow | ch.10 fixtures 1–6, 12 |
-| M6.8 | generalised object state | ch.10 fixtures 9, 10, 11 |
+| M6.6 | local assignment tracking | ch.10 fixtures 7, 8, 15, 16 |
+| M6.7 | return-value flow | ch.10 fixtures 1–6, 12, 17–21 |
+| M6.8 | generalised object state | ch.10 fixtures 9, 10, 11, 13, 14 |
 
 M6.6–M6.8 are [`03-call-tree/10`](../03-call-tree/10-return-values-and-state.md)
 — value flow. **Not optional**: Jedi performs this natively today, so omitting
@@ -175,7 +175,7 @@ underestimated.
 | Non-deterministic output | M5+ | 10× repeat test in CI from M5 |
 | ty inference gaps → `Unknown` | M6 | fallbacks everywhere; count `Unknown`s and report |
 | Value flow silently dropped → regression vs Jedi | M6.6–6.8 | ch.10 fixtures; watch the "jedi resolved, ty didn't" row in the divergence log |
-| Return-value query double-counts factories in the tree | M6.7 | ch.10 fixture 12 |
+| Reading a call's value adds tree nodes, or reads before the call was walked | M6.7 | ch.10 fixtures 12, 18 |
 
 The two that actually sink projects: **deciding Option A/B too late** and
 **adding the budget too late** (retrofitting cancellation into a recursive

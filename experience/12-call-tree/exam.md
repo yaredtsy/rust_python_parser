@@ -95,9 +95,8 @@ def h(): h()
 ```
 
 7. `f`/`g` and `h` both "don't terminate" in ordinary Python semantics (one
-   recurses through return values, one recurses through direct calls). Name
-   the two *different* guard mechanisms involved, and say which one would
-   give the wrong answer if applied to the other's case.
+   recurses through return values, one through direct calls). What stops
+   each in this design — one mechanism or two? For `x = f()`, what is `x`?
 
 ```python
 def helper(a, b):

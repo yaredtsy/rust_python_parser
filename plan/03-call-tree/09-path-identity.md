@@ -135,16 +135,16 @@ So "one unique path per function" means *one node per (path, function)*, not
 
 ```rust
 let child = frame.add_child(qname, id);        // may RETURN AN EXISTING child
-let callee_env = self.bind_parameters(func, &args, receiver);
-self.walk_body(func, &callee_env, child);      // walks INTO the shared child
+let callee_env = self.bind_parameters(func, &args, receiver, enclosing, env);
+self.walk_function(func, &callee_env, Mode::tree(child));   // walks INTO the shared child
 ```
 
-Call `emit` twice from `main` and `walk_body` runs twice against the *same*
+Call `emit` twice from `main` and `walk_function` runs twice against the *same*
 `child` frame — once with `writer → JsonWriter`, once with `writer → CsvWriter`.
 Their results accumulate inside that one node, deduped by qname in turn.
 
 This is fine, but it must be deliberate: **`add_child` returns an existing frame,
-and `walk_body` must be able to add to a frame that already has children.**
+and `walk_function` must be able to add to a frame that already has children.**
 Do not assert that a frame is empty when you start walking it.
 
 **2. `PathKey` is not the frame identity.** It is only used for:

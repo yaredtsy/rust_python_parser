@@ -26,12 +26,12 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    useful, since `member()` has an `Unknown` receiver to work with.
 
 4. Eagerly-bound — `h` is a free variable of `inner`, read directly via
-   `Env.parent` pointing back to the environment active where `inner` was
+   `Env.enclosing` pointing back to the environment active where `inner` was
    *defined* (inside `outer`'s own call frame), not passed as an argument
    anywhere. If `inner` instead took `h` as a parameter and were called
    `inner(h)`, the value would arrive the ordinary way — eagerly evaluated
    in the caller's env and placed directly into `inner`'s own `locals` by
-   `bind_parameters` — and `Env.parent` would never be consulted for `h` at
+   `bind_parameters` — and `Env.enclosing` would never be consulted for `h` at
    all, because `locals` is always checked first and would already have a
    hit.
 
@@ -45,15 +45,13 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    bound. See `04-closures-and-nested-functions.md`'s "escaping-closure
    gap" section.
 
-5. `resolve_call` (the ordinary tree walk, which adds `make` as a child of
-   `run`'s frame regardless of its return value) and `eval_returns` (a
-   value query that interprets `make`'s `return JsonWriter()` to determine
-   what `w` is bound to). Merging them would double-count `make` in the
-   tree — once from the walk finding the call site, and again from
-   whatever bookkeeping a merged pass might do while evaluating the return
-   — and would also make the in-flight memo (safe only because it's a pure
-   value query with no tree side effects) unsafe to cache, since it would
-   now be entangled with frame mutation.
+5. From the **return store**. When the tree walk resolves `make()` (adding
+   `make` as a child of `run`'s frame), it walks `make`'s body and stores
+   the union of its returns — `Instance{JsonWriter, O}` — under `make`'s
+   `ReturnKey`. It's there in time because inside one statement calls are
+   resolved *before* bindings are recorded, so `make()` is walked before
+   `record_bindings` asks what `w` is. Reading it is a lookup: it walks
+   nothing and emits nothing, so `make` appears once.
 
 6. `a()` and `b()` — **two different frames**, each calling `run` once —
    is the shape that demonstrates context sensitivity: two `run` nodes, one
@@ -78,17 +76,13 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    the attempt to call `g` again (ancestors: `[root, main, g, h]`, and `g`
    is already on the chain).
 
-9. **Wrong if reused for the value query, missing the cycle:**
-   `def f(): return g(); def g(): return f(); def main(): x = f(); x.run()`
-   — `is_ancestor` only tracks tree frames, and `x = f()` is a value query
-   that pushes no tree frame, so the check never fires and `f↔g` recurse
-   forever trying to compute a return value.
-   **Wrong if reused, firing when it shouldn't:**
-   `def walk(node): r = walk(node.first()); r.close(); return Handle()` —
-   `walk` genuinely is a tree ancestor while its own return value is being
-   computed, so an `is_ancestor`-based guard fires and answers `Unknown`
-   for `walk`'s return — even though `walk`'s `return Handle()` is plainly
-   determinable and `r.close()` should resolve against `Handle`.
+9. `def walk(node): r = walk(node.first()); r.close(); return Handle()`.
+   The tree walks `walk` once; the inner `walk(node.first())` has `walk`
+   as an ancestor, so it's cut. Its value read finds nothing stored — the
+   outer run hasn't reached `return Handle()` yet — so `r` is `Unknown`,
+   and **`r.close()` gets no edge**, even though `walk` plainly returns a
+   `Handle`. It's a known gap, accepted for v1; `plan/03-call-tree/10`
+   pins it as fixture 21.
 
 10. Neither resolves precisely under the base design when the returned
     closure is called from a different frame than where it was created —
@@ -100,10 +94,10 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
     `ty`'s usually-opaque declared type for whatever it returns. Manual
     curry's imprecision is a **fixable gap**, not a design limit: `inner`
     is an ordinary project function, and the only reason `n` fails to
-    resolve is that `closure_parent(func, caller_env)` is handed the
+    resolved under the earlier draft is that `closure_parent(func, caller_env)` was handed the
     *caller's* env instead of the env captured at `inner`'s definition
     site (`04-closures-and-nested-functions.md`'s escaping-closure
-    section). Once `Closure { func, captured: EnvId }` exists, curry
+    section). With `Closure { func, activation }`, now in the plan, curry
     resolves at full precision and `partial` still doesn't — which is
     exactly the distinction worth holding onto: one imprecision is a
     property of what `functools.partial` *is* (foreign code), the other was

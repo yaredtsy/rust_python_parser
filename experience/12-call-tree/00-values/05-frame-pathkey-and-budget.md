@@ -198,13 +198,11 @@ if frame.is_ancestor(&qname) { continue }   // stop BEFORE adding a child
 redesign.** It defines what "one unique path per function" *means* — a
 function may appear many times in the tree, just never nested inside
 itself. It happens to also keep recursive Python from looping forever, but
-that's a side effect, not its job. Contrast with the **in-flight memo** used
-for return-value queries in
-[`01-functions/05-returns-and-value-flow.md`](../01-functions/05-returns-and-value-flow.md) —
-same-sounding problem, different mechanism, because it answers a different
-kind of question (an unobservable value query, not the tree's own shape).
-Conflating the two gets both wrong, in opposite directions — that file
-works the counterexample.
+that's a side effect, not its job. Return values ride on the same cut:
+they come out of this one tree walk
+([`01-functions/05-returns-and-value-flow.md`](../01-functions/05-returns-and-value-flow.md)),
+so a recursive call that `is_ancestor` cuts reads nothing for its value —
+`Unknown`. There is no second traversal, so no second guard.
 
 ## Exercise
 

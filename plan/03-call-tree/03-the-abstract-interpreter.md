@@ -125,11 +125,15 @@ impl<'db> Interp<'db> {
             if frame.is_ancestor(&qname) { continue }                  // step (e)
 
             match target.kind() {
-                Callable::Function(func) => {
+                Callable::Function(func) | Callable::Closure { func, .. } => {
                     let child = frame.add_child(qname, format!("FunctionSchema/{id}"));
                     // ★★★ THE CONTEXT ★★★  — this is `as_context(arguments)`
-                    let callee_env = self.bind_parameters(func, &args, callee.receiver(), env);
-                    self.walk_body(func, &callee_env, child);
+                    let callee_env = self.bind_parameters(
+                        func, &args, callee.receiver(), callee.enclosing(), env,
+                    );
+                    // The one walker (10 § walk_function): emits the nodes AND
+                    // stores this run's return value for the value read.
+                    self.walk_function(func, &callee_env, Mode::tree(child));
                 }
                 Callable::Class(class) => {
                     let child = frame.add_child(qname, format!("ClassSchema/{id}"));
@@ -139,19 +143,18 @@ impl<'db> Interp<'db> {
                     // See 04's `origin_attrs` note for the bug this replaces:
                     // two independent constructions of "the same" `Foo()`
                     // used to mint two different origins.
-                    let instance = self.construct_instance(class, &args, call, env, model);
-                    if let Some(init) = self.lookup_init(class) {
-                        let init_env = self.bind_parameters(
-                            init, &args, Some(instance), env,   // `self` ← the new instance
-                        );
-                        self.walk_body(init, &init_env, child);
-                    }
+                    // It walks `__init__` into `child` itself, with `self` bound to
+                    // the instance — one walk gives the nodes and the attrs.
+                    self.construct_instance(class, &args, call, env, Some(child));
                 }
             }
         }
     }
 
-    /// Mirrors `_analyze_function`.
+    /// Mirrors `_analyze_function`. First version, before local bindings
+    /// exist (M4). ★ Replaced by 10's `walk_function`/`walk_stmts` once they
+    /// do — that one forks/joins the env at branches and stores return
+    /// values. Don't keep both.
     fn walk_body(&mut self, func: FunctionDef<'db>, env: &Env<'db>, frame: &mut Frame<'db>) {
         // Reuse ty_ide's OutgoingCallsFinder traversal: stops at nested callables,
         // covers decorators / defaults / annotations / base-class exprs.

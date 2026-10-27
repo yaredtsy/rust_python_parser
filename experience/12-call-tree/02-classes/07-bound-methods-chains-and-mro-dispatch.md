@@ -173,7 +173,8 @@ Using `python/inheritance.py`:
    `Base.__init__`'s `self.log = Logger()` therefore writes into exactly
    the slot `Child.go` later reads.
 2. `Child`'s `SpecialLogger()` — because `record_self_assignments`/`record_bindings`
-   is a single linear pass, last write wins, and the `self.log =
+   applies sequential writes in order (last write wins — these two aren't
+   in different `if` arms), and the `self.log =
    SpecialLogger()` statement runs *after* `super().__init__()`'s write, in
    program order, inside the *same* `__init__` call (both writes share the
    same instance's origin, same as question 1). This is `03`'s "last write

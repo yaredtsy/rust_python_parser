@@ -31,7 +31,7 @@ pub struct OriginId(u32);   // indexes an arena of OriginKey
 pub struct OriginKey<'db> {
     file:  File,
     range: TextRange,              // which `Foo(...)` expression
-    class: ClassLiteral<'db>,      // which class it built
+    class: Definition<'db>,        // which class it built
     args:  EvaluatedArgs<'db>,     // with which argument values
 }
 ```
@@ -88,7 +88,7 @@ remember *which* `JsonHandler` `process` is bound to. The obvious way to
 write that is:
 
 ```rust
-BoundMethod { func: FunctionType<'db>, receiver: Box<AbstractValue<'db>> }
+BoundMethod { func: Definition<'db>, receiver: Box<AbstractValue<'db>> }
 ```
 
 This compiles and is wrong for exactly the reason [the previous
@@ -97,7 +97,7 @@ flagged: `Box` is a heap allocation, so `AbstractValue` stops being `Copy`,
 and every environment clone now walks pointers instead of copying words.
 
 ```rust
-BoundMethod { func: FunctionType<'db>, receiver: ValueId }
+BoundMethod { func: Definition<'db>, receiver: ValueId }
 
 pub struct ValueArena<'db> {
     values: Vec<AbstractValue<'db>>,

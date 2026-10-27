@@ -85,7 +85,7 @@ you get from a call you're already making elsewhere in the codebase.
 fn resolve_from_annotation(&self, site: Option<AnnotationSite<'db>>) -> Option<Values<'db>> {
     let site = site?;
     let ty = site.annotation.inferred_type(self.model)?;
-    Some(lift(self.db, self.env(), ty))   // the SAME lift() from 03-env-and-scope.md
+    Some(self.lift(ty))   // the SAME lift() from 03-env-and-scope.md — incl. its SubclassOf arm
 }
 ```
 

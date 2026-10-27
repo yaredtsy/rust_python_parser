@@ -1,6 +1,6 @@
-"""Direct and mutual recursion -- the ancestor guard's job, not the
-return-memo's (00-values/05 vs the in-flight memo in 05-returns-and-value-
-flow.md: these fixtures are about the TREE, not about a value query).
+"""Direct and mutual recursion -- the ancestor guard's job (00-values/05).
+Return values ride on the same cut (05-returns-and-value-flow.md): a cut
+call's value is Unknown.
 
 ID: f8000000-0000-0000-0000-000000000000
 """

@@ -67,11 +67,12 @@ below. That's the intended scope, not a gap to fix.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum AbstractValue<'db> {
-    Function(FunctionType<'db>),
-    Class(ClassLiteral<'db>),
-    Instance { class: ClassLiteral<'db>, origin: OriginId },
-    BoundMethod { func: FunctionType<'db>, receiver: ValueId },
+pub(in crate::interp) enum AbstractValue<'db> {     // private to the interpreter
+    Function(Definition<'db>),                       // the `def`
+    Closure { func: Definition<'db>, activation: ActivationId },   // 01-functions/04
+    Class(Definition<'db>),                          // the `class`
+    Instance { class: Definition<'db>, origin: OriginId },
+    BoundMethod { func: Definition<'db>, receiver: ValueId },
     Module(Module<'db>),
     Ty(Type<'db>),     // escape hatch: literals, stdlib returns, arithmetic
     Unknown,            // "we didn't ask" — distinct from Ty(Dynamic)
@@ -79,6 +80,17 @@ pub enum AbstractValue<'db> {
 
 pub type Values<'db> = SmallVec<[AbstractValue<'db>; 2]>;
 ```
+
+**Why `Definition`, not ty's `FunctionType` / `ClassLiteral`:** those two
+can't be named outside `ty_python_semantic` — `ClassLiteral` is re-exported
+`pub(crate)`, `FunctionType` not at all — so `pylspt` can't use them as
+field types (`types/vnoc.rs` rule 3). `Definition<'db>` is public, 4
+bytes, and is what the qname, docstring ID and project check start from
+anyway. ty's public `Type::definition(db, env)` turns ty's answers into
+these (`plan/03-call-tree/04` § "Converting from ty").
+
+What it costs: a specialisation like `Box[Foo]` on a value ty handed you
+becomes plain `Box` — a known gap, pinned by a fixture in `plan/03-call-tree/04`.
 
 Five "real" shapes, one escape hatch, one admission of defeat. `shapes.py`
 in this folder's `python/` is exactly these five, one function each — do the
@@ -221,8 +233,8 @@ debug builds, so a debug run can fail for reasons that aren't yours.
    collapsing into one value?
 2. Give one example where `Unknown` is the right answer and `Ty(Type::Dynamic)`
    would be wrong — i.e., where you genuinely never asked ty at all.
-3. `AbstractValue::Class(ClassLiteral<'db>)` and `AbstractValue::Instance { class: ClassLiteral<'db>, .. }`
-   both carry a `ClassLiteral`. What's the one-sentence difference in what
+3. `AbstractValue::Class(Definition<'db>)` and `AbstractValue::Instance { class: Definition<'db>, .. }`
+   both carry a class's `Definition`. What's the one-sentence difference in what
    they represent?
 4. `build("json")` from the "not flow-sensitive" section above passes a
    **literal** string, so which branch runs is, in principle, fully
@@ -247,7 +259,7 @@ debug builds, so a debug run can fail for reasons that aren't yours.
    naming `C` without calling it, and what you call to produce instances.
    `Instance{class: C, ..}` represents **one object of that class**,
    produced by an actual `C()` call at a specific, trackable site. The
-   `ClassLiteral` in both is "which class"; `Instance` additionally carries
+   `Definition` in both is "which class"; `Instance` additionally carries
    *which construction*.
 4. No — it does **not** evaluate the condition, even though `"json"` is a
    literal and a smarter design could. It unions both arms regardless,

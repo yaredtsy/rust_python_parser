@@ -31,10 +31,9 @@ Closed book. Write your answers, then check [`answers.md`](answers.md).
    is called three times from the same frame. How many children does the
    frame have, and what is `call_count`?
 
-8. `is_ancestor` and the return-value in-flight memo both prevent infinite
-   recursion. Give one input where using `is_ancestor` for the return-value
-   case specifically produces a **wrong** answer (not just a less efficient
-   one).
+8. Return values have no recursion guard of their own. For
+   `def f(): return g()` / `def g(): return f()` / `x = f()`, explain why
+   this still terminates, and what `x` resolves to.
 
 9. Name the four scaling brakes from `06-scaling-budget-and-memoization.md`.
    Which one is checked once globally per request rather than per branch,

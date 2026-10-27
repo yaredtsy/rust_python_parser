@@ -1,5 +1,10 @@
 # 00.03 — `Env`: the thing Jedi calls `parent_context`
 
+(In `call_resolver.py`, `parent_context` is the context the current call is
+resolved *in* — the activation of the function whose body is being walked.
+That's the whole `Env`. It is not a link to a parent env; the closest thing
+`Env` has to one is `enclosing`, below, and that means something else.)
+
 The environment is the single idea this whole project hangs off:
 *resolve from what you know first, fall back to ty second.* This file is the
 mechanism; [`01-functions/01-calling-a-plain-function.md`](../01-functions/01-calling-a-plain-function.md)
@@ -26,17 +31,21 @@ def inner(y):
     y.write(1)        # y → middle's context → x → outer's context → JsonWriter
 ```
 
-Jedi resolves this by **lazily** walking a chain of contexts, each one
-pointing back to the context that called it. Your Rust version does the
-same job with an ordinary, **eagerly** populated map:
+Jedi resolves this **lazily**: when `inner` needs `y`, it goes back to the
+caller's context to evaluate the argument expression `x`, and from there
+back to `outer`'s. Your Rust version does the same job **eagerly**:
+`bind_parameters` evaluates each argument in the caller's env *at the call
+site* and copies the resulting values into the callee's `locals`. By the
+time `inner`'s body runs, `y` is already `Instance{JsonWriter}` — nothing
+needs to walk back to the caller, so `Env` has no link to it:
 
 ```rust
 #[derive(Clone)]
 pub struct Env<'db> {
-    locals: rpds::HashTrieMap<Name, Values<'db>>,
-    attrs:  rpds::HashTrieMap<(OriginId, Name), Values<'db>>,
-    scope:  ScopeId<'db>,
-    parent: Option<Arc<Env<'db>>>,
+    locals:    rpds::HashTrieMap<Name, Values<'db>>,
+    attrs:     rpds::HashTrieMap<(OriginId, Name), Values<'db>>,
+    scope:     ScopeId<'db>,
+    enclosing: Option<ActivationId>,    // the run where this function was DEFINED — never the caller
 }
 ```
 
@@ -45,7 +54,27 @@ pub struct Env<'db> {
 | `locals` | "what is parameter/local `x` bound to, in this activation?" |
 | `attrs` | "what is `origin.attr` bound to?" — shared across the whole path, not per-frame; see `02-classes/03` |
 | `scope` | "am I even allowed to see `x` here?" — the guard below |
-| `parent` | "if `x` isn't local, is it a free variable from an enclosing *function*?" — closures, `01-functions/04` |
+| `enclosing` | "if `x` isn't local, is it a free variable of a nested `def`?" — the env of the activation where that `def` ran. Closures only, `01-functions/04` |
+
+⚠ **`enclosing` is not the caller.** The `outer → middle → inner` chain
+above is a *call* chain, and none of those functions is nested in another,
+so all three have `enclosing: None`. The caller relationship lives in the
+call tree (`Frame.parent`, `05-frame-pathkey-and-budget.md`), and name
+lookup never uses it. Two separate links, two separate names:
+
+| link | follows | stored in | used for |
+|---|---|---|---|
+| enclosing | where the function was **defined** | `Env.enclosing` | free variables in closures |
+| caller | where the function was **called from** | `Frame.parent` | the tree, `is_ancestor` |
+
+A nested function gets its `enclosing` from its *value*, not from whoever
+calls it: the `def` statement binds the name to
+`Closure { func, activation }`, where `activation` is the run of the
+enclosing function the `def` ran in, and `bind_parameters` uses it as
+`enclosing`. Lookup reads that run's *current* env, so later assignments
+are seen, like a Python closure. So a closure returned from a factory
+and called from a completely different function still sees the factory's
+locals. Full mechanism: `plan/03-call-tree/05` § "The environment".
 
 ## Why a persistent map, not `FxHashMap` + `.clone()`
 
@@ -79,9 +108,11 @@ return *`f`'s* `x`, if the two environments ever got confused with each
 other (e.g. through a bug in how frames are threaded through recursion).
 `plan/03-call-tree/05` calls this out explicitly: *"this is the bug you will
 hit around week two if you skip it."* A lookup must check the scope
-matches before trusting a hit — or, for genuine closures, walk `parent`
+matches before trusting a hit — or, for genuine closures, walk `enclosing`
 specifically because the name is a *free variable of a nested function*,
-never as a generic "search outward" fallback.
+never as a generic "search outward" fallback. And there is no caller link to
+search: if `Env` had one and lookup walked it, `g` would find `f`'s `x` above,
+which is this exact bug.
 
 ## The two-line rule, now concrete
 
@@ -104,14 +135,19 @@ The moment `resolve_from_ty` *does* get asked, its `Type<'db>` answer has to
 become `Values<'db>` before anything downstream can use it:
 
 ```rust
-fn lift(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Values<'db> {
+fn lift_at(&mut self, ty: Type<'db>, depth: u8) -> Values<'db> {
+    if depth > MAX_LIFT_DEPTH { return smallvec![Unknown] }   // recursive aliases
     match ty {
         Type::FunctionLiteral(f) => smallvec![AbstractValue::Function(f)],
         Type::ClassLiteral(c)    => smallvec![AbstractValue::Class(c)],
-        Type::ModuleLiteral(m)   => smallvec![AbstractValue::Module(m.module(db))],
+        Type::ModuleLiteral(m)   => smallvec![AbstractValue::Module(m.module(self.db))],
+
+        // `obj.method` ty already bound → BoundMethod{func, interned receiver}.
+        // Drop this arm and it becomes Ty(BoundMethod): not callable, no edge.
+        Type::BoundMethod(_) => { /* vnoc::bound_method_function + _self, see plan 04 */ }
 
         // ★ the important case: EXPLODE, never re-flatten
-        Type::Union(u) => u.elements(db).iter().flat_map(|t| lift(db, env, *t)).collect(),
+        Type::Union(u) => u.elements(self.db).iter().flat_map(|t| self.lift_at(*t, depth + 1)).collect(),
 
         Type::NominalInstance(i) => smallvec![AbstractValue::Instance {
             class: i.class(db, env).class_literal(db),
@@ -119,11 +155,31 @@ fn lift(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Values
                                         // Shared by ALL opaque instances → never holds attrs.
         }],
 
-        Type::Dynamic(_) | Type::Never => smallvec![AbstractValue::Unknown],
+        // class-ish types that aren't ClassLiteral — normalise, then the
+        // ClassLiteral arm applies:
+        Type::GenericAlias(_) => /* Box[int] → Box     (vnoc::generic_alias_origin) */,
+        Type::SubclassOf(_)   => /* type[Base] → Base  (vnoc::subclass_of_class); type[Any] → Unknown */,
+        Type::TypeAlias(a)    => self.lift_at(a.value_type(self.db), depth + 1),   // may be a union
+
+        Type::Dynamic(_) | Type::Never | Type::Divergent(_) => smallvec![AbstractValue::Unknown],
         other => smallvec![AbstractValue::Ty(other)],
     }
 }
 ```
+
+**Every arm above `other` is a call edge.** Anything that falls to `Ty(..)`
+can't be called (`as_callable` says no), so a missing arm doesn't fail
+loudly, it just drops edges:
+
+| arm | without it | example |
+|---|---|---|
+| `BoundMethod` | every bound method ty hands you is uncallable | `f = get_obj().method; f()` |
+| `GenericAlias` | constructing a specialised generic gives no `__init__` edge | `Box[int]()` |
+| `SubclassOf` | `cls()` with `cls: type[Base]` and no known caller gives no edge — the annotation fallback case, `04-annotation-fallback.md` | `def make(cls: type[Base]): cls()` |
+| `TypeAlias` | a param annotated with an alias lifts to nothing | `type H = A \| B; def f(h: H): h.run()` |
+
+The full arms, wrappers and reasoning are in
+[`plan/03-call-tree/04`](../../../plan/03-call-tree/04-value-domain.md#converting-from-ty--the-boundary).
 
 The `Union` arm is the one line in the whole project most likely to get
 "simplified" back into a bug. `ty` hands you a set; your job is to turn that

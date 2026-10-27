@@ -38,7 +38,7 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    (`00-values/03`, `01-functions/01`'s trace, generalised).
 
 3. The `01-functions/05` mechanism is **return-value flow** (`build`'s
-   `return` interpreted via `eval_returns`); the `02-classes/01`/`03`
+   `return` value stored by the tree walk of `build`, then read for `p`); the `02-classes/01`/`03`
    mechanism is **construction with attribute state** (each branch of
    `build` constructs a `Pipeline` and writes `self.handler` in its own
    `__init__` call). `p` resolves to a **union of two values** —
@@ -84,15 +84,15 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    that shared key, and whichever `__init__` ran second would silently
    overwrite the first's handler for **both** `a.run(1)` and `b.run(2)`.
 
-7. **`f`/`g`** is guarded by the **in-flight return-value memo**
-   (`01-functions/05`) — it's a value query (what does `f()`/`g()`
-   *return*), with no tree frame of its own. **`h`** is guarded by the
-   **ancestor check / `is_ancestor`** (`00-values/05`) — it's a tree-walk
-   recursion, observable in the output JSON. Applying `is_ancestor` to the
-   `f`/`g` case would give the wrong answer: a value query pushes no tree
-   frame, so the ancestor chain never contains `f` or `g` at the point
-   either recurses, and the check would never fire — infinite recursion,
-   not termination.
+7. **One mechanism: `is_ancestor`** (`00-values/05`), for both. Return
+   values come out of the same tree walk (`01-functions/05`), so there's no
+   second traversal that could loop. `h`: the inner `h()` has `h` as an
+   ancestor → cut. `x = f()`: the tree walks `f` → `g` → the inner `f()` is
+   cut (ancestor). Its value read finds nothing stored — the outer `f` run
+   hasn't finished — so it's `Unknown`; `g` returns that, `f` returns that,
+   and **`x` is `Unknown`**. (An earlier design had a separate in-flight
+   memo for return values, because it computed them in a second traversal
+   that pushed no tree frames. That design is retired.)
 
 8. Yes, `helper(a, b)` as originally written is context-independent —
    neither `a` nor `b` ever appears in a callee or receiver position (they're
