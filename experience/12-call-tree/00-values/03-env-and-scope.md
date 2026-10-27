@@ -205,7 +205,7 @@ hand, as if you were the interpreter:
 1. `env` is empty (module scope, nothing bound yet).
 2. `a = plain` — is `plain` found in `env`, or does this go through `lift`?
    Which arm of `lift` fires?
-3. `c = Thing()` — walk through `eval_call_result`'s three cases
+3. `c = Thing()` — walk through `eval_call`'s three cases
    (`plan/03-call-tree/10`, case (a)): which one applies, and does it touch
    `lift` at all?
 4. After this function returns, is anything added to `env.attrs`? Why or

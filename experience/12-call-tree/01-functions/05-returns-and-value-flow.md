@@ -26,42 +26,50 @@ injection, service locators: precisely the code where a context-sensitive
 call tree earns its keep. A tool that stops at every `x = make_thing()` has
 given up on its own reason for existing.
 
-## One walk — the value comes out of it
+## Walking a call returns its value
 
 This is the idea that makes everything else in this file safe, so get it
 straight before anything else:
 
-> **There is one traversal.** When the tree walk walks `make_writer`'s body
-> (`walk_function`), it emits `make_writer`'s child nodes *and* collects
-> the union of every `return` it reaches, storing it under a `ReturnKey`.
-> Reading the *value* of `make_writer()` — for `w = make_writer()` — just
-> looks that up. It walks nothing and emits nothing, so nothing is
-> double-counted.
+> **Evaluating a call is resolving it.** `eval` on `make_writer()` walks
+> `make_writer`'s body — adding its node and its children — and hands the
+> union of every `return` it reached straight back to whoever evaluated the
+> call. `w = make_writer()` gets its value from that one evaluation. There
+> is no second walk and no call list, so nothing is double-counted.
 
-It works because of the order inside one statement: calls are resolved
-first, bindings recorded after (`plan/03-call-tree/10` §1). By the time
-`record_bindings` asks what `w` is, `make_writer()` has been walked.
+Python's own evaluation order falls out of it, with nothing to check:
+
+```
+eval(emit(make()))
+  eval(emit)          → Function(emit)                  1. the function
+  eval(make())        → walks make, returns its value   2. the arguments, left to right
+  call emit with it   → walks emit                      3. then the call
+```
 
 ```rust
-fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model) -> Values<'db> {
-    let callees = self.eval_callee(&call.func, env, model);
-    let args = self.eval_arguments(&call.arguments, env, model);
+fn eval_call(&mut self, call: &ast::ExprCall, env: &Env<'db>, mode: &mut Mode<'_, 'db>) -> Values<'db> {
+    let callees = self.eval(&call.func, env, mode);                  // 1.
+    let args    = self.eval_arguments(&call.arguments, env, mode);   // 2. walks calls inside args
     let mut out = Values::new();
-    for callee in callees {
-        match callee.as_callable(self.db) {
-            Some(Callable::Class(c)) => {                     // (a) constructor
-                // the ONE constructor entry point — the tree walk calls it too (plan/03-call-tree/10)
-                out.push(self.construct_instance(c, &args, call, env, None));
+    for callee in callees {                                          // 3.
+        out.extend(match callee.as_callable(self.db) {
+            // (a) constructor — the ONE place a class is constructed (plan/03-call-tree/10)
+            Some(Callable::Class(c)) => {
+                let child = self.enter(call, c, mode);
+                smallvec![self.construct_instance(c, &args, call, env, child)]
             }
-            Some(Callable::Function(f)) if self.is_project_code(f) => {  // (b) ★ read the stored return
+            // (b) ★ project function — walk it; its returns ARE the value
+            Some(Callable::Function(f)) if self.is_project_code(f) => {
                 let callee_env = self.bind_parameters(f, &args, callee.receiver(), callee.enclosing(), env);
-                match self.returns.get(&ReturnKey::of(f, &callee_env)) {
-                    Some(v) => out.extend(v.iter().copied()),
-                    None    => out.push(AbstractValue::Unknown),   // not walked, or still walking
+                match self.enter(call, f, mode) {
+                    Enter::Walk(child) => self.walk_function(f, &callee_env, child).1,
+                    Enter::Cut => self.returns.get(&ReturnKey::of(f, &callee_env))   // recursion, limits
+                                      .cloned().unwrap_or(smallvec![AbstractValue::Unknown]),
                 }
             }
-            _ => out.extend(self.lift(call.inferred_type(model).unwrap_or(Type::unknown()))),  // (c)
-        }
+            // (c) anything else → ty's declared return type
+            _ => self.lift(call.inferred_type(mode.model).unwrap_or(Type::unknown())),
+        });
     }
     self.cap_fanout(out)
 }
@@ -69,19 +77,21 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model) -> V
 
 Three cases, tried in order: **(a)** calling a class constructs — never
 asks what the constructor "returns," it just mints an instance. **(b)** ★
-calling a project function reads what the tree walk stored for it, keyed
-on the *same* `bind_parameters` result from `01-calling-a-plain-function.md`.
-**(c)** anything else — stdlib, a function whose body isn't interpreted —
-falls back to `ty`'s declared return type via `lift`.
+calling a project function walks it, with the *same* `bind_parameters`
+machinery from `01-calling-a-plain-function.md`, and the value is what its
+`return`s produced. **(c)** anything else — stdlib, a function whose body
+isn't interpreted — falls back to `ty`'s declared return type via `lift`.
 
-Two rules make (b) find something:
+Two rules that keep it right:
 
-- **Evaluation order.** In `emit(make())`, `make()` must be walked before
-  `emit`'s arguments are read. Calls in a statement are resolved innermost
-  first — arguments and receiver before the call that uses them.
-- **The key is the whole entry state**, not just the arguments: the bound
-  parameters (including `self`), the enclosing run (for closures), and the
-  attribute state. Otherwise `a.get()` and `b.get()` would share a value.
+- **Every expression is evaluated once per walk.** A second evaluation
+  would walk the callee again into the same merged frame and bump
+  `call_count`. `x = y = make()` evaluates `make()` once.
+- **The store (`ReturnKey`) is only for reuse and the cut.** A normal call
+  gets its value directly. The store is read only when the call is *not*
+  walked — a memoised subtree, or a recursion/limit cut — and its key is
+  the whole entry state: bound parameters (including `self`), the enclosing
+  run, and the attribute state.
 
 ## Recursion — walked once, then `Unknown`
 
@@ -117,7 +127,7 @@ same walker with node output turned off — never a second walker.)
 Using `python/returns.py`, before reading further:
 
 1. `simple_factory()` — what does `w` resolve to, and through which of the
-   three `eval_call_result` cases?
+   three `eval_call` cases?
 2. `two_returns_union()` — how many values does `build(True).write(1)`'s
    receiver carry, and does the fact that `build(True)` passes a *specific*
    boolean change the answer? (It shouldn't — say why.)
@@ -130,10 +140,10 @@ Using `python/returns.py`, before reading further:
 
 <details><summary>Answers</summary>
 
-1. Case (b) — `make` is a project function. The tree walk of `make()`
-   reached its single `return JsonWriter()` and stored
+1. Case (b) — `make` is a project function. Evaluating `make()` walks it,
+   reaches its single `return JsonWriter()`, and returns
    `Instance{JsonWriter, O}` (origin minted where `JsonWriter()` is
-   constructed, inside `make`'s body); `w = make()` reads that.
+   constructed, inside `make`'s body) straight to the assignment `w = …`.
 2. Two values — `Instance{CsvWriter, Oa}` and `Instance{JsonWriter, Ob}` —
    because `build` has **two** `return` statements and there's no branch
    evaluation; both arms are always unioned, regardless of what `True`
@@ -143,7 +153,7 @@ Using `python/returns.py`, before reading further:
    `rec(n - 1)` has `rec` as a tree ancestor, so `is_ancestor` cuts it: no
    child node, no walk. Its value read finds nothing stored under its key
    — the outer `rec` run hasn't finished — so it's `Unknown`. The outer
-   run's only `return` is that `Unknown`, so the stored value for `rec(3)`
+   run's only `return` is that `Unknown`, so the value of `rec(3)`
    is `Unknown`. Nothing loops: there is only one walk, and it was cut.
 4. Because once you know the function contains a `yield`, calling it
    produces a generator object, full stop — the `return` statements (if

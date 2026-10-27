@@ -106,7 +106,7 @@ Sub-steps, each independently testable:
 | M6.4 | attributes + `self` + origin | the 8 attribute fixtures, esp. #2 (two live instances) |
 | M6.5 | callbacks | the 8 callback fixtures |
 | M6.6 | local assignment tracking | ch.10 fixtures 7, 8, 15, 16 |
-| M6.7 | return-value flow | ch.10 fixtures 1–6, 12, 17–21 |
+| M6.7 | return-value flow | ch.10 fixtures 1–6, 12, 17–23 |
 | M6.8 | generalised object state | ch.10 fixtures 9, 10, 11, 13, 14 |
 
 M6.6–M6.8 are [`03-call-tree/10`](../03-call-tree/10-return-values-and-state.md)

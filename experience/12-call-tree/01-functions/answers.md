@@ -45,13 +45,13 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    bound. See `04-closures-and-nested-functions.md`'s "escaping-closure
    gap" section.
 
-5. From the **return store**. When the tree walk resolves `make()` (adding
-   `make` as a child of `run`'s frame), it walks `make`'s body and stores
-   the union of its returns — `Instance{JsonWriter, O}` — under `make`'s
-   `ReturnKey`. It's there in time because inside one statement calls are
-   resolved *before* bindings are recorded, so `make()` is walked before
-   `record_bindings` asks what `w` is. Reading it is a lookup: it walks
-   nothing and emits nothing, so `make` appears once.
+5. From **evaluating the call itself**. `eval` on `make()` walks `make`
+   (adding it as a child of `run`'s frame), reaches `return JsonWriter()`,
+   and returns `Instance{JsonWriter, O}` directly to the assignment, which
+   binds `w`. It's there in time because the assignment's right-hand side
+   is evaluated before `w` is bound — Python's own order. It isn't
+   double-counted because the expression is evaluated once: that one
+   evaluation is both the node and the value.
 
 6. `a()` and `b()` — **two different frames**, each calling `run` once —
    is the shape that demonstrates context sensitivity: two `run` nodes, one

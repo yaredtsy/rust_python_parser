@@ -38,7 +38,7 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    (`00-values/03`, `01-functions/01`'s trace, generalised).
 
 3. The `01-functions/05` mechanism is **return-value flow** (`build`'s
-   `return` value stored by the tree walk of `build`, then read for `p`); the `02-classes/01`/`03`
+   `return` value, returned by evaluating `build(kind)` for `p`); the `02-classes/01`/`03`
    mechanism is **construction with attribute state** (each branch of
    `build` constructs a `Pipeline` and writes `self.handler` in its own
    `__init__` call). `p` resolves to a **union of two values** —
@@ -105,7 +105,7 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    parameter-name-at-call-site scan once local bindings exist at all: a
    parameter can reach a callee or receiver position *indirectly* through
    an intermediate local (`x = a; x.write(b)`), and only tracking local
-   assignments (taint propagation through `record_bindings`) catches that
+   assignments (taint propagation through `exec_simple`) catches that
    — a bare syntactic scan for parameter names appearing directly as
    callees would miss it.
 

@@ -286,10 +286,11 @@ invariant from [`03`](03-the-abstract-interpreter.md). Resolve it by threading
 the env through the statement loop by value:
 
 That loop is [`10` §1](10-return-values-and-state.md#1-local-assignment-tracking-cheapest-do-first)'s
-`walk_stmts`: calls in a statement first, using the env before it, then
-the statement's bindings; `if`/`else` arms forked from the same "before"
-and joined after. (An earlier sketch here recorded bindings *before*
-resolving the statement's calls, the opposite order. Use `10`'s.)
+`walk_stmts`: each statement's expressions are evaluated (which walks the
+calls in them) in the env before it, then the statement binds;
+`if`/`else` arms forked from the same "before" and joined after. (An
+earlier sketch here recorded bindings *before* resolving the statement's
+calls, the opposite order. Use `10`'s.)
 
 That keeps each env immutable once shared with a child frame, while allowing
 sequential refinement within one body. Statement order becomes meaningful —

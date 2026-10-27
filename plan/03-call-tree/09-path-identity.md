@@ -250,6 +250,12 @@ risk from:
   output. Sort, or use `IndexMap`/`BTreeMap`.
 - Rayon parallelism across call sites — collect into an indexed structure, then
   merge in deterministic order.
+- **Child order.** Evaluation-driven walking ([`10` §1](10-return-values-and-state.md#-evaluation-drives-the-walk--there-is-no-call-list))
+  adds children in Python's evaluation order: `make` before `emit` for
+  `emit(make())`. If the golden files order children by source position
+  instead, record each child's first call-site position in `add_child` and
+  sort by it when serialising — never by changing the evaluation order.
+  **[check]** against the golden files.
 - `visited_qnames` is a Python `set` **[verified, call_resolver.py:133]** but is
   only used for membership, not iteration — safe.
 

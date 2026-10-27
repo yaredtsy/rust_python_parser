@@ -54,7 +54,7 @@ def run():
 
 5. Resolving `w.write(1)`'s receiver needs `make`'s return value. Where
    does that value come from, why is it there by the time `w` is bound, and
-   why doesn't reading it add a second `make` node?
+   why isn't `make` counted twice?
 
 ```python
 def on_success(r): audit.record(r)

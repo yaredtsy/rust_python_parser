@@ -52,7 +52,7 @@ pub struct ActivationId(u32);           // index into Interp.activations: Vec<En
 
 /// What one walk produces besides bindings.
 struct Mode<'a, 'db> {
-    frame:   Option<&'a mut Frame<'db>>, // Some → resolve_call on every call (tree nodes)
+    frame:   Option<&'a mut Frame<'db>>, // Some → every call evaluated adds a node
                                          // None → node output off, same walk
     returns: Values<'db>,                // union of every `return` reached — always collected
 }
@@ -69,21 +69,22 @@ fn walk_stmts(&mut self, stmts: &[ast::Stmt], mut env: Env<'db>,
             // ★ fork and join. Every arm starts from the env BEFORE the `if`;
             //   arms are never run one after another on the same env.
             ast::Stmt::If(s) => {
-                self.calls_in_expr(&s.test, &env, mode);
+                self.eval(&s.test, &env, mode);               // value unused; its calls are walked
                 let before = env;
                 let mut arms = vec![self.walk_stmts(&s.body, before.clone(), act, mode)];
                 for clause in &s.elif_else_clauses {
-                    if let Some(t) = &clause.test { self.calls_in_expr(t, &before, mode); }
+                    if let Some(t) = &clause.test { self.eval(t, &before, mode); }
                     arms.push(self.walk_stmts(&clause.body, before.clone(), act, mode));
                 }
                 if !has_else(s) { arms.push(Some(before)); }   // no else: skipping is an arm
                 Env::join(arms)?                               // every arm returned → so does this
             }
-            ast::Stmt::Match(m) => { /* same as If, one arm per case; `case _` is the else */ }
+            ast::Stmt::Match(m) => { /* eval the subject, then as If: one arm per case; `case _` is the else */ }
 
             // The body runs zero or more times: walk it ONCE, join with "didn't run".
             // No fixed point — a value set on the second iteration isn't seen.
             ast::Stmt::For(_) | ast::Stmt::While(_) => {
+                self.eval(loop_head(stmt), &env, mode);    // the `for` iterable / `while` test
                 let before = env;
                 let body = self.walk_stmts(loop_body(stmt), bind_loop_target(stmt, before.clone()), act, mode);
                 let after = Env::join(vec![Some(before), body])?;
@@ -103,26 +104,22 @@ fn walk_stmts(&mut self, stmts: &[ast::Stmt], mut env: Env<'db>,
             }
 
             ast::Stmt::With(w) => {                    // body always runs: sequential
-                let env = self.bind_with_targets(w, env, mode);
+                let env = self.bind_with_targets(w, env, mode);   // evals each context expr, binds `as`
                 self.walk_stmts(&w.body, env, act, mode)?
             }
 
             ast::Stmt::Return(r) => {
                 if let Some(e) = &r.value {
-                    self.calls_in_expr(e, &env, mode);           // calls first (§2: eval order)
-                    let v = self.eval(e, &env, model);           // then the value, from the store
+                    let v = self.eval(e, &env, mode);    // walks any call in it, returns its value
                     mode.returns.extend(v);
                 } else { mode.returns.push(AbstractValue::Unknown); }   // bare `return`
                 return None;
             }
-            ast::Stmt::Raise(_) => { /* calls in it, then */ return None; }
+            ast::Stmt::Raise(r) => { /* eval the exception expr(s) */ return None; }
 
-            // Everything else is straight-line: calls first, in the env BEFORE
-            // the statement, then its bindings for the statements after it.
-            other => {
-                self.calls_in_stmt(other, &env, mode);
-                self.record_bindings(other, env, act)
-            }
+            // Everything else is straight-line: evaluate the statement's
+            // expressions in the env BEFORE it, then bind for the statements after.
+            other => self.exec_simple(other, env, act, mode),
         };
     }
     self.activations[act] = env.clone();
@@ -130,20 +127,67 @@ fn walk_stmts(&mut self, stmts: &[ast::Stmt], mut env: Env<'db>,
 }
 ```
 
-`calls_in_stmt` / `calls_in_expr` are the call finder
-[`03`](03-the-abstract-interpreter.md) already specifies (decorators,
-defaults, annotations, base-class expressions included), applied to the
-statement's **own** expressions only — the nested blocks are walked by
-`walk_stmts` itself, with their own env. With `frame: Some` each call found
-goes to `resolve_call`; with `frame: None` nothing is emitted.
+### ★ Evaluation drives the walk — there is no call list
+
+There is no separate call finder. Calls are found because evaluation
+reaches them: `eval` on an `ast::Expr::Call` *is* resolving the call
+(§2's `eval_call`), and it returns the call's value to whoever evaluated
+it. Python's own order falls out of that, with nothing to check:
+
+```
+eval(emit(make()))
+  eval(emit)          → Function(emit)            1. the function
+  eval(make())        → walks make, returns its value   2. the arguments, left to right
+  call emit with it   → walks emit                3. then the call
+```
+
+Each argument, including any call inside it, is fully evaluated before the
+outer call happens. Nested blocks are walked by `walk_stmts` with their own
+env; everything else is an expression some statement evaluates. With
+`frame: Some` each call reached adds a node; with `frame: None` nothing is
+emitted, but bodies are still walked for their values.
+
+**Every expression is evaluated exactly once per walk.** A second
+evaluation would walk the callee again into the same merged frame and bump
+`call_count`, which is in the output. So `x = y = f()` evaluates `f()`
+once, and `exec_simple` never evaluates the right-hand side of an
+assignment as "the calls" and again as "the value".
+
+**Positions evaluation must reach.** The call finder this replaces
+(`ty_ide`'s `OutgoingCallsFinder`, used in 03's first version) also
+reported calls in places that aren't plain statement expressions. Each
+must be evaluated by the statement that owns it, in the current env:
+
+| statement | evaluate |
+|---|---|
+| `def` | decorators, default values, annotations — then bind the name |
+| `class` | decorators, base classes, keywords (`metaclass=`) — then bind the name |
+| `for` / `while` / `if` / `match` | the iterable / test / subject, before the body |
+| `with` | each context expression, before binding `as` |
+| `assert`, `del`, `raise`, augmented assignment, `x: T = v` | every expression in it |
+
+**[check]** against the golden files: annotations (evaluated at runtime only
+without `from __future__ import annotations`), class bodies run inside a
+function, comprehensions and lambdas (a lambda body runs only when called).
+Match whatever the Jedi driver reports — the contract is the output
+([`01`](01-what-jedi-actually-does.md)). The memory note *scope entry must
+be walk_node* applies: a walk that starts at `def.body` misses the
+decorators and defaults.
+
+**Child order in the JSON is a separate question.** Evaluation order adds
+`make` before `emit` for `emit(make())`; a source-order finder may have
+added `emit` first. If the golden files show source order, record each
+child's first call-site position in `add_child` and sort children by it
+when serialising ([`09` § Determinism](09-path-identity.md#determinism-)).
+Don't change the evaluation order to get the output order.
 
 `Env::join` unions per name: a name any arm wrote gets the union of every
 reaching arm's value (the "before" value counts for an arm that didn't
 write it). `attrs` joins the same way. `None` arms are skipped; all `None`
 → `None`. It's cheap because each arm can record which names it wrote.
 
-**Order matters.** Resolve calls in the statement using the env *before* it,
-then update. `w = make(); w.write()` are separate statements, so `w` is bound by
+**Order matters.** Evaluate the statement in the env *before* it, then
+bind. `w = make(); w.write()` are separate statements, so `w` is bound by
 the time `w.write()` is reached.
 
 **Why fork and join, when conditions are never evaluated.** Not evaluating
@@ -168,31 +212,46 @@ the arm envs live only until the join. (An earlier draft walked a flat
 the last arm, which is choosing a branch, the thing this design doesn't do.)
 
 ```rust
-fn record_bindings(&mut self, stmt: &ast::Stmt, env: Env<'db>, act: ActivationId) -> Env<'db> {
+/// A straight-line statement: evaluate its expressions once, in Python's
+/// order, in the env BEFORE it; then bind.
+fn exec_simple(&mut self, stmt: &ast::Stmt, env: Env<'db>, act: ActivationId,
+               mode: &mut Mode<'_, 'db>) -> Env<'db> {
     match stmt {
         ast::Stmt::Assign(a) => {
-            let v = self.eval(&a.value, &env, model);
+            let v = self.eval(&a.value, &env, mode);     // ONCE, however many targets
             let mut env = env;
             for target in &a.targets {
                 match target {
                     ast::Expr::Name(n)      => env = env.bind_local(&n.id, v.clone()),
-                    ast::Expr::Attribute(x) => env = self.bind_attribute(x, v.clone(), env),
-                    _ => {}   // tuple/starred destructuring → not modelled
+                    ast::Expr::Attribute(x) => env = self.bind_attribute(x, v.clone(), env, mode),
+                    other => { self.eval_target_parts(other, &env, mode); }  // `a[f()] = v`, tuples: Unknown
                 }
             }
             env
         }
-        ast::Stmt::AnnAssign(a) if a.value.is_some() => { /* same */ }
-        // (With / For / If / Try / Match are structural — walk_stmts handles them.)
+        ast::Stmt::AnnAssign(a) => { /* eval annotation [check], then value (if any) once; bind as above */ }
+        ast::Stmt::Expr(e)      => { self.eval(&e.value, &env, mode); env }   // `f(x)` on its own line
+        // (With / For / If / Try / Match / Return / Raise are structural — walk_stmts handles them.)
 
-        // A nested def: point at THIS run, so a later call from any frame reads
-        // this run's env as it is at that moment (05 § enclosing). At module
-        // level there's no run to point at; leave the name to ty.
-        ast::Stmt::FunctionDef(d) if env.is_function_scope() => {
-            let func = self.function_type_of(d);
+        // A nested def: evaluate decorators and defaults HERE (they run when
+        // the `def` runs, in this env), then bind. The name points at THIS
+        // run, so a later call from any frame reads this run's env as it is
+        // at that moment (05 § enclosing). At module level there's no run to
+        // point at; the name goes to ty — but decorators/defaults still run.
+        ast::Stmt::FunctionDef(d) => {
+            for dec in &d.decorator_list { self.eval(&dec.expression, &env, mode); }
+            self.eval_defaults_and_annotations(&d.parameters, d.returns.as_deref(), &env, mode);
+            if !env.is_function_scope() { return env }
+            let func = self.definition_of_def(d);           // 04: decorated → still the def
             env.bind_local(&d.name.id, smallvec![AbstractValue::Closure { func, activation: act }])
         }
-        _ => env,
+        ast::Stmt::ClassDef(c) => {
+            for dec in &c.decorator_list { self.eval(&dec.expression, &env, mode); }
+            for base in c.bases() { self.eval(base, &env, mode); }
+            for kw in c.keywords() { self.eval(&kw.value, &env, mode); }
+            env   // [check] class body inside a function — see the positions table
+        }
+        other => { self.eval_all_exprs(other, &env, mode); env }   // assert, del, aug-assign, …
     }
 }
 ```
@@ -227,18 +286,98 @@ join. Do **not** build a fixed point over loops.
 
 ## 2. Return-value flow
 
-**There is one walker, and return values come out of it.** When the tree
-walk walks a function body (`walk_function`, below), it collects the union
-of every `return` it reaches and stores it. A call's *value* is then read
-from that store. There is no separate value-query traversal.
-
-This works because of the order inside a statement: calls are resolved
-first, then bindings are recorded (§1). So in `w = make(); w.write()`, the
-tree walk has already walked `make()` — and stored its return — by the time
-`record_bindings` asks what `w` is.
+**Walking a call returns its value.** `eval` on a call expression walks
+the callee (§1, "Evaluation drives the walk") and hands the union of every
+`return` it reached straight back to whoever evaluated the call — the
+assignment `w = make()`, the argument in `emit(make())`, the receiver in
+`make().run()`. There is no separate value traversal, and no lookup on the
+normal path.
 
 ```rust
-/// Everything a function's return value depends on, as values (not hashed).
+/// `eval` on a call expression. This IS resolving the call — 03's
+/// `resolve_call` steps (a)–(e) live in `call_one`.
+fn eval_call(&mut self, call: &ast::ExprCall, env: &Env<'db>, mode: &mut Mode<'_, 'db>) -> Values<'db> {
+    let callees = self.eval(&call.func, env, mode);                  // 1. the function
+    let args    = self.eval_arguments(&call.arguments, env, mode);   // 2. arguments, left to right
+    let mut out = Values::new();
+    for callee in callees {                                          // 3. then the call
+        out.extend(self.call_one(call, callee, &args, env, mode));
+    }
+    self.cap_fanout(out)
+}
+
+fn call_one(&mut self, call: &ast::ExprCall, callee: AbstractValue<'db>, args: &EvaluatedArgs<'db>,
+            env: &Env<'db>, mode: &mut Mode<'_, 'db>) -> Values<'db> {
+    match callee.as_callable(self.db) {
+        // (a) constructor → construct_instance (below) walks `__init__`
+        Some(Callable::Class(c)) => {
+            let child = self.enter(call, c, mode);          // 03 steps: maybe a ClassSchema node
+            smallvec![self.construct_instance(c, args, call, env, child)]
+        }
+
+        // (b) ★ project function → walk it; its returns ARE the value
+        Some(Callable::Function(f) | Callable::Closure { func: f, .. } | Callable::Bound { func: f, .. })
+            if self.is_project_code(f) =>
+        {
+            let callee_env = self.bind_parameters(f, args, callee.receiver(), callee.enclosing(), env);
+            match self.enter(call, f, mode) {               // 03 steps (b)–(e), depth, budget
+                Enter::Walk(child_mode) => {
+                    // Reuse: 08 layer 5's graft, 09's "identical walk" skip.
+                    if let Some(v) = self.reuse(f, &callee_env, &child_mode) { return v }
+                    self.walk_function(f, &callee_env, child_mode).1
+                }
+                // Not walked: recursion cut, depth/budget/deadline, no qname/ID.
+                Enter::Cut => self.returns.get(&ReturnKey::of(f, &callee_env))
+                                  .cloned().unwrap_or(smallvec![AbstractValue::Unknown]),
+            }
+        }
+
+        // (c) anything else → ty's declared return type
+        _ => self.lift(call.inferred_type(mode.model).unwrap_or(Type::unknown())),
+    }
+}
+
+/// The one way a function body gets walked.
+fn walk_function(&mut self, func: Definition<'db>, callee_env: &Env<'db>,
+                 mut mode: Mode<'_, 'db>) -> (Option<Env<'db>>, Values<'db>) {
+    let act = self.new_activation(callee_env);
+    let end = self.walk_stmts(body(func), callee_env.clone(), act, &mut mode);
+    let returns = if is_generator(func) { smallvec![AbstractValue::Unknown] }   // point 5
+                  else { self.cap_fanout(mode.returns) };
+    // Kept only for reuse and for the recursion cut — the caller already has it.
+    self.returns.insert(ReturnKey::of(func, callee_env), returns.clone());
+    (end, returns)
+}
+```
+
+`enter` is 03's per-target checks: project code, qname, the per-call
+`seen` dedup, docstring ID, `is_ancestor`, then depth and budget. When they
+pass, it adds the child node if `mode` has a frame and hands back the
+child's mode (node output off if the caller's was off). Otherwise `Cut`.
+
+**The builtin fast path skips the callee, never the arguments.** 03's
+step 1 skips a call like `print(...)` by name. Here it means `eval_call`
+returns ty's answer for `print` without resolving it — but steps 1 and 2
+(evaluate the function, evaluate the arguments) have already run, so
+`print(make())` still walks `make`. That matches today: the Jedi driver
+finds `make()` as its own call and resolves it regardless of `print`.
+
+### The store: only for reuse and the cut
+
+The value of a normally walked call goes straight back to the caller. The
+keyed store (`self.returns`) is read in only two places:
+
+- **Reuse** — a memoised subtree graft (`08` layer 5) or `09`'s skip of an
+  identical walk. Nothing is walked, so the value has to come from a
+  previous walk with the same inputs.
+- **The cut** — `enter` refused to walk (recursion, depth, budget, no
+  qname/ID). An earlier *finished* run with the same key can still answer;
+  otherwise it's `Unknown`.
+
+So a key that's too narrow can only hurt those two paths, never a normal
+call. It still has to hold everything a return depends on:
+
+```rust
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ReturnKey<'db> {
     func:      Definition<'db>,
@@ -246,106 +385,31 @@ struct ReturnKey<'db> {
     enclosing: Option<ActivationId>,                    // which run a closure reads
     attrs:     AttrsVersion,                            // see below
 }
-
-/// The one way a function body gets walked — tree or value-only.
-fn walk_function(&mut self, func: Definition<'db>, callee_env: &Env<'db>,
-                 mut mode: Mode<'_, 'db>) -> Option<Env<'db>> {
-    let act = self.new_activation(callee_env);
-    let end = self.walk_stmts(body(func), callee_env.clone(), act, &mut mode);
-    let returns = if is_generator(func) { smallvec![AbstractValue::Unknown] }   // point 5
-                  else { self.cap_fanout(mode.returns) };
-    self.returns.insert(ReturnKey::of(func, callee_env), returns);
-    end
-}
-
-/// The value of a call expression. Called by `eval` — e.g. from
-/// record_bindings for `w = make()`, or for an argument `emit(make())`.
-fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model) -> Values<'db> {
-    let callees = self.eval_callee(&call.func, env, model);
-    let args    = self.eval_arguments(&call.arguments, env, model);
-    let mut out = Values::new();
-
-    for callee in callees {
-        match callee.as_callable(self.db) {
-            // (a) constructor → a new-or-cached instance (construct_instance, below)
-            Some(Callable::Class(c)) => out.push(self.construct_instance(c, &args, call, env, None)),
-
-            // (b) ★ project function → read what the tree walk stored
-            Some(Callable::Function(f) | Callable::Closure { func: f, .. } | Callable::Bound { func: f, .. })
-                if self.is_project_code(f) =>
-            {
-                let callee_env = self.bind_parameters(f, &args, callee.receiver(), callee.enclosing(), env);
-                match self.returns.get(&ReturnKey::of(f, &callee_env)) {
-                    Some(v) => out.extend(v.iter().copied()),
-                    // Not walked, or still being walked (recursion). See "Nothing stored".
-                    None    => out.push(AbstractValue::Unknown),
-                }
-            }
-
-            // (c) anything else → ty's declared return type
-            _ => out.extend(self.lift(call.inferred_type(model).unwrap_or(Type::unknown()))),
-        }
-    }
-    self.cap_fanout(out)
-}
 ```
 
-`resolve_call`'s function branch ([`03`](03-the-abstract-interpreter.md))
-calls `walk_function(func, &callee_env, Mode::tree(child))` instead of a
-bare `walk_body`. It binds parameters with the same `bind_parameters` and
-the same `args`, so it builds the same `ReturnKey` that (b) looks up.
-
-### ★ Calls are resolved in evaluation order
-
-The read in (b) only finds something if the call was walked **first**. So
-`calls_in_stmt` / `calls_in_expr` must yield calls in the order Python
-evaluates them: the receiver and the arguments **before** the call that
-uses them.
-
-```python
-emit(make())          # make() walked first, so emit's argument is make's return
-make().run()          # make() walked first, so .run has a receiver
-```
-
-**[check]** — the order `OutgoingCallsFinder` (03) visits calls in. If it
-yields the outer call first (pre-order), collect a statement's calls and
-resolve them innermost-first.
-
-### `ReturnKey` — why each field
-
-| field | without it |
+| field | without it, reuse or the cut would return a wrong value for |
 |---|---|
-| `func` | — |
-| `locals` (bound params, incl. `self`) | `a.get()` and `b.get()` share a value when `a`, `b` are different instances |
-| `enclosing` | `outer(JsonWriter())()` and `outer(CsvWriter())()` share a value (fixture below) |
-| `attrs` | `def get(self): return self.h` — `p.h = A(); p.get()` then `p.h = B(); p.get()` share a value |
+| `locals` (bound params, incl. `self`) | `a.get()` vs `b.get()` with different instances |
+| `enclosing` | `outer(JsonWriter())()` vs `outer(CsvWriter())()` (fixture 20) |
+| `attrs` | `def get(self): return self.h` — `p.h = A(); p.get()` vs `p.h = B(); p.get()` |
 
 `AttrsVersion` is a `u32` the env carries and bumps on every attribute
 write (and on a join that changes `attrs`). Two envs with the same version
 have the same attrs, so it stands in for the whole map without hashing it.
 
-```python
-def outer(w):
-    def get(): return w
-    return get
-
-a = outer(JsonWriter())()     # get's own locals: {}  enclosing: run 1 (w = Json)
-b = outer(CsvWriter())()      # get's own locals: {}  enclosing: run 2 (w = Csv)
-```
-
 ### Nothing stored means `Unknown`
 
-(b) finds nothing when the call wasn't walked, or hasn't finished:
+A cut call finds nothing when no run with its key has finished:
 
 - **Recursion.** Recursion is walked once: `is_ancestor` cuts the inner
   call (03 step (e)), and the inner call reads whatever is stored for its
   key. The outer run hasn't finished, so that's nothing: `Unknown`. This
   is also what guarantees termination — there is no second traversal that
   could loop.
-- **A cut.** The depth limit, the node budget or the deadline
+- **A limit.** The depth limit, the node budget or the deadline
   ([`08`](08-termination-and-cycles.md)) stopped the walk before this call.
-- **A skip.** `resolve_call` didn't enter the target: no qname, no
-  docstring ID (03 steps (b), (d)).
+- **A skip.** `enter` didn't walk the target: no qname, no docstring ID
+  (03 steps (b), (d)).
 
 Known gap, accepted for v1 — recursion that only needs the *other* arm's
 value:
@@ -361,16 +425,19 @@ If a fixture shows one of these losing an edge that matters, the fix is to
 walk that function with the **same walker** and node output off
 (`walk_function(.., Mode::value())`) at the read. Don't add a second walker.
 
-(An earlier draft had exactly that second walker as the main path:
-`eval_returns`, a value query with its own in-flight memo, `MAX_RETURN_DEPTH`
-budget and "two independent traversals" argument. Retired: the tree walk
-already reaches every call the value read needs, in the right order.)
+(Two earlier drafts are retired. The first had a second walker as the
+main path: `eval_returns`, a value query with its own in-flight memo,
+`MAX_RETURN_DEPTH` budget and "two independent traversals" argument. The
+second had one walker but still found calls with a separate call finder,
+stored every return, and looked values up afterwards — which needed the
+finder to visit calls innermost-first. Evaluation reaching the calls
+replaces both.)
 
 ### ★ `construct_instance()` — the one place a class gets constructed
 
-Both the tree walk (`resolve_call`'s class branch, `03`) and a value read
-((a) above) construct through this, and only this, so they agree on the
-origin and its attrs ([`04`](04-value-domain.md#-originkey--exactly-what-goes-in-and-nothing-else)).
+Called from one place: `call_one`'s class arm (a). Every `Foo()` reaches
+it because evaluation reaches it, so there is one origin and one set of
+attrs per construction ([`04`](04-value-domain.md#-originkey--exactly-what-goes-in-and-nothing-else)).
 `__init__` is walked with the same `walk_function` as any other body.
 
 ```rust
@@ -380,7 +447,7 @@ fn construct_instance(
     args: &EvaluatedArgs<'db>,
     call: &ast::ExprCall,
     env: &Env<'db>,
-    frame: Option<&mut Frame<'db>>,          // Some(child) from the tree walk
+    child: Enter<'_, 'db>,                   // from `enter`: Walk(mode) or Cut
 ) -> AbstractValue<'db> {
     // The ONLY place an OriginKey is built. Every input `__init__`'s result
     // depends on is in it — site, class, argument values — and nothing else
@@ -390,29 +457,23 @@ fn construct_instance(
     let (origin, is_new) = self.origin_arena.intern(key);
     let instance = AbstractValue::Instance { class, origin };
 
-    if let Some(init) = self.lookup_init(class) {
-        // Walk when the tree needs the nodes (every frame that reaches this
-        // call), or when the attrs aren't known yet. Never both separately.
-        if frame.is_some() || is_new {
+    if let (Some(init), Enter::Walk(mode)) = (self.lookup_init(class), child) {
+        // Walk when this frame needs the nodes, or when the attrs aren't
+        // known yet. A node-output-off walk of a known origin adds nothing.
+        if mode.frame.is_some() || is_new {
             let init_env = self.bind_parameters(init, args, Some(instance), None, env);
-            let mode = match frame { Some(f) => Mode::tree(f), None => Mode::value() };
-            if let Some(end) = self.walk_function(init, &init_env, mode) {
+            if let (Some(end), _) = self.walk_function(init, &init_env, mode) {
                 if is_new { self.origin_attrs.extend(end.attrs_of(origin)); }
             }
         }
     }
     // No `__init__` in the class body — a dataclass / NamedTuple / attrs
-    // synthesised one, or none at all: the class still gets its node (03
-    // adds the child before calling this), there's just no body to walk.
+    // synthesised one, or none at all: the class still gets its node
+    // (`enter` added it), there's just no body to walk.
     // Attrs stay empty; `member()` falls through to ty's field types.
     instance
 }
 ```
-
-Because the tree walk resolves `Pipeline(h)` before `record_bindings` reads
-`p = Pipeline(h)`, the value read normally finds the origin already
-interned (`is_new == false`) and walks nothing. The node-output-off walk only
-happens for a construction the tree didn't reach.
 
 Two frames reaching the same `OriginKey` (same site, same arguments, two
 paths) both walk `__init__` in tree mode — each frame needs its nodes — but
@@ -423,11 +484,12 @@ other recursive call.
 
 ### The things to get right
 
-**1. One traversal, so nothing is double-counted.** The call `make_writer()`
-appears once, as a child of the current frame, from `resolve_call`. Its
-value comes from the store, which emits nothing. (The old risk — a value
-query walking `make_writer` a second time and adding nodes — is gone
-because there is no second walk.)
+**1. One evaluation, so nothing is double-counted.** `w = make_writer()`
+evaluates the call once: that one evaluation adds the `make_writer` node
+and returns its value. (The old risk — a value query walking `make_writer`
+a second time and adding nodes — is gone because there is no second walk.
+The remaining risk is evaluating the same expression twice; §1's "exactly
+once" rule.)
 
 **2. Multiple returns union.** `if x: return A() else: return B()` → both.
 Consistent with the no-branch-analysis rule. The fan-out cap applies through
@@ -469,13 +531,13 @@ reaching a `return` as context-dependent (below).
 ## 3. Object state beyond `__init__`
 
 [`06`](06-attributes-and-self.md) specifies the attribute store keyed on
-`OriginId`. Two generalisations, both cheap once `record_bindings` exists:
+`OriginId`. Two generalisations, both cheap once `exec_simple` exists:
 
 ### (a) Any method, not just `__init__`
 
 Promote option **(b)** from
 [`06`](06-attributes-and-self.md#attributes-written-outside-__init__) to the
-default. Since `record_bindings` already handles `Attribute` targets, walking
+default. Since `exec_simple` already handles `Attribute` targets, walking
 any method body with a bound `self` records `self.X = ...` automatically. No
 extra code — just don't special-case `__init__`.
 
@@ -599,6 +661,10 @@ f(JsonWriter()).write()                           # 17. return sees the local (n
 
 # one walker, return store
 emit(make())                                      # 18. make walked BEFORE emit reads its arg
+x = y = make()                                    # 22. ONE make node, call_count 0 (evaluated once)
+def setup():
+    @register(make())                             # 23. decorator and default calls are setup's
+    def handler(w=make_default()): ...            #     children — evaluated when the def runs
 a = Box(JsonWriter()); b = Box(CsvWriter())
 a.get().write(); b.get().write()                  # 19. ReturnKey has `self`: two different edges
 def outer(w):
@@ -615,8 +681,9 @@ w = make(); w.write(1)
 # 12. `make` appears ONCE as a child, and its value read adds no node
 ```
 
-Fixture 11 proves `OriginId` isolation under external mutation; fixtures 12
-and 18 prove the one-walker design (no double count, right order). Those are
+Fixture 11 proves `OriginId` isolation under external mutation; fixtures 12,
+18 and 22 prove the evaluation-driven walk (no double count, right order,
+each expression once); 23 proves the non-statement positions are reached. Those are
 the ones that catch architectural mistakes rather than logic slips — write
 them first. Fixture 21 is a known gap: it pins today's answer so a change
 is noticed.
@@ -641,7 +708,7 @@ Slot into M6 after attributes:
 | | | Gate |
 |---|---|---|
 | M6.6 | local assignment tracking | fixtures 7, 8, 15, 16 |
-| M6.7 | return-value flow | fixtures 1–6, 12, 17–21 |
+| M6.7 | return-value flow | fixtures 1–6, 12, 17–23 |
 | M6.8 | generalised object state | fixtures 9, 10, 11, 13, 14 |
 
 Do **not** build return flow before local assignment tracking — without

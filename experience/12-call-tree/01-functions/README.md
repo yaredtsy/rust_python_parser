@@ -23,7 +23,7 @@ files lean on earlier ones:
 | 2 | [`02-defaults-and-keywords.md`](02-defaults-and-keywords.md) | `f(a, b=X)` | defaults evaluate in the **defining** scope |
 | 3 | [`03-star-args-and-splats.md`](03-star-args-and-splats.md) | `*args`, `**kwargs`, `f(*items)` | bind to `Unknown` rather than guess an alignment |
 | 4 | [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md) | nested `def`, free variables, lambdas | ★ `Env.enclosing` — the closure chain, and the gap in an earlier draft's `closure_parent` that led to it |
-| 5 | [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) | ★ `w = make(); w.write()` | one walker: the tree walk stores each return, the value read looks it up |
+| 5 | [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) | ★ `w = make(); w.write()` | evaluating a call walks it and returns its value — one walk, no lookup |
 | 6 | [`06-callbacks-and-higher-order.md`](06-callbacks-and-higher-order.md) | functions as values | dispatch on the **value**, never on the syntax |
 | 7 | [`07-curry-partial-and-decorators.md`](07-curry-partial-and-decorators.md) | curry, `functools.partial`, decorators | curry is free; partial stays opaque; decorators resolve undecorated |
 | 8 | [`08-recursion-and-termination.md`](08-recursion-and-termination.md) | direct/mutual recursion | the ancestor guard, applied, with a callback proving it's precise |
@@ -61,9 +61,9 @@ and `Env.enclosing` instead. Read it for the bug, not just the mechanism.
       starred one) become `Unknown`
 - [ ] you can explain why `inner`'s frame is a child of the call site, not
       of the `def inner:` statement
-- [ ] you can explain where `w = make()`'s value comes from (the return
-      store the tree walk fills) and why it's there in time (calls before
-      bindings, innermost first)
+- [ ] you can explain where `w = make()`'s value comes from (evaluating
+      the call walks `make` and returns it) and why Python's evaluation
+      order needs no separate check
 - [ ] you can trace `walk(node)` and say why recursion walked once leaves
       `r.close()` without an edge
 - [ ] you can trace a callback through two levels of parameter passing

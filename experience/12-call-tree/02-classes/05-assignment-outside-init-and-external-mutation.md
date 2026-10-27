@@ -35,17 +35,17 @@ fn walk_body(&mut self, func, env: &Env<'db>, frame: &mut Frame<'db>) {
     let mut env = env.clone();
     for stmt in statements_in_scope(func) {
         for call in calls_in(stmt) { self.resolve_call(call, &env, frame); }
-        env = self.record_bindings(stmt, env);   // ★ handles BOTH local AND attribute targets
+        env = self.exec_simple(stmt, env);   // ★ handles BOTH local AND attribute targets
     }
 }
 ```
 
-`record_bindings` already has to handle `Expr::Name` targets (plain local
+`exec_simple` already has to handle `Expr::Name` targets (plain local
 assignment) for `01-functions/05` to work at all; handling `Expr::Attribute`
 targets too is not new code, it's the **same match arm already present**,
 not previously described as relevant to `self`. There is no `__init__`
 special case to remove — there was never a need to add one in the first
-place, once `record_bindings` exists.
+place, once `exec_simple` exists.
 
 ## (b) A write from *outside* the class entirely
 
@@ -151,7 +151,7 @@ Using `python/external_mutation.py` (1-3) and `python/deep_chain.py` (4-5):
 
 1. The entry appears when `p.configure()`'s body is walked — specifically,
    when `self.handler = OtherHandler()` is reached inside `configure` and
-   `record_bindings` processes it. This happens entirely within the call to
+   `exec_simple` processes it. This happens entirely within the call to
    `configure()`, before `write_outside_init()` moves on to the next
    statement. `p.run(1)` then reads `(O_p, "handler") → Instance{OtherHandler, Oh}`,
    which was written moments earlier on the same path.

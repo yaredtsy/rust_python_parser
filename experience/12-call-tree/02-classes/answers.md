@@ -33,7 +33,7 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    handler for **both** instances. A single-instance fixture has no second
    instance to collide with, so it passes either way.
 
-5. No separate code path — `record_bindings`/`record_self_assignments`'s
+5. No separate code path — `exec_simple`/`record_self_assignments`'s
    rule is "when walking *any* method body with a bound `self` (or more
    generally, any receiver), record `self.X = ...` assignments as they're
    encountered." This isn't `__init__`-specific machinery with `configure`

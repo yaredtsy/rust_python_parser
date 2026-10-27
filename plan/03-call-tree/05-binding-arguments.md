@@ -315,7 +315,7 @@ fn eval(&self, expr: &ast::Expr, env: &Env<'db>, model: &SemanticModel<'db>) -> 
         }
 
         // ★ construction: creates a NEW instance with a fresh origin
-        ast::Expr::Call(c) => self.eval_call_result(c, env, model),
+        ast::Expr::Call(c) => self.eval_call(c, env, mode),   // walks the callee, returns its value (10 §2)
 
         // ★ attribute: dispatch on the value we have  → 06
         ast::Expr::Attribute(a) => {
@@ -344,7 +344,7 @@ Seven arms with real logic; one fallback. That is the whole evaluator. Resist
 growing it — each new arm is a place your semantics can diverge from the Python
 driver, and the fallback is already correct-if-imprecise.
 
-### `eval_call_result` — the return value of a call
+### `eval_call` — the value of a call
 
 ```python
 w = make_writer()      # ← what is `w`?
@@ -355,7 +355,8 @@ Three cases, in priority order:
 
 1. **Constructor.** `Foo()` → `Instance { class: Foo, origin: fresh }`, never
    `Ty(NominalInstance)`. The source of every interesting `self` in the tree.
-2. **Project function** → interpret its `return` statements with the bound env.
+2. **Project function** → walk its body with the bound env (adding its node);
+   the union of the `return`s reached is the value ([`10` §2](10-return-values-and-state.md#2-return-value-flow)).
 3. **Anything else** → ty's declared return type via `inferred_type`.
 
 > ⚠ **Case 2 is not optional.** An earlier draft of this plan called it out of

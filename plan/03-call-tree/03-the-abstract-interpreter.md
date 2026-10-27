@@ -90,7 +90,10 @@ struct Frame<'db> {
 }
 
 impl<'db> Interp<'db> {
-    /// Mirrors `resolve_call_hierarchy_for_node`.
+    /// Mirrors `resolve_call_hierarchy_for_node`. First version (M4), driven
+    /// by a call list. ★ Once local bindings exist it becomes 10 §2's
+    /// `eval_call` → `call_one` → `enter`: the SAME steps, but reached by
+    /// evaluating the call expression, and returning the call's value.
     fn resolve_call(
         &mut self,
         call: &ast::ExprCall,
@@ -131,21 +134,18 @@ impl<'db> Interp<'db> {
                     let callee_env = self.bind_parameters(
                         func, &args, callee.receiver(), callee.enclosing(), env,
                     );
-                    // The one walker (10 § walk_function): emits the nodes AND
-                    // stores this run's return value for the value read.
+                    // The one walker (10 § walk_function): emits the nodes and
+                    // returns this run's value (10's eval_call hands it back).
                     self.walk_function(func, &callee_env, Mode::tree(child));
                 }
                 Callable::Class(class) => {
                     let child = frame.add_child(qname, format!("ClassSchema/{id}"));
-                    // ★ construct_instance(), not a locally-minted instance — this is
-                    // the SAME function eval_call_result (10) calls for the
-                    // same call site, so both agree on origin and attrs.
-                    // See 04's `origin_attrs` note for the bug this replaces:
-                    // two independent constructions of "the same" `Foo()`
-                    // used to mint two different origins.
-                    // It walks `__init__` into `child` itself, with `self` bound to
-                    // the instance — one walk gives the nodes and the attrs.
-                    self.construct_instance(class, &args, call, env, Some(child));
+                    // ★ construct_instance() (10), the only place a class is
+                    // constructed — see 04's `origin_attrs` note for the bug a
+                    // second constructor path caused. It walks `__init__` into
+                    // `child` itself, with `self` bound to the instance — one
+                    // walk gives the nodes and the attrs.
+                    self.construct_instance(class, &args, call, env, Enter::Walk(Mode::tree(child)));
                 }
             }
         }

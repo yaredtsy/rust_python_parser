@@ -517,7 +517,7 @@ env (key: the expression's file and range), never by sharing one.
 ### ★ The union cap: `cap_fanout`
 
 One function, applied wherever `Values` are produced — after `lift`, in
-`eval_call_result`, in `walk_function`
+`eval_call`, in `walk_function`
 ([`10`](10-return-values-and-state.md#2-return-value-flow)). No other code
 checks the union size.
 

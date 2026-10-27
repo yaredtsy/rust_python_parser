@@ -166,7 +166,7 @@ is unused and something else happened to agree with it."
 
 It falls directly out of the three causes above and fixes all three at
 once. `plan/03-call-tree/04` (the `Closure` variant), `05` (`enclosing`,
-lookup) and `10` (the `def` arm of `record_bindings`) now specify it:
+lookup) and `10` (the `def` arm of `exec_simple`) now specify it:
 
 ```rust
 AbstractValue::Closure { func: Definition<'db>, activation: ActivationId }

@@ -35,7 +35,7 @@ step by step, matching `plan/03-call-tree/03`'s pseudocode line for line:
      ty: Name "emit" → Type::FunctionLiteral(emit)
      lift(...) → AbstractValue::Function(emit)
 4. eval_arguments((JsonWriter(), 1), env, model)   — EAGER, in the CALLER's env
-     arg 0: Expr::Call(JsonWriter()) → eval_call_result
+     arg 0: Expr::Call(JsonWriter()) → eval_call
             → Callable::Class(JsonWriter) → fresh OriginId → Instance{JsonWriter, O1}
      arg 1: Expr::NumberLiteral(1) → no env hit → lift(ty's answer) → Ty(int)
      args = { positional: [Instance{JsonWriter,O1}, Ty(int)] }
@@ -91,7 +91,7 @@ shape that only a context-sensitive interpreter gets right.
 3. `payload = 1` touches `lift()` — it's a literal, `env` has nothing to say
    about it, so it falls straight through to `ty`'s inference and back.
    `JsonWriter()` never touches `lift()` at all — constructing a class is
-   handled directly by `eval_call_result`'s case (a) (minting a fresh
+   handled directly by `eval_call`'s case (a) (minting a fresh
    `OriginId`), which is cheaper and more precise than asking `ty` what
    `JsonWriter()` returns and then lifting that answer back.
 
