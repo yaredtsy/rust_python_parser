@@ -79,9 +79,9 @@ principle applies to any place precision quietly degrades.
 
 This reduces *breadth* within a single frame, but it is a **presentation**
 rule, not a termination mechanism — don't rely on it to bound anything.
-Calling `emit` 50 times from one frame still *walks* `emit`'s body 50 times
-even though the stored tree ends up with one `emit` node; the node count
-hides the real cost.
+`pylspt` applies it only when saving (`00-values/05`), so the analysis tree
+has 50 `emit` nodes for 50 calls and the node budget counts all of them.
+The saved tree has one, which is why its size hides the real cost.
 
 ## The big win: memoise context-independent subtrees
 

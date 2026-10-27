@@ -108,7 +108,9 @@ forever) and is a separate, simpler struct:
 struct FrameJson { target_qname: String, target_id: String, call_count: u32, children: Vec<FrameJson> }
 ```
 
-## `add_child` returns an *existing* frame — read this twice
+## Merging happens on output, not during the walk — read this twice
+
+The Jedi driver merges *while walking*:
 
 ```python
 # call_resolver.py:37-45
@@ -120,25 +122,40 @@ def add_child(self, child):
     self.children.append(child); child.parent = self; return child
 ```
 
-This is the mechanism behind "same frame, same qname → one node." Two
-consequences that catch people the first time:
-
-1. **`call_count` starts at 0 and counts *additional* calls.** One call → 0.
-   Three calls → 2. Counter-intuitive on sight — match it anyway, it's part
-   of the wire contract.
-2. **A frame can be walked into more than once, with different
-   environments**, and must not assert it starts empty:
+That's the rule for **what gets saved** — "same frame, same qname → one
+node" — and the saved tree must match it exactly. But `pylspt` applies it
+only when the finished tree is turned into the JSON for the DB
+(`merge_for_output`, `plan/03-call-tree/09`). While walking, every call
+gets its own node:
 
 ```rust
-let child = frame.add_child(qname, id);        // may return an EXISTING frame
-let callee_env = self.bind_parameters(func, &args, receiver);
-self.walk_body(func, &callee_env, child);      // walks INTO a frame that may already have children
+let child = frame.add_child(qname, id, call.range());   // ALWAYS a new node
+let callee_env = self.bind_parameters(func, &args, receiver, enclosing, env);
+self.walk_function(func, &callee_env, Mode::tree(child));
 ```
 
-Call `emit` twice from `main` with two different writers, and `walk_body`
-runs **twice** against the *same* child frame — once per writer — and both
-runs' results land as siblings inside that one node (the `call_count=1`
-example above).
+```
+emit(JsonWriter()); emit(CsvWriter())     # both from main
+
+analysis tree                    saved tree
+main                             main
+├── emit                         └── emit  (call_count=1)
+│   └── JsonWriter.write             ├── JsonWriter.write
+└── emit                             └── CsvWriter.write
+    └── CsvWriter.write
+```
+
+Two things to hold onto:
+
+1. **`call_count` starts at 0 and counts *additional* calls.** One call → 0.
+   Three calls → 2. It's computed by the merge: a group of `k` sibling
+   nodes with the same qname becomes one node with `call_count = k - 1`,
+   and their children are merged the same way, recursively. That gives
+   the same numbers the Jedi driver's in-walk merge gives.
+2. **Why not merge while walking.** The analysis keeps each call's run
+   separate until output, so nothing in the walk — values, closures,
+   `is_ancestor`, reuse — ever sees a node that mixes two calls. Merging
+   is a presentation rule for the DB and the UI.
 
 ## `PathKey` — the ancestor chain made explicit
 
@@ -236,8 +253,8 @@ def walk(node, visit):
    value each time `walk`'s body runs, and nothing about it is self-similar.
    This is `plan/03-call-tree/07`'s point: callbacks fall out of the
    ordinary machinery, with no special cycle-handling of their own.
-3. **One** child (`add_child` merges by qname), `call_count == 1` (started
-   at 0, bumped once for the second call).
+3. **One** child in the saved tree (`merge_for_output` merges by qname),
+   `call_count == 1` (two nodes in the analysis tree → `2 - 1`).
 
 </details>
 

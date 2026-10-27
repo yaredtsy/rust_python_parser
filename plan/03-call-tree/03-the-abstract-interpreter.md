@@ -129,7 +129,8 @@ impl<'db> Interp<'db> {
 
             match target.kind() {
                 Callable::Function(func) | Callable::Closure { func, .. } => {
-                    let child = frame.add_child(qname, format!("FunctionSchema/{id}"));
+                    // Always a NEW node — the (parent, qname) merge happens on output (09).
+                    let child = frame.add_child(qname, format!("FunctionSchema/{id}"), call.range());
                     // ★★★ THE CONTEXT ★★★  — this is `as_context(arguments)`
                     let callee_env = self.bind_parameters(
                         func, &args, callee.receiver(), callee.enclosing(), env,
@@ -139,7 +140,7 @@ impl<'db> Interp<'db> {
                     self.walk_function(func, &callee_env, Mode::tree(child));
                 }
                 Callable::Class(class) => {
-                    let child = frame.add_child(qname, format!("ClassSchema/{id}"));
+                    let child = frame.add_child(qname, format!("ClassSchema/{id}"), call.range());
                     // ★ construct_instance() (10), the only place a class is
                     // constructed — see 04's `origin_attrs` note for the bug a
                     // second constructor path caused. It walks `__init__` into

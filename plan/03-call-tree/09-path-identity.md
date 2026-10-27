@@ -78,7 +78,9 @@ standard "summary-based" answer to it.
 
 ## Two calls to the same function from the same frame
 
-Handled by `add_child` **[verified, call_resolver.py:37-45]**:
+In the Jedi driver this is `add_child` **[verified, call_resolver.py:37-45]**,
+which merges *while walking*. `pylspt` produces the same saved tree with
+`merge_for_output` instead, after the walk ([§ Where the rule applies](#-where-the-rule-applies-on-output-never-during-analysis)):
 
 ```python
 def add_child(self, child):
@@ -89,7 +91,7 @@ def add_child(self, child):
     self.children.append(child); child.parent = self; return child
 ```
 
-So `f(); f()` from one frame → **one** child with `call_count == 1`.
+So `f(); f()` from one frame → **one** saved child with `call_count == 1`.
 
 ⚠ Two consequences to preserve exactly:
 
@@ -112,7 +114,8 @@ So `f(); f()` from one frame → **one** child with `call_count == 1`.
        └── CsvWriter.write
    ```
 
-   **Not** two separate `emit` subtrees.
+   **Not** two separate `emit` subtrees — in the saved tree. The analyser
+   holds two until output.
 
 ---
 
@@ -120,7 +123,9 @@ So `f(); f()` from one frame → **one** child with `call_count == 1`.
 
 **Confirmed by the author.** There is no ambiguity here — settle it once:
 
-> **Frame identity is `(parent frame, target_qname)`.**
+> **Frame identity in the saved tree is `(parent frame, target_qname)`.**
+> The analyser keeps one node per call and merges only on output — see
+> below.
 >
 > Two calls to the same function *from the same frame* produce **one** node.
 > The same function called from **different** frames produces **different**
@@ -129,51 +134,113 @@ So `f(); f()` from one frame → **one** child with `call_count == 1`.
 So "one unique path per function" means *one node per (path, function)*, not
 *one node per call site*. Two call sites on the same path are the same path.
 
-### Three design consequences
+### ★ Where the rule applies: on output, never during analysis
 
-**1. A frame is walked more than once, with different environments.**
+The merge is a rule about **what is saved to the graph DB** (and what the
+UI shows). The analyser never merges. While walking, every call that is
+walked gets its **own** node — one per run — and the `(parent, qname)`
+merge runs once, when the finished tree is turned into the JSON the DB
+stores.
 
-```rust
-let child = frame.add_child(qname, id);        // may RETURN AN EXISTING child
-let callee_env = self.bind_parameters(func, &args, receiver, enclosing, env);
-self.walk_function(func, &callee_env, Mode::tree(child));   // walks INTO the shared child
+```python
+a = make_handler(JsonWriter())
+b = make_handler(CsvWriter())
+a.handle(1)
+b.handle(2)
 ```
 
-Call `emit` twice from `main` and `walk_function` runs twice against the *same*
-`child` frame — once with `writer → JsonWriter`, once with `writer → CsvWriter`.
-Their results accumulate inside that one node, deduped by qname in turn.
+```
+analysis tree (in memory)              saved to the DB (merged)
+─────────────────────────              ────────────────────────
+main                                   main
+├── make_handler   ← run 1             ├── make_handler (call_count=1)
+├── make_handler   ← run 2             └── handle       (call_count=1)
+├── handle         ← run 1's closure       ├── JsonWriter.write
+│   └── JsonWriter.write                   └── CsvWriter.write
+└── handle         ← run 2's closure
+    └── CsvWriter.write
+```
 
-This is fine, but it must be deliberate: **`add_child` returns an existing frame,
-and `walk_function` must be able to add to a frame that already has children.**
-Do not assert that a frame is empty when you start walking it.
+The saved tree is exactly what the Jedi driver produces today. The analysis
+tree keeps the two runs apart until then, so nothing in the walk (values,
+`is_ancestor`, reuse) ever sees a node that mixes two runs.
 
-**2. `PathKey` is not the frame identity.** It is only used for:
+**1. `add_child` always appends.** It never returns an existing child.
+Each node records its `target_qname`, `target_id` and the call-site
+position.
+
+```rust
+let child = frame.add_child(qname, id, call.range());   // always a NEW node
+let callee_env = self.bind_parameters(func, &args, receiver, enclosing, env);
+self.walk_function(func, &callee_env, Mode::tree(child));
+```
+
+**2. The output merge reproduces `add_child`'s numbers exactly.** Group
+siblings by `target_qname`, keeping first-seen order; a group of `k` nodes
+becomes one node with `call_count = k - 1`; its children are the
+concatenation of the group's children, merged the same way, recursively.
+
+That matches the Jedi driver's in-walk merge, where the second walk goes
+*into* the existing node: there, each repeat bumps `call_count` by one and
+the repeat's children are added to the same node (bumping their own counts
+in turn). Merging afterwards gives the same tree, the same counts and the
+same child order (first walk's children first, new ones appended). Write
+the fixture both ways — this is a parity property, not a guess.
+
+```rust
+fn merge_for_output(nodes: &[FrameId], arena: &FrameArena) -> Vec<FrameJson> {
+    // group by target_qname in first-seen order
+    // each group → FrameJson { call_count: group.len() - 1,
+    //                          children: merge_for_output(concat of their children) }
+}
+```
+
+**3. `is_ancestor` is unchanged.** It walks the parent chain by qname, and
+the chain has the same qnames whether or not siblings are merged.
+
+**4. `PathKey` is not the frame identity.** It is only used for:
 - the ancestor cycle guard (`contains`)
 - the depth cap (`depth`)
 - memo keys where a suffix of the path matters
 
-That is a simpler design than keying frames on the whole call string.
+**5. Size: the analysis tree is the work; the saved tree is small.**
 
-**3. Tree size is bounded, but work is not.**
+The analysis tree has one node per walk, so it's as big as the work done —
+and work is already bounded by the node budget
+([`08`](08-termination-and-cycles.md), which ticks once per walk). The
+saved tree is bounded by the number of *distinct qnames* per frame, as
+before.
 
-The merge bounds each frame's children by the number of *distinct qnames* called
-in that body — not by the number of call sites. So the stored tree stays small.
-
-But calling `emit` 50 times from one frame still walks `emit`'s body **50 times**,
-and each walk recurses. The node count hides the real cost. Two cheap fixes:
+Calling `emit` 50 times from one frame still walks `emit`'s body 50 times.
+Two fixes, both of which **reuse** a subtree rather than skipping the call
+— a skipped call would drop a node, and the merged `call_count` would come
+out one too low:
 
 ```rust
-// (a) same callee, same argument values, same frame → the walk is pure waste
-if !self.walked.insert((child.id, fingerprint(&args))) { return; }
+// (a) same callee, same entry state, same parent → graft the subtree the
+//     first walk built (Arc-shared, one node's worth of memory), plus its
+//     stored return value (10 § The store)
+if let Some(prev) = self.walked.get(&(frame.id, ReturnKey::of(func, &callee_env))) {
+    frame.graft(prev.clone()); return stored_value;
+}
 ```
 
 ```rust
-// (b) if the callee is context-independent, one walk is enough regardless of args
-if is_context_independent(db, func) && child.already_walked { return; }
+// (b) the callee is context-independent: one walk anywhere is enough
+if is_context_independent(db, func) { /* 08 layer 5: graft the memoised subtree */ }
 ```
 
-Fix (a) is a few lines and helps immediately — repeated identical calls are
-common. Fix (b) is [`08` layer 5](08-termination-and-cycles.md#layer-5--memoise-context-independent-subtrees--the-big-win).
+A grafted subtree merges at output like any other copy, so its counts come
+out right for free. (An earlier version of fix (a) *skipped* the second
+walk, keyed on the arguments alone. In a merge-while-walking design that
+missed the count bumps of the repeat's children; here it would drop the
+node entirely. Grafting fixes both.)
+
+**Is the saved tree the only one that leaves `pylspt`?** Yes, for now: the
+wire format is the merged `call_frame_stack`, for parity with the Jedi
+driver (`04-build/03`). If v-noc's DB or UI ever wants the unmerged runs —
+to show *which* call produced which leaf — send the analysis tree and move
+`merge_for_output` to v-noc. That's a contract change, not a refactor.
 
 ### Why the example in this plan uses two *callers*
 
@@ -222,9 +289,12 @@ infinitely. In Rust, keep the parent link out of the serialised type entirely:
 
 ```rust
 // Internal: has parent, arena-allocated or index-based to avoid Rc cycles.
-struct Frame<'db> { parent: Option<FrameId>, /* ... */ }
+// ONE PER WALKED CALL — never merged (§ Where the rule applies).
+struct Frame<'db> { parent: Option<FrameId>, call_site: TextRange, /* ... */ }
 
-// Wire: no parent, derives Serialize.
+// Wire: no parent, derives Serialize. Built ONLY by `merge_for_output`,
+// which is where `(parent, qname)` merging and `call_count` happen.
+// `_merge_frame_stack`'s `target_id` merge (above) runs after it.
 #[derive(Serialize)]
 struct FrameJson {
     target_qname: String,
@@ -253,8 +323,8 @@ risk from:
 - **Child order.** Evaluation-driven walking ([`10` §1](10-return-values-and-state.md#-evaluation-drives-the-walk--there-is-no-call-list))
   adds children in Python's evaluation order: `make` before `emit` for
   `emit(make())`. If the golden files order children by source position
-  instead, record each child's first call-site position in `add_child` and
-  sort by it when serialising — never by changing the evaluation order.
+  instead, sort each merged group by its first node's `call_site` in
+  `merge_for_output` — never by changing the evaluation order.
   **[check]** against the golden files.
 - `visited_qnames` is a Python `set` **[verified, call_resolver.py:133]** but is
   only used for membership, not iteration — safe.

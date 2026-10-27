@@ -199,9 +199,10 @@ Two cautions:
   skip the memo when it intersects the current ancestor chain, or don't memoise
   subtrees that contain recursion. The second is simpler and nearly as
   effective.
-- `call_count` dedup is **per frame**. A grafted subtree carries its own counts;
-  make sure grafting doesn't double-count when the same callee already exists in
-  the target frame.
+- `call_count` is computed only when the tree is saved
+  ([`09`](09-path-identity.md#-where-the-rule-applies-on-output-never-during-analysis)).
+  A grafted subtree is just more unmerged nodes, so it merges and counts
+  like a walked one — nothing to adjust at graft time.
 
 **Build this at Milestone 6, not Milestone 4.** Get correctness first, measure,
 then add. But design `Frame` so grafting is possible from the start —
@@ -228,7 +229,10 @@ nodes turn out to be expensive.
 
 This is *not* a termination mechanism — it dedupes siblings within one frame,
 so `f(); f()` yields one child. It reduces breadth but not depth, and it does
-not prevent blowup. Don't rely on it. It is a *presentation* rule.
+not prevent blowup. Don't rely on it. It is a *presentation* rule — which is
+why `pylspt` applies it only on output (`merge_for_output`, `09`), never
+while walking. The node budget therefore counts every walked call, merged
+or not.
 
 ---
 

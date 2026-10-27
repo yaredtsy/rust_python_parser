@@ -85,8 +85,8 @@ isn't interpreted — falls back to `ty`'s declared return type via `lift`.
 Two rules that keep it right:
 
 - **Every expression is evaluated once per walk.** A second evaluation
-  would walk the callee again into the same merged frame and bump
-  `call_count`. `x = y = make()` evaluates `make()` once.
+  would add a second node for the same call, and the merge on save would
+  report `call_count` one too high. `x = y = make()` evaluates `make()` once.
 - **The store (`ReturnKey`) is only for reuse and the cut.** A normal call
   gets its value directly. The store is read only when the call is *not*
   walked — a memoised subtree, or a recursion/limit cut — and its key is

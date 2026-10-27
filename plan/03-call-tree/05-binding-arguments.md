@@ -91,23 +91,22 @@ def make():
 make()()                      → reads slot → JsonHandler.go
 ```
 
-The slot has to belong to one *run* of `make`. A tree `FrameId` would be
-wrong in two ways:
+The slot has to belong to one *run* of `make`, not to a node of the saved
+tree:
 
-1. **Frames merge.** Frame identity is `(parent, qname)`
-   ([`09`](09-path-identity.md#the-merge-rule)), so
+1. **Saved nodes merge.** In the tree saved to the DB, identity is
+   `(parent, qname)` ([`09`](09-path-identity.md#the-merge-rule)), so
    `a = make_handler(JsonWriter()); b = make_handler(CsvWriter())` in one
-   function walk the *same* `make_handler` frame twice. One slot per frame
-   would end up holding `CsvWriter`, and `a(1)` would resolve to
-   `CsvWriter.write`.
-2. **A walk with node output off has no frame.** Rare
+   function become *one* `make_handler` node. One slot per saved node would
+   end up holding `CsvWriter`, and `a(1)` would resolve to
+   `CsvWriter.write`. The analyser keeps one node per call and merges only
+   on output, so this can't happen inside the walk — but the slot still
+   belongs to the run, which is the thing that actually has an env.
+2. **A walk with node output off has no node.** Rare
    ([`10` §2](10-return-values-and-state.md#nothing-stored-means-unknown)),
    but a closure it produces still needs a slot.
 
-The tree in the DB still stores one merged node per call site. The
-analyser keeps each run separate *while walking*, so `a` and `b` don't
-overwrite each other before the merge. An `ActivationId` is minted for
-every run, so both cases get their own slot.
+An `ActivationId` is minted for every run, so both cases get their own slot.
 
 ### Lookup: locals, then `enclosing` only for a free variable
 

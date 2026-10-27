@@ -148,8 +148,8 @@ env; everything else is an expression some statement evaluates. With
 emitted, but bodies are still walked for their values.
 
 **Every expression is evaluated exactly once per walk.** A second
-evaluation would walk the callee again into the same merged frame and bump
-`call_count`, which is in the output. So `x = y = f()` evaluates `f()`
+evaluation would add a second node for the same call, and the output
+merge would turn it into `call_count` one too high. So `x = y = f()` evaluates `f()`
 once, and `exec_simple` never evaluates the right-hand side of an
 assignment as "the calls" and again as "the value".
 
@@ -177,8 +177,8 @@ decorators and defaults.
 **Child order in the JSON is a separate question.** Evaluation order adds
 `make` before `emit` for `emit(make())`; a source-order finder may have
 added `emit` first. If the golden files show source order, record each
-child's first call-site position in `add_child` and sort children by it
-when serialising ([`09` § Determinism](09-path-identity.md#determinism-)).
+child's call-site position in `add_child` and sort children by it
+in `merge_for_output` ([`09` § Determinism](09-path-identity.md#determinism-)).
 Don't change the evaluation order to get the output order.
 
 `Env::join` unions per name: a name any arm wrote gets the union of every
@@ -500,13 +500,13 @@ drops non-project values before deciding the union is too wide.
 `ast::Expr::Await` and evaluate the inner call directly. Modelling coroutine
 objects buys nothing here.
 
-**4. A frame walked twice stores twice.** Two calls merged into one frame
-(`emit(JsonWriter()); emit(CsvWriter())`, [`09`](09-path-identity.md#the-merge-rule))
-are two runs with different `ReturnKey`s, so each stores its own value.
-`09`'s "skip an identical walk" shortcut is safe for the same reason: an
-identical walk would store an identical value under the identical key —
-provided that shortcut's fingerprint is the same `ReturnKey` (attrs
-included), not just the arguments.
+**4. Two calls, two nodes, two runs.** `emit(JsonWriter()); emit(CsvWriter())`
+from one frame are two analysis nodes and two runs with different
+`ReturnKey`s; they become one `emit` (`call_count = 1`) only when saved
+([`09`](09-path-identity.md#-where-the-rule-applies-on-output-never-during-analysis)).
+`09`'s identical-walk shortcut grafts the earlier subtree and reads its
+stored value, keyed on the full `ReturnKey` (attrs included), not just the
+arguments.
 
 **5. Generators.** A function containing `yield` returns a generator, not the
 yielded value. Store `Unknown` rather than unioning the yield expressions —
