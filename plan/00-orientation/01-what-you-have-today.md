@@ -83,7 +83,7 @@ These all come out of `call_resolver.py` and `parser.py`. **Preserve them.**
 1. **It is a tree, not a graph.** The same callee reached from two different
    *frames* produces two distinct nodes. Two calls from the *same* frame merge
    into one — see quirk 6. This is the whole point of the design.
-   → [`03-call-tree/09`](../03-call-tree/09-path-identity.md#the-merge-rule)
+   → [`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge)
 
 2. **Project-only traversal.** `_is_project_code` returns `True` only when the
    callee's file lives under the project path. Note the trailing `return False`
@@ -101,12 +101,16 @@ These all come out of `call_resolver.py` and `parser.py`. **Preserve them.**
 
 5. **Cycle guard is ancestor-based**, not global-visited —
    `is_ancestor(qname)` walks the `parent` chain. A function may appear many
-   times in the tree; it just may not appear inside itself.
+   times in the tree; it just may not appear inside itself. (pylspt shows the
+   inner call as a leaf marked `Recursive` instead of dropping it —
+   [`03-call-tree/14`](../03-call-tree/14-output.md#the-tree-is-a-view).)
 
 6. **`add_child` dedupes by `target_qname` and increments `call_count`** rather
    than appending. Two calls to the same function from the same frame collapse
    into one child with `call_count == 1`. Note `call_count` starts at `0`, so
-   it is really "extra calls beyond the first".
+   it is really "extra calls beyond the first". (pylspt sends one node per
+   call site and v-noc applies this merge when saving —
+   [`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge).)
 
 7. **Classes are entered through `__init__`.** `target_id` is rewritten to
    `ClassSchema/...` and the traversal descends into `__init__`'s body with a

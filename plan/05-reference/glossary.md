@@ -83,35 +83,48 @@ control descent. Your "stop at nested callables" rule.
 
 ## Terms introduced by this plan
 
-**abstract interpreter** — the layer you're building: walks the AST carrying an
-environment, resolving callees from it before falling back to ty.
-→ [`03-call-tree/03`](../03-call-tree/03-the-abstract-interpreter.md)
+**abstract interpreter** — the layer you're building: walks a function body
+carrying an environment, resolving callees from it before falling back to ty.
+→ [`03-call-tree/03`](../03-call-tree/03-design.md)
 
-**`AbstractValue`** — your value domain. Not `Type`, because `Type` is a set and
-you need specific objects. → [`03-call-tree/04`](../03-call-tree/04-value-domain.md)
+**`AbstractValue`** — the value domain inside one walk. Not `Type`, because
+`Type` is a set and you need specific objects.
+→ [`03-call-tree/04`](../03-call-tree/04-values.md)
 
-**`Env`** — name → `AbstractValue` for one activation. The replacement for
-`as_context(arguments)`. Persistent/immutable, cheaply cloned.
+**`Env`** — names → values, plus object attributes, for one walk. Persistent,
+cheaply cloned. → [`03-call-tree/05`](../03-call-tree/05-the-walk.md)
 
-**`OriginId`** — identifies a construction site, so two instances of the same
-class stay distinct. What makes per-path object state work.
-→ [`03-call-tree/06`](../03-call-tree/06-attributes-and-self.md)
+**`OriginId`** — which object, inside one walk: an input object named by its
+path, or an object built at a site. Keeps two instances of one class apart.
+→ [`03-call-tree/04`](../03-call-tree/04-values.md)
 
-**`PathKey` / call string** — the chain of definitions from root to a node.
-Formally this is *k*-CFA call-string sensitivity.
-→ [`03-call-tree/09`](../03-call-tree/09-path-identity.md)
+**context** — the key of a call: the function plus fingerprints of its
+arguments and captured values. One summary per context.
+→ [`03-call-tree/08`](../03-call-tree/08-keys.md)
 
-**context-independent** — a function whose call subtree doesn't vary with its
-arguments. Memoisable, and most functions qualify. The big M8 win.
-→ [`03-call-tree/08`](../03-call-tree/08-termination-and-cycles.md)
+**fingerprint** — a caller value reduced to what the key holds: class and
+attributes to `fp_depth` steps, function identity, data type.
+→ [`03-call-tree/08`](../03-call-tree/08-keys.md)
 
-**fan-out cap** — limit on alternatives explored per expression, so a wide union
-doesn't multiply the whole subtree.
+**summary** (`FunctionResult`) — what one call did, relative to its inputs:
+call edges, returns, effects on the caller's objects, objects it built.
+→ [`03-call-tree/09`](../03-call-tree/09-summaries.md)
 
-**budget** — global node counter, decremented per `resolve_call`. Your hard
-latency guarantee.
+**effect** — a write a call made on an object its caller can see, reported as
+a path from the call's inputs. → [`03-call-tree/09`](../03-call-tree/09-summaries.md)
 
-**graft** — splicing a memoised subtree into a frame instead of recomputing it.
+**recursion group** — the contexts of one cycle, resolved together by repeating
+their deferred operations until nothing changes.
+→ [`03-call-tree/12`](../03-call-tree/12-recursion.md)
+
+**fan-out cap** — limit on alternatives kept per expression, so a wide union
+doesn't multiply everything after it.
+
+**cut** — a cost limit (stack, contexts, deadline) truncating a result. Marked,
+never reused. → [`03-call-tree/13`](../03-call-tree/13-solver-and-limits.md)
+
+**no-reuse mode** — recompute every summary instead of reusing it; the output
+must not change. → [`03-call-tree/15`](../03-call-tree/15-checks-and-build-order.md#no-reuse-mode)
 
 **divergence log** — the categorised diff between Python and Rust output. Some
 divergences are improvements; the dangerous category is "different callee

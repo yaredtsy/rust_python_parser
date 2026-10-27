@@ -111,12 +111,12 @@ pylspt 0.1.0  ruff@ac201b8
 project        = /path/to/project
 python_version = 3.12  (source: pyproject requires-python)
 search_paths   = [...]
-limits         = depth=24 nodes=100000 deadline=10s
+limits         = fp_depth=2 max_path=6 max_stack=256 contexts=50000 deadline=10s
 ```
 
-Per request at debug: method, duration, node count, budget consumed, and every
-truncation counter from
-[`03-call-tree/08`](../03-call-tree/08-termination-and-cycles.md).
+Per request at debug: method, duration, contexts, walks, reuse hits, and every
+counter in `Stats` from
+[`03-call-tree/13`](../03-call-tree/13-solver-and-limits.md#stats).
 
 ---
 
@@ -130,7 +130,7 @@ corpus/*.py ──┬──► python driver ──► responses_py/*.json ─�
 ```
 
 `pylspt` sends the call tree **unmerged** — v-noc merges it when saving
-(`03-call-tree/09` § "Where the rule applies"). So the differ compares the
+([`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge)). So the differ compares the
 Jedi response with `merge_for_output(rust response)`, using `pylspt`'s copy
 of the merge spec. The Jedi tree is already merged, and the merge leaves it
 unchanged.
@@ -176,8 +176,9 @@ fn deterministic() {
 }
 ```
 
-Catches hash-map iteration order and rayon merge order. Run it in CI from M5.
-→ [`03-call-tree/09`](../03-call-tree/09-path-identity.md#determinism-)
+Catches hash-map iteration order and rayon merge order. Run it with the
+deadline off, in CI from M5.
+→ [`03-call-tree/14`](../03-call-tree/14-output.md#determinism)
 
 ### Performance comparison
 

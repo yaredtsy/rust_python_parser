@@ -233,7 +233,7 @@ interpreter's attribute lookup means reimplementing the MRO walk, instance vs
 class attributes, descriptors, properties, `__getattr__` and metaclasses — a
 second copy of Python's semantics that will disagree with ty wherever ty is
 right. Your own C3 was the small version of that problem; `member` is the big
-one. → [`03-call-tree/06`](../03-call-tree/06-attributes-and-self.md).
+one. → [`03-call-tree/07`](../03-call-tree/07-attributes-and-self.md).
 
 ### What it does *not* change
 

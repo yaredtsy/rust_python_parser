@@ -64,7 +64,7 @@ property, and it is the entire value of your tool.
 > Note the calls are deliberately in *different functions*. Two calls to `emit`
 > from one frame would **merge** into a single node with both writes inside it
 > — `add_child` dedupes by qname. See
-> [`03-call-tree/09`](../03-call-tree/09-path-identity.md#the-merge-rule).
+> [`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge).
 
 The mechanism, from `call_resolver.py:166-187`:
 ```python

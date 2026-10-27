@@ -175,7 +175,7 @@ Partly.
 |---|---|---|
 | syntax node tree (`parse_file` nodes) | **yes** | pure function of the file; big win on re-request |
 | MRO / base classes | already tracked by ty | free |
-| **context-sensitive call tree** | **no** | its input is a *path environment*, not a file. Tracking it would key the cache on an unbounded, rarely-repeating value. Use your own memo table instead — see [`03-call-tree/08`](../03-call-tree/08-termination-and-cycles.md). |
+| **context-sensitive call tree** | **not in v1** | its unit is a function under one *context*, not a file. v1 keeps summaries per request in its own solver; making them salsa queries is v2, and recursion groups need a plan first — see [`03-call-tree/15`](../03-call-tree/15-checks-and-build-order.md#growth-path). |
 
 Note what `ty_ide` itself does **[verified]**, from the header comment of
 `call_hierarchy.rs`:

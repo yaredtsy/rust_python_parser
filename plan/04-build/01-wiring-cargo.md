@@ -168,7 +168,7 @@ uuid.workspace = true
 # yours
 anyhow      = "1"
 serde_json  = "1"
-rpds        = "1"                      # persistent maps for Env  → 03-call-tree/05
+rpds        = "1"                      # persistent maps for Env  → 03-call-tree/05-the-walk
 tracing     = "0.1"
 tracing-subscriber = "0.3"
 

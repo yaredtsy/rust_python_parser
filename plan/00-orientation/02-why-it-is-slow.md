@@ -118,12 +118,14 @@ infinite recursion.
 
 The exponential-in-depth traversal is inherent to "one unique path per
 function". Rust makes each step ~30× cheaper, but a pathological graph is still
-pathological. Budget for the mitigations in
-[`03-call-tree/08-termination-and-cycles.md`](../03-call-tree/08-termination-and-cycles.md):
-depth caps, path budgets, and memoising subtrees whose environment is
-irrelevant. **Do not skip that chapter** — without it you will hit inputs that
-are slower in Rust than in Python, because Rust will happily explore a space
-Python was too slow to reach.
+pathological. The design answers it with summaries: each function body is
+walked once per distinct context, and the per-path tree is only rendered at the
+end ([`03-call-tree/03`](../03-call-tree/03-design.md#why-summaries)). Cost
+limits truncate and mark what they cut
+([`03-call-tree/13`](../03-call-tree/13-solver-and-limits.md)). **Do not skip
+those chapters** — without them you will hit inputs that are slower in Rust than
+in Python, because Rust will happily explore a space Python was too slow to
+reach.
 
 ---
 
