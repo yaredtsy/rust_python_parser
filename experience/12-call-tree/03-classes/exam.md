@@ -1,4 +1,4 @@
-# 02 — Classes: exam
+# 03 — Classes: exam
 
 Closed book. Write your answers, then check [`answers.md`](answers.md).
 
@@ -10,20 +10,18 @@ class Pipeline:
         self.handler.process(data)
 ```
 
-1. `Pipeline(JsonHandler()).run(1)` — at what exact step is the fresh
-   `OriginId` minted, and what would break if it were minted after
-   `__init__`'s body finished walking instead of before?
+1. `Pipeline(JsonHandler()).run(1)`: write `__init__`'s summary, then `run`'s
+   key. Where does `run` get `self.handler` from?
 
 ```python
 Greeter().greet(Payload())
 Greeter.greet(Greeter(), Payload())
 ```
 
-2. Write `bind_parameters`'s resulting locals map for each call. Why are
-   they identical despite one call supplying a receiver and the other not?
+2. Write the bound parameter values for each. Why are they the same?
 
-3. State `member()`'s three-tier lookup order from memory. Which tier is
-   "path-specific," and what does that phrase mean concretely?
+3. Write `member()`'s order. Which step is path-specific, and what does step 3
+   do?
 
 ```python
 a = Pipeline(JsonHandler())
@@ -32,9 +30,8 @@ a.run(1)
 b.run(2)
 ```
 
-4. This fixture is explicitly the one to write first. What specific bug
-   would a single-instance fixture (like `Pipeline(JsonHandler()).run(1)`
-   alone) fail to catch that this one does?
+4. What bug does this catch that a one-instance fixture can't? How many
+   `__init__` contexts are there, and would one be wrong?
 
 ```python
 class Pipeline:
@@ -42,17 +39,17 @@ class Pipeline:
     def configure(self): self.handler = OtherHandler()
 ```
 
-5. Is a separate code path needed to record `self.handler = OtherHandler()`
-   here, given it's not in `__init__`? Why or why not?
+5. How does `configure`'s write reach `p.run()` in
+   `p = Pipeline(); p.configure(); p.run()`?
 
 ```python
-p = Pipeline()
-p.handler = JsonHandler()
+def rewire(svc):
+    svc.app.config.sink.h = JsonHandler()
 ```
 
-6. This write happens at module scope, not inside any method. Does
-   `bind_attribute` treat it differently from a `self.x = ...` write inside
-   a method? What determines whether the write succeeds at all?
+6. With `fp_depth = 2`, why isn't `svc.app.config.sink` an `OPAQUE` object
+   inside `rewire`? What effect does `rewire` report? What changes past
+   `max_path`?
 
 ```python
 class Service:
@@ -62,30 +59,17 @@ class Service:
     def create(cls, handler): return cls(handler)
 ```
 
-7. For `Service.static(1)`, what's bound to `x`? For `Service.create(Handler())`,
-   what's bound to `cls`, and what does `cls(handler)` construct?
+7. `Service.static(1)`: what's bound to `x`? `Service.create(Handler())`: what's
+   `cls`, and what does `cls(handler)` build?
 
-```python
-class Base:
-    def __init__(self): self.log = Logger()
-class Child(Base):
-    def __init__(self):
-        super().__init__()
-    def go(self):
-        self.log.write("hi")
-```
+8. `Child.__init__` calls `super().__init__()`, and `Base.__init__` writes
+   `self.log`. What makes `self.log` visible in `Child.go`?
 
-8. What makes `self.log` resolve correctly inside `Child.go`, given that
-   `Child.__init__` never itself writes `self.log`? Name the one field that
-   has to be shared for this to work.
+9. Name the file in this repo that answers "what is `.name` on this type". What
+   does it not answer?
 
-9. Name the one file, in this actual repository (not `plan/`), that
-   implements "walk the MRO for a member lookup." What does it answer, and
-   what does it explicitly *not* answer?
-
-10. `self.handler.handle` as a callback (passed into another function and
-    invoked later) requires one specific design choice to survive the trip.
-    Name it, and say what would go wrong without it.
+10. A write to an `Unknown` receiver is dropped. A write past `max_path` is
+    not. Why the difference?
 
 ---
 

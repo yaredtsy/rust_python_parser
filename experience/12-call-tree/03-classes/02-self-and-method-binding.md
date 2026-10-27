@@ -1,10 +1,10 @@
-# 02.02 — `self` and method binding
+# 03.02 — `self` and method binding
 
 The single easiest binding bug to write, and the one that makes every
 argument in every method call look shifted by one when you get it wrong.
 
 **Fixture:** `python/self_binding.py`. **Reading:**
-[`plan/03-call-tree/05-binding-arguments.md`](../../../plan/03-call-tree/05-binding-arguments.md)
+[`plan/03-call-tree/06-binding-arguments.md`](../../../plan/03-call-tree/06-binding-arguments.md)
 §"Five things that are easy to get wrong", item 1.
 
 ---
@@ -18,7 +18,7 @@ argument in every method call look shifted by one when you get it wrong.
 let mut params_iter = params.iter();
 if let Some(recv) = receiver {
     if let Some(first) = params_iter.next() {
-        locals.insert_mut(first.name().clone(), smallvec![recv]);
+        slots.push(smallvec![recv]);                   // slot 0: the receiver
     }
 }
 for param in params_iter.by_ref() {
@@ -41,7 +41,7 @@ Greeter.greet(Greeter(), Payload())      # unbound: self ← Greeter() EXPLICITL
 ```
 
 These produce **identical bindings**. The difference is only in *how* the
-receiver arrives at `resolve_call`:
+receiver arrives at the call:
 
 - **Bound** (`obj.method(...)`): `eval` of the `Attribute` expression
   (`Greeter().greet`) goes through `member()`
@@ -100,4 +100,4 @@ Using `python/self_binding.py`:
 
 ---
 
-→ Next: [`03-attribute-state-after-init.md`](03-attribute-state-after-init.md)
+→ Next: [`03-attribute-state.md`](03-attribute-state.md)

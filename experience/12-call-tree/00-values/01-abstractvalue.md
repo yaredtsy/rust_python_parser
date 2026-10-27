@@ -1,10 +1,10 @@
 # 00.01 — `AbstractValue`: what flows through the interpreter
 
 Before function calls, before classes: the one type everything else is built
-from. Get this wrong and both the `01-functions/` and `02-classes/` folders
+from. Get this wrong and both the `02-functions/` and `03-classes/` folders
 are awkward; get it right and they mostly write themselves.
 
-**Reading:** [`plan/03-call-tree/04-value-domain.md`](../../../plan/03-call-tree/04-value-domain.md)
+**Reading:** [`plan/03-call-tree/04-values.md`](../../../plan/03-call-tree/04-values.md)
 is the source this file teaches. Read this first, that second, for the exact
 `[check]` notes and the sizing test.
 
@@ -69,12 +69,13 @@ below. That's the intended scope, not a gap to fix.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(in crate::interp) enum AbstractValue<'db> {     // private to the interpreter
     Function(Definition<'db>),                       // the `def`
-    Closure { func: Definition<'db>, activation: ActivationId },   // 01-functions/04
+    Closure { func: Definition<'db>, activation: ActivationId },   // 02-functions/04
     Class(Definition<'db>),                          // the `class`
-    Instance { class: Definition<'db>, origin: OriginId },
+    Instance { class: Definition<'db>, origin: OriginId },      // which object: next file
     BoundMethod { func: Definition<'db>, receiver: ValueId },
     Module(Module<'db>),
     Ty(Type<'db>),     // escape hatch: literals, stdlib returns, arithmetic
+    Pending(DeferId),  // waiting on a recursive call: 02-functions/08
     Unknown,            // "we didn't ask" — distinct from Ty(Dynamic)
 }
 
@@ -87,7 +88,7 @@ can't be named outside `ty_python_semantic` — `ClassLiteral` is re-exported
 field types (`types/vnoc.rs` rule 3). `Definition<'db>` is public, 4
 bytes, and is what the qname, docstring ID and project check start from
 anyway. ty's public `Type::definition(db, env)` turns ty's answers into
-these (`plan/03-call-tree/04` § "Converting from ty").
+these (`plan/03-call-tree/04` § "`lift`").
 
 What it costs: a specialisation like `Box[Foo]` on a value ty handed you
 becomes plain `Box` — a known gap, pinned by a fixture in `plan/03-call-tree/04`.
@@ -108,11 +109,15 @@ anything — this is a vocabulary check, not an inference problem.
 |---|---|---|
 | `a` | `plain` | `Function(plain)` — named, not called |
 | `b` | `Thing` | `Class(Thing)` — named, not called |
-| `c` | `Thing()` | `Instance { class: Thing, origin: <fresh> }` — called |
+| `c` | `Thing()` | `Instance { class: Thing, origin: New{site} }` — called |
 | `d` | `c.method` | `BoundMethod { func: Thing.method, receiver: <interned c> }` |
 | `e` | `json` | `Module(json)` |
 
 </details>
+
+**`Pending`** is the one variant you won't meet until recursion
+([`02-functions/08`](../02-functions/08-recursion.md)): the value of a call
+into a cycle that hasn't been resolved yet. It never leaves its walk.
 
 ## `Values`, not `AbstractValue` — and why `SmallVec<[_; 2]>`
 
@@ -120,9 +125,13 @@ A single expression can evaluate to *more than one* value — `x if c else y`,
 or a union ty hands you. `Values` is the plural, kept as a small, enumerable
 list rather than collapsed. `SmallVec<[_; 2]>` because the overwhelmingly
 common case is exactly one value, and you want that case to avoid a heap
-allocation entirely. This is the type every function in `01-functions/` and
-`02-classes/` returns — get comfortable reading it as "the possibilities at
+allocation entirely. This is the type every function in `02-functions/` and
+`03-classes/` returns — get comfortable reading it as "the possibilities at
 this point in this path", not "the type".
+
+**Empty `Values` is not `Unknown`.** It means no value reaches this point:
+every path to it raised, or it waits on a cycle that hasn't produced anything
+yet. `Unknown` means a value exists and nobody knows what it is.
 
 > ⚠ The temptation to flatten `Values` back into one `ty::Type::Union` the
 > moment it's inconvenient is how this whole design quietly turns back into
@@ -173,8 +182,8 @@ it's exactly the line `plan/03-call-tree/01` draws on purpose:
 So: **if you hit an `if`/`else` (or any other branch) while building this,
 union the arms and move on.** Don't special-case a literal condition to
 "help" — that's the one shortcut this design explicitly defers.
-`01-functions/05-returns-and-value-flow.md`'s `two_returns_union` fixture
-and `02-classes/01-constructing-an-instance.md`'s factory example are both
+`02-functions/05-returns-and-value-flow.md`'s `two_returns_union` fixture
+and `03-classes/01-constructing-an-instance.md`'s factory example are both
 built to exercise exactly this.
 
 ## `Ty(Type<'db>)` — the escape hatch, used constantly
@@ -182,8 +191,8 @@ built to exercise exactly this.
 You will reach for `Ty(...)` far more than any other variant: every literal,
 every stdlib return, every arithmetic expression, every comprehension lands
 here. It is not a failure case — it is "this expression doesn't carry
-path-specific information, so hand it to the oracle." [`06-scaling-budget-and-memoization.md`](06-scaling-budget-and-memoization.md)
-revisits why that's good for more than just code size.
+path-specific information, so hand it to the oracle." It is also why most
+values are cheap to fingerprint ([`01-summaries/02`](../01-summaries/02-the-key.md)).
 
 ## `Unknown` vs `Ty(Dynamic)` — two different kinds of "no idea"
 
@@ -213,15 +222,14 @@ millions of times on a real project. Every variant above holds salsa
 handles (`u32`-ish) or small enums of them — **never** a `String` or a `Vec`
 directly. The moment one variant owns a heap allocation, every `Env` clone
 pays for it. This is why `Instance` carries an `OriginId` (a `u32` newtype)
-rather than, say, the constructing arguments themselves — the arguments
-live once in the origin arena's key instead (see the next file).
+rather than, say, the constructing arguments themselves (see the next file).
 
 ⚠ **16 is a goal, not a given.** `Ty(Type)` holds a whole ty `Type`, which
 is exactly 16 bytes on its own (ty asserts it, `types.rs:11192`). The enum
 only stays at 16 if rustc tucks its own tag into `Type`'s spare tag values —
 likely, not promised. If the test fails, store the `Type` in a per-request
 arena and keep a `u32` `TyId` in the variant
-([`plan/03-call-tree/04` § Sizing](../../../plan/03-call-tree/04-value-domain.md#sizing)).
+([`plan/03-call-tree/04` § Sizing](../../../plan/03-call-tree/04-values.md#sizing)).
 Run it with `cargo test --release value_is_small`; ty's assert is off in
 debug builds, so a debug run can fail for reasons that aren't yours.
 
@@ -276,4 +284,4 @@ different, cross-cutting questions — these quick checks are per-file.)
 
 ---
 
-→ Next: [`02-origin-and-identity.md`](02-origin-and-identity.md)
+→ Next: [`02-origins.md`](02-origins.md)

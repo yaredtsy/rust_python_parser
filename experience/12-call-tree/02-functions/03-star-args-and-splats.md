@@ -1,10 +1,10 @@
-# 01.03 — `*args`, `**kwargs`, and call-site splats
+# 02.03 — `*args`, `**kwargs`, and call-site splats
 
 The one place this design explicitly chooses to lose precision — and the
 rule for doing it safely instead of guessing.
 
 **Fixture:** `python/varargs.py`. **Reading:**
-[`plan/03-call-tree/05-binding-arguments.md`](../../../plan/03-call-tree/05-binding-arguments.md)
+[`plan/03-call-tree/06-binding-arguments.md`](../../../plan/03-call-tree/06-binding-arguments.md)
 §"3. `*args`/`**kwargs`" and §"4. Star-args at the call site".
 
 ---
@@ -24,11 +24,13 @@ model it. Three options, in increasing effort, and the guidance is explicit:
 
 ```rust
 for param in params_iter {
-    if param.is_vararg() { locals.insert_mut(param.name(), smallvec![AbstractValue::Unknown]); continue }
-    if param.is_kwarg()  { locals.insert_mut(param.name(), smallvec![AbstractValue::Unknown]); continue }
+    if param.is_vararg() || param.is_kwarg() { slots.push(smallvec![AbstractValue::Unknown]); continue }
     // ... ordinary binding for everything before these
 }
 ```
+
+`Unknown` slots are `Unknown` in the key, so every call to `takes_splat` that
+passes the same `a` shares one summary, whatever went into `*rest`.
 
 ## Call-site: `takes_splat(*items)`
 
@@ -69,17 +71,15 @@ Using `python/varargs.py`:
    splat rule is about not *guessing an alignment at all*, not about
    salvaging the parameters you can. Even though `items[0]` conceptually
    corresponds to `a`, your interpreter doesn't model indexing into an
-   arbitrary iterable (`00-values/04`'s "what you deliberately do not
-   model" list), so claiming to know `items[0]` would itself be a guess —
+   arbitrary iterable (containers are not modelled, `plan/03-call-tree/04`
+   § "What is not modelled"), so claiming to know `items[0]` would be a guess —
    exactly the "confidently wrong" case the rule exists to prevent.
-3. Yes in both cases — `walk_body` doesn't care what `a` is bound to; it
-   just resolves whatever call sites exist in `takes_splat`'s body against
-   whatever `env` it was given. In case 2, `a.go()` still appears as a
-   node in the tree, but its *leaf* resolves to nothing informative — the
-   receiver is `Unknown`, so `member()` has nothing to look attributes up
-   on. The call-tree *shape* survives; only the *precision* at that one
-   leaf degrades. That's the intended trade-off: lose information, not
-   structure.
+3. Yes in both cases. They are two different contexts —
+   `{a: Instance{Handler}}` and `{a: Unknown}` — and each is walked once. In
+   case 2 the call site `a.go()` is still reached and recorded, but with an
+   `Unknown` receiver it has no target, so no `go` node is rendered under it.
+   The rest of `takes_splat`'s subtree survives; only that one edge is lost.
+   That's the intended trade-off: lose information, not structure.
 
 </details>
 

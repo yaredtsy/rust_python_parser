@@ -32,8 +32,8 @@ def make_adder(n):
 def use_curry():
     """`make_adder(1)` returns a FUNCTION value, not a number -- and
     `add_one(5)` calls THAT returned closure, resolved through ordinary
-    return-value flow (05-returns-and-value-flow.md) plus ordinary
-    env-first callee resolution (00-values/03).
+    return-value flow (05-returns-and-value-flow.md) plus a closure that
+    carries its captured `n` (04-closures-and-nested-functions.md).
 
     ID: f7000000-0005-0000-0000-000000000000
     """
@@ -73,8 +73,8 @@ def retry(fn):
 @retry
 def fetch():
     """Decorated. The call tree resolves `fetch()` to the UNDECORATED
-    function -- a deliberate, documented imprecision (06-attributes-and-self
-    isn't involved; this is 07-callbacks-and-higher-order's §3).
+    function -- a deliberate, documented imprecision (07-curry-partial-and-
+    decorators.md, plan/03-call-tree/11 § Decorators).
 
     ID: f7000000-000a-0000-0000-000000000000
     """

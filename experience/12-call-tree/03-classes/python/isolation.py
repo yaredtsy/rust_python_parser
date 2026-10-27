@@ -1,5 +1,5 @@
-"""Fixture 2 from plan/03-call-tree/06: two instances alive at once must
-NOT cross-contaminate. plan/03-call-tree/06 calls this "the first test you
+"""Fixture 2 from plan/03-call-tree/07: two instances alive at once must
+NOT cross-contaminate. plan/03-call-tree/07 calls this "the first test you
 write" -- treat it that way here too.
 
 ID: c4000000-0000-0000-0000-000000000000

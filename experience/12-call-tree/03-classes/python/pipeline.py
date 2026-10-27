@@ -1,5 +1,5 @@
 """The attribute store: `__init__` writes, a later method reads -- same
-instance, different method, the shape plan/03-call-tree/06 is named after.
+instance, different method, the shape plan/03-call-tree/07 starts with.
 
 ID: c3000000-0000-0000-0000-000000000000
 """

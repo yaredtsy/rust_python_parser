@@ -2,47 +2,36 @@
 
 Closed book. Write your answers, then check [`answers.md`](answers.md).
 
-1. List all seven variants of `AbstractValue`. For each, give one Python
-   expression that produces it.
+1. List the `AbstractValue` variants. For each, give one Python expression (or
+   situation) that produces it.
 
-2. `Type::Union(A | B)` and `Values` both represent "more than one
-   possibility." What's the one-sentence difference in how they're meant to
-   be used, and what goes wrong if you treat them the same way?
+2. `Type::Union(A | B)` and `Values` both mean "more than one possibility". What
+   is the difference in how they're used, and what goes wrong if you treat them
+   the same?
 
-3. Why is `AbstractValue::BoundMethod`'s receiver a `ValueId` rather than a
-   `Box<AbstractValue<'db>>`?
+3. What is the difference between an empty `Values` and `[Unknown]`?
 
-4. `def make(h): return Pipeline(h)` — one line of code — is reached
-   twice from the same caller: `make(JsonHandler())` then
-   `make(CsvHandler())`. Do the two `Pipeline(h)` constructions get the same
-   `OriginId`? What if both calls had passed equal argument values instead?
-   Justify your answer from `OriginKey`'s definition, not from intuition.
+4. Why is `BoundMethod`'s receiver a `ValueId` rather than a
+   `Box<AbstractValue>`?
 
-5. Write the env-first-then-ty-then-annotation resolution order as a
-   three-line chain, in the style of `03-env-and-scope.md`'s two-line rule.
-   Which tier is allowed to override which?
+5. Name the three kinds of origin. For each, say where the object came from.
 
-6. A function parameter `h: Handler` receives an `Unknown` value at a call
-   site (the caller's own value couldn't be determined). What does the
-   annotation-fallback tier do here, and what confidence should that
-   produce in your stats?
+6. One Python object is built in `main` and passed to `run(self)`. Give its
+   origin in `main`'s walk and in `run`'s walk. Why are they different?
 
-7. State the `(parent frame, target_qname)` rule in one sentence. Then: `f()`
-   is called three times from the same frame. How many children does the
-   frame have, and what is `call_count`?
+7. Why can an `OPAQUE` instance never hold attribute state? Give the bug it
+   would cause.
 
-8. Return values have no recursion guard of their own. For
-   `def f(): return g()` / `def g(): return f()` / `x = f()`, explain why
-   this still terminates, and what `x` resolves to.
+8. `Env` has no link to the caller. Then how does `inner` in
+   `outer → middle → inner` know what `y` is?
 
-9. Name the four scaling brakes from `06-scaling-budget-and-memoization.md`.
-   Which one is checked once globally per request rather than per branch,
-   and why does that distinction matter?
+9. When does the annotation fallback fire, and why can it never make a traced
+   value worse?
 
-10. A function's call tree is memoised as "context-independent." Later, you
-    add local-assignment tracking (`01-functions/05`). Explain in 2–3
-    sentences why the context-independence check must become stricter, with
-    a concrete example.
+10. `if c: w = JsonWriter() else: w = CsvWriter(); w.write()` — what does `w`
+    hold at `w.write()`, and why isn't `c` looked at? Then:
+    `w = JsonWriter(); w.write(); w = CsvWriter(); w.write()` — what does each
+    `w.write()` see?
 
 ---
 

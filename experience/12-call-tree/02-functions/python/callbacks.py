@@ -43,8 +43,8 @@ def run(task, cb):
 def handle_ok():
     """Two DIFFERENT callers passing two DIFFERENT callbacks -- two `run`
     nodes, each with one correct leaf. Must be two callers, not two calls
-    from one frame -- see 09-path-identity's merge rule for why the
-    same-frame version would prove nothing.
+    from one function -- v-noc's merge (plan/03-call-tree/14) joins those
+    into one node, so the same-function version would prove nothing.
 
     ID: f6000000-0008-0000-0000-000000000000
     """

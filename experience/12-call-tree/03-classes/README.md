@@ -1,72 +1,60 @@
-# 02 — Classes: construction, `self`, state, and the MRO
+# 03 — Classes: construction, `self`, state, and the MRO
 
-**Goal:** given any method call — plain, static, class, property,
-inherited, chained, or two instances alive at once — you can say what the
-call tree looks like, and specifically, you can prove to yourself that two
-instances of the same class never cross-contaminate each other's state.
+**Goal:** given any method call — plain, static, class, property, inherited,
+chained, or two instances alive at once — you can say what the contexts,
+summaries and edges are, and prove to yourself that two objects of one class
+never mix their state.
 
-Like `01-functions/`, everything here is built out of
-[`00-values/`](../00-values/README.md)'s six concepts, with exactly one new
-mechanism added: **the attribute store, keyed on `OriginId`**
-([`03`](03-attribute-state-after-init.md)). Your project owner named this
-chapter explicitly as the hard case — *"it works for callback, attribute
-calls, stuff"* — read it slower than the others.
+Method calls are function calls with a receiver. The new pieces in this folder
+are about **state**: where an object's attributes live, how a write reaches the
+caller, and how deep it can go.
 
 ---
 
 ## How this folder is organised
 
-Seven files, in the order you should read them:
-
 | | file | the case | the one new idea |
 |---|---|---|---|
-| 1 | [`01-constructing-an-instance.md`](01-constructing-an-instance.md) | `Foo()` | constructing doesn't run class code — it mints a value, then calls `__init__` like any function |
-| 2 | [`02-self-and-method-binding.md`](02-self-and-method-binding.md) | `obj.m(x)` vs `Cls.m(obj, x)` | the receiver-binding order, and why both syntaxes bind identically |
-| 3 | [`03-attribute-state-after-init.md`](03-attribute-state-after-init.md) | ★ `self.x = v` then read elsewhere | the attribute store, keyed on `OriginId` |
-| 4 | [`04-two-instances-and-origin-isolation.md`](04-two-instances-and-origin-isolation.md) | ★★ two instances, no cross-talk | **the fixture to write first** — proves 3 is actually correct |
-| 5 | [`05-assignment-outside-init-and-external-mutation.md`](05-assignment-outside-init-and-external-mutation.md) | writes outside `__init__`, writes from outside the class | one generalisation, one deliberate refusal to generalise further |
-| 6 | [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md) | `@staticmethod`/`@classmethod`/`@property` | three more receiver-binding rules, one reachability rule |
-| 7 | [`07-bound-methods-chains-and-mro-dispatch.md`](07-bound-methods-chains-and-mro-dispatch.md) | `a.b.c.f()` at any depth, `super()`, bound methods as callbacks | chain depth is `eval` recursion; the MRO walk is **one already-merged wrapper**, not code you write |
+| 1 | [`01-constructing-an-instance.md`](01-constructing-an-instance.md) | `Foo()` | a new origin, then `__init__` as an ordinary call whose writes are effects on it |
+| 2 | [`02-self-and-method-binding.md`](02-self-and-method-binding.md) | `obj.m(x)` vs `Cls.m(obj, x)` | the receiver goes to the first parameter, by position |
+| 3 | [`03-attribute-state.md`](03-attribute-state.md) | `self.x = v`, read in another method | state lives in the env; the key carries it into the next call |
+| 4 | [`04-two-instances-and-origin-isolation.md`](04-two-instances-and-origin-isolation.md) | two instances, no cross-talk | ★ the fixture to write first |
+| 5 | [`05-writes-anywhere-and-deep-writes.md`](05-writes-anywhere-and-deep-writes.md) | writes in any method, from outside, at depth | ★ effects by path, and the `max_path` fallback |
+| 6 | [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md) | `@staticmethod`, `@classmethod`, `@property` | three receiver rules, and a call without parentheses |
+| 7 | [`07-bound-methods-chains-and-mro-dispatch.md`](07-bound-methods-chains-and-mro-dispatch.md) | `a.b.c.f()`, `super()` | chain depth is recursion in `eval`; the MRO is one wrapper |
 
-Then [`exam.md`](exam.md) for the whole folder — and
-[`../exam.md`](../exam.md) for the whole exercise, combining both folders.
+Then [`exam.md`](exam.md), and the whole-exercise [`../exam.md`](../exam.md).
 
 ---
 
 ## Read first
 
-- Everything in [`00-values/`](../00-values/README.md) and
-  [`01-functions/`](../01-functions/README.md) — method calls are function
-  calls with one extra binding rule and one extra store
-- `plan/03-call-tree/06-attributes-and-self.md` in full
-- `experience/08-classes-and-mro/README.md` — the MRO wrapper
-  (`vnoc::class_mro`, `vnoc::member`) this folder's file 7 relies on is
-  **already built and tested** in this repo; that exercise is where it was
-  introduced
+- Everything in [`00-values/`](../00-values/README.md),
+  [`01-summaries/`](../01-summaries/README.md) and
+  [`02-functions/`](../02-functions/README.md)
+- [`plan/03-call-tree/07-attributes-and-self.md`](../../../plan/03-call-tree/07-attributes-and-self.md)
+  in full, and [`10-one-call.md`](../../../plan/03-call-tree/10-one-call.md) § "Constructors"
+- `experience/08-classes-and-mro/README.md`: the `vnoc::member` wrapper file 7
+  relies on is already built and tested in this repo
 
 ---
 
 ## Done when
 
-- [ ] you can trace `Pipeline(JsonHandler())` from `resolve_call` down
-      through `__init__`'s body, naming every step
-- [ ] you can state the receiver-binding order rule and predict the bug
-      that results from getting it backwards
-- [ ] you can write `member()`'s three-tier priority order from memory, and
-      say which tier is "the precise answer"
-- [ ] you can explain, with the two-instance fixture specifically, what
-      `OriginId` collision would look like and why this fixture (not the
-      single-instance one) is the test that catches it
-- [ ] you can state why writes to an unknown receiver are dropped rather
-      than approximated
-- [ ] you can produce the locals map for a `@staticmethod` call and for a
-      `@classmethod` call, and say why `@property` is a reachability
-      question, not a binding one
-- [ ] you can explain why `a.b.c.f()` and `a.b.c = v` work at any depth
-      without any depth-specific code, and what happens at an `Unknown` hop
-- [ ] you can name the real file (`vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs`)
-      that answers "what is `.name` on this type" and explain what it does
-      *not* answer
+- [ ] you can trace `Pipeline(JsonHandler())` to the new object's attributes,
+      naming the summary of `__init__` and the effect that writes `handler`
+- [ ] you can state the receiver rule, and the bug from getting it backwards
+- [ ] you can write `member()`'s order from memory and say which step is the
+      precise answer
+- [ ] you can explain what the two-instance fixture catches that a
+      one-instance fixture can't
+- [ ] you can trace `rewire(svc)` writing three levels into `main`'s objects, and
+      say what changes past `max_path`
+- [ ] you can say why writes to an unknown receiver are dropped
+- [ ] you can explain why `a.b.c.f()` works at any depth with no depth-specific
+      code
+- [ ] you can name the real file that answers "what is `.name` on this type",
+      and what it does not answer
 
 ---
 

@@ -1,116 +1,116 @@
-# 01.06 — Callbacks and higher-order functions
+# 02.06 — Callbacks and higher-order functions
 
-The good news up front: if [`01`](01-calling-a-plain-function.md) and
-[`05`](05-returns-and-value-flow.md) are right, this chapter is almost
-free. A callback is just a parameter whose bound value happens to be
-callable.
+A callback is a parameter whose value happens to be callable. If files 1 and 5
+are right, this one needs no new code.
 
 **Fixture:** `python/callbacks.py`. **Reading:**
-[`plan/03-call-tree/07-callbacks-and-higher-order.md`](../../../plan/03-call-tree/07-callbacks-and-higher-order.md)
-in full.
+[`plan/03-call-tree/11-closures-and-callbacks.md`](../../../plan/03-call-tree/11-closures-and-callbacks.md)
+§ "Callbacks".
 
 ---
 
-## The structural property that makes this free
-
-> **`resolve_call` dispatches on the callee's *value*, not its syntax.** It
-> never asks "is this a bare name, or an attribute, or a parameter" — it
-> asks "what value is here, and is it callable." Higher-order code is then
-> just first-order code where the value happened to arrive via a parameter
-> instead of a literal name.
-
-Guard this property specifically — the temptation to write
-`if let Expr::Name(n) = call.func { ... }` as a quick special case is
-exactly how this generality gets lost, one shortcut at a time.
-
-## The trace, reusing machinery you already have
+## The trace
 
 ```python
 def on_success(result): audit.record(result)
-def run(task, cb): cb(task)
-def handle_ok(): run("ok-task", on_success)
+def on_failure(err):    alert.page(err)
+def run(task, cb):      cb(task)
+
+def handle_ok():  run("ok-task", on_success)
+def handle_err(): run("err-task", on_failure)
 ```
 
+1. `on_success` is a module-level name: ty's `FunctionLiteral`, lifted to
+   `Function(on_success)`.
+2. `run("ok-task", on_success)` keys `run { task: Data(str), cb: Function(on_success) }`.
+   `run("err-task", on_failure)` keys `cb: Function(on_failure)`: **a different
+   context**.
+3. In each `run` walk, `cb` is in the starting env. `cb(task)` is a call on a
+   value, like any other.
+
 ```
-1. eval(on_success)                    — env miss, ty: Type::FunctionLiteral
-   → lift → AbstractValue::Function(on_success)
-2. bind_parameters binds `cb` ← that value, inside run's callee_env
-3. walk_body(run) finds `cb(task)`
-4. eval_callee(cb) → env HIT this time → Function(on_success)
-5. resolve_call descends into on_success, exactly as in 01-calling-a-plain-function.md
+main
+├── handle_ok
+│   └── run
+│       └── on_success
+│           └── Audit.record
+└── handle_err
+    └── run
+        └── on_failure
+            └── Alert.page
 ```
 
-No new code anywhere in this trace — every step is a step you already
-wrote. If this *doesn't* work on the first try once 01 and 05 are correct,
-the bug is in one of those two files, not here.
+Two contexts of `run`, each walked once, each with one leaf.
 
-## Why the two-caller shape, again
+## Dispatch on the value, never the syntax
 
-`handle_ok()` and `handle_err()` each call `run` with a *different*
-callback, from *different* frames. Two `run` nodes, one correct leaf each —
-and this is deliberately the same emphasis as
-[`01-calling-a-plain-function.md`](01-calling-a-plain-function.md)'s
-cross-scope fixture: one frame calling `run` twice with two callbacks would
-merge into a single `run` node (`00-values/05`'s merge rule) with both
-leaves as siblings inside it — still correct, but it wouldn't demonstrate
-that the *callback choice* is what's being tracked per-path.
+The call never asks "is the callee a name, an attribute, or a parameter?" — only
+"what value is here, and can it be called?". Higher-order code is first-order
+code where the value arrived through a parameter. Guard this in review: a quick
+`if let Expr::Name(..) = call.func` special case is how the generality gets
+lost.
 
-## The three variants worth a specific look
+## Through two levels
 
-**Bound methods as callbacks** —
-`run(fetch, self.handler.on_done)` — covered properly once you've done
-[`02-classes/07-bound-methods-chains-and-mro-dispatch.md`](../02-classes/07-bound-methods-chains-and-mro-dispatch.md),
-because `eval` of an `Attribute` goes through `member()`, producing a
-`BoundMethod{func, receiver}`. The receiver **must** survive the trip
-through `run`'s parameter — which is exactly why `BoundMethod` interns its
-receiver as a `ValueId` (`00-values/02`) rather than re-deriving it later:
-by the time `cb()` actually runs, the expression `self.handler.on_done` is
-long gone from view.
+```python
+def through_two_levels(cb): middle(cb)
+def middle(cb):             cb("value")
+def call_through_levels():  through_two_levels(on_success)
+```
 
-**Decorated functions** — see
-[`07-curry-partial-and-decorators.md`](07-curry-partial-and-decorators.md).
+`through_two_levels { cb: Function(on_success) }` calls
+`middle { cb: Function(on_success) }`, whose walk calls `on_success`. Each
+level's key carries the callback. No lookup ever goes back up a call chain.
 
-**Functions stored in containers** — `HANDLERS[kind](data)` — out of scope.
-Containers aren't modelled (`00-values/01`'s domain), so `HANDLERS[kind]`
-resolves to `Unknown`, with no children. If a fixture against the real
-driver shows Jedi occasionally resolving a constant-key dict literal,
-that's a measured, deliberate extension — not a gap you default to closing.
+## Bound methods as callbacks
+
+```python
+class Sink:
+    def store(self, h): self.h = h
+    def flush(self):    self.h.process()
+
+def run(cb): cb(JsonHandler())
+
+def main():
+    s = Sink()
+    run(s.store)
+    s.flush()             # JsonHandler.process
+```
+
+`s.store` is `BoundMethod { store, receiver: s }`. It crosses into `run` as
+`Fp::Bound { recv }`, and inside `run` the receiver sits at path
+`Param(0) + [Recv]`. `store`'s write to its `self` becomes `run`'s effect
+`Param(0).Recv.h = Obj(0)`. `main` follows `Recv` from its bound-method value to
+`s` and writes `h`. Then `s.flush()` keys `flush` with `s.h` in it.
+
+## Not modelled, on purpose
+
+- **Functions in containers**: `HANDLERS[kind](data)` is `Unknown`.
+- **Stdlib higher-order functions**: `map(f, xs)`, `sorted(key=f)`,
+  `functools.partial(f, x)`. The callee is stdlib, so `f` is never called in
+  the tree. That's the Jedi driver's behaviour too.
+
+---
 
 ## Exercise
 
 Using `python/callbacks.py`:
 
-1. Trace `main()`'s tree by hand: how many `run` nodes, and what's the one
-   leaf under each?
-2. `call_through_levels()` passes `on_success` through **two** parameter
-   hops (`through_two_levels(cb)` → `middle(cb)` → `cb("value")`) before it's
-   invoked. At which point does `cb` actually get looked up in `env`, and
-   is that lookup any different in kind from the direct case in `main()`?
-3. Why is "a callback is just a parameter whose value happens to be
-   callable" exactly the same idea as fixture #2 from
-   [`00-values/02-origin-and-identity.md`](../00-values/02-origin-and-identity.md)
-   (the aliasing exercise)?
+1. Draw `main()`'s tree. How many contexts of `run`?
+2. If `handle_err` also passed `on_success`, how many contexts of `run`?
+   How many rendered `run` nodes?
+3. In `call_through_levels`, where is `cb` looked up when `cb("value")` runs?
+4. In the `Sink` example, write `run`'s summary.
 
 <details><summary>Answers</summary>
 
-1. Two `run` nodes: `main → handle_ok → run → on_success → audit.record`
-   and `main → handle_err → run → on_failure → alert.page`.
-2. `cb` is looked up inside `middle`'s body, at the point `cb("value")` is
-   evaluated — `eval_callee` checks `middle`'s own `env.locals`, finds `cb`
-   bound there (because `bind_parameters` eagerly copied the value in when
-   `middle(cb)` was called from `through_two_levels`, which itself got it
-   the same way from `call_through_levels`). It's the *identical* lookup
-   mechanism as the direct case — `env.lookup("cb")` — just resolving a
-   name that was threaded through two hops of eager parameter binding
-   rather than bound once. No special "look further up the call chain"
-   logic exists or is needed.
-3. Both are instances of the same underlying fact: a name binding (whether
-   a parameter binding or a plain `y = x` alias) doesn't create a *new*
-   value, it just gives an *existing* value a new name to be found under.
-   `cb` bound to `on_success` is structurally the same operation as `y`
-   bound to the same `Instance` as `x` — in both cases, the thing that
-   matters (callability in one case, origin identity in the other) rides
-   along unchanged through the rebinding.
+1. As above. Two contexts.
+2. One context (both keys equal), walked once, reused. Still two rendered `run`
+   nodes, one under each handler.
+3. In `middle`'s own env: the key put it there when `middle`'s walk started. It
+   is the same lookup as any local.
+4. `returns: [Plain(Ty(None))]`, `effects: [Param(0).Recv.h = [Obj(0)], strong]`,
+   `objects: [JsonHandler]`.
 
 </details>
 

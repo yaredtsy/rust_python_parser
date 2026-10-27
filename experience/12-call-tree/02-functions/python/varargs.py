@@ -14,7 +14,7 @@ class Handler:
 
 def takes_splat(a, *rest, **opts):
     """`a` binds normally; `rest`/`opts` bind to Unknown (option (a) from
-    05-binding-arguments.md) -- the body is still walked, `a.go()` still
+    plan/03-call-tree/06) -- the body is still walked, `a.go()` still
     resolves.
 
     ID: f3000000-0003-0000-0000-000000000000

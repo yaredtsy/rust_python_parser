@@ -1,7 +1,6 @@
-"""Fixtures for 04-annotation-fallback.md. Every function here produces a
-value your interpreter cannot get from the environment OR from a plain ty
-inference -- the only thing left to try is the annotation on the binding
-site itself.
+"""Fixtures for 04-annotation-fallback.md: where a parameter's annotation is
+used (its key holds nothing for it), where it is not (a module global, which ty
+already answers), and a control case where nothing resolves.
 
 ID: 00000000-0000-0000-0000-000000000001
 """
@@ -51,9 +50,8 @@ def run_unresolved(opaque):
 
 
 result: Handler = Handler()
-"""A module-level variable, annotated, assigned from an expression that
-(pretend) your interpreter failed to evaluate -- the annotation is the only
-honest answer for what flows out of `read_result` below.
+"""A module-level variable, annotated. Not the fallback: a global is not a
+parameter, so ty answers it directly, from this declaration.
 ID: 00000000-0015-0000-0000-000000000001
 """
 

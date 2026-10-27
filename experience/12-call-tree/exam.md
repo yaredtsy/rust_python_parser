@@ -1,22 +1,19 @@
-# 12 — Call tree resolver: whole-exercise exam
+# 12 — The call tree analysis: whole-exercise exam
 
-Closed book, covering all three folders. Do this after finishing
-`00-values/`, `01-functions/` and `02-classes/` individually — this exam is
-deliberately cross-cutting and several questions require combining a rule
-from one folder with a rule from another.
+Closed book, across all four folders. Several questions need a rule from one
+folder combined with a rule from another.
 
 ---
 
 ```python
 def emit(writer, data): writer.write(data)
-def read_json(): emit(JsonWriter(), data)
-def read_csv():  emit(CsvWriter(), data)
+def read_json(): emit(JsonWriter(), 1)
+def read_csv():  emit(CsvWriter(), 2)
 def main(): read_json(); read_csv()
 ```
 
-1. Draw the full tree. Then redraw it as if `main()` called `emit` directly
-   twice (once per writer) instead of through `read_json`/`read_csv`. Name
-   the one rule responsible for the difference between the two drawings.
+1. Give the contexts, the graph, and the rendered tree. Then do the same if
+   `main` called `emit` directly twice, and say what v-noc saves in each case.
 
 ```python
 def outer():
@@ -26,10 +23,8 @@ def middle(x): inner(x)
 def inner(y): y.write(1)
 ```
 
-2. `y` is bound three parameter-hops away from where `JsonWriter()` was
-   actually constructed. Explain, citing the specific mechanism, why this
-   resolves correctly despite the interpreter being eager (evaluating
-   arguments once, at each call site) rather than lazy like Jedi.
+2. `y` is bound three calls away from where the `JsonWriter` was built. Explain
+   why it resolves, using keys, without any lookup back up the call chain.
 
 ```python
 class Pipeline:
@@ -44,11 +39,8 @@ def use(kind):
     p.run(1)
 ```
 
-3. This combines a `01-functions/05` mechanism with a `02-classes/01` and
-   `/03` mechanism. Name both, and say what `p` resolves to after
-   `use("json")` is called — one value or a union? Justify from the
-   "no branch analysis" rule, noting that `kind == "json"` is a condition
-   that's never evaluated.
+3. Write `build`'s summary. What is `p` after `use("json")`? How many contexts
+   of `run`, and which `process` edges?
 
 ```python
 def on_done(result): logger.info(result)
@@ -61,32 +53,22 @@ def main():
     Service(on_done).finish(42)
 ```
 
-4. A callback stored as instance state, then invoked later. Which file in
-   `01-functions/` names this exact shape as "the fixture that ties
-   callbacks to attribute state"? Trace it: what does `self.cb` resolve to
-   inside `finish`, and through which tier of `member()`?
+4. Trace it: where does `self.cb` come from inside `finish`, and which `member`
+   step answers it?
+
+5. `def process(h: Handler): h.handle(1)` is an entry. What does `h` start as,
+   and why can that never override a value a caller passed?
 
 ```python
-def process(h: Handler):
-    h.handle(1)
-
-def run_unresolved(opaque):
-    process(opaque)      # `opaque`'s own value can't be determined
+class Box:
+    def replace(self, h):
+        old = self.h
+        self.h = h
+        return old
 ```
 
-5. What does `h` resolve to inside `process`, on this call path? Name the
-   resolution tier responsible, and the one thing that must be true about
-   the ordering of tiers for this to be safe.
-
-```python
-a = Pipeline(JsonHandler())
-b = Pipeline(CsvHandler())
-a.run(1); b.run(2)
-```
-
-6. Which `00-values/` concept is this fixture a test of? What specific
-   allocation bug would make `a.run(1)` and `b.run(2)` produce the *same*
-   leaf?
+6. `old = b.replace(New())` then `old.process()`. Which `process`? What breaks
+   if effects are applied before returns are resolved?
 
 ```python
 def f(): return g()
@@ -94,33 +76,19 @@ def g(): return f()
 def h(): h()
 ```
 
-7. `f`/`g` and `h` both "don't terminate" in ordinary Python semantics (one
-   recurses through return values, one through direct calls). What stops
-   each in this design — one mechanism or two? For `x = f()`, what is `x`?
+7. How many walks of each body? What does `x = f()` give? What does the tree
+   show for `h`?
 
-```python
-def helper(a, b):
-    logger.info(a)
-    validate(b)
+8. A parser's `combine` is first reached during its cycle's fixpoint, and calls
+   back into the cycle. What happens to it, and why is the final answer the same
+   whichever function was the entry?
 
-def path_one(): helper(X(), Y())
-def path_two(): helper(Z(), W())
-```
+9. `def helper(a, b): logger.info(a); validate(b)` vs
+   `def helper(a, b): x = a; x.write(b)`. For each, which parameters are in the
+   key? Why does the second need assignments tracked to get right?
 
-8. Is `helper` a candidate for memoisation? If `helper` were instead
-   `def helper(a, b): a.write(b)`, would your answer change, and why does
-   that change specifically require local-assignment tracking to detect
-   correctly (not just a parameter-name scan)?
-
-9. Four decorators or binding forms appear across this exercise:
-   `@staticmethod`, `@classmethod`, `@property`, and a plain decorator like
-   `@retry` wrapping a regular function. For each, state in one phrase
-   what happens to receiver binding or callee resolution.
-
-10. Name the one file in this actual repository (not `plan/`, not an
-    exercise fixture) that already implements MRO-aware member lookup, and
-    the one test in this repository that already proves its answer depends
-    on which receiver you pass it.
+10. Give one limit that only truncates, one rule that widens, and say why only
+    the second kind of result may be reused.
 
 ---
 

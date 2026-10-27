@@ -1,4 +1,4 @@
-# 01 — Functions: exam
+# 02 — Functions: exam
 
 Closed book. Write your answers, then check [`answers.md`](answers.md).
 
@@ -13,8 +13,8 @@ def entry():
     read_csv()
 ```
 
-1. Draw `entry()`'s call tree. How many `emit` nodes, and why exactly that
-   many (cite the rule, not just the answer)?
+1. How many contexts of `emit`? How many walks of its body? How many rendered
+   `emit` nodes? Write one `emit` key.
 
 ```python
 DEFAULT = Handler()
@@ -23,27 +23,25 @@ def a(): process()
 def b(): process(Handler())
 ```
 
-2. For `a()`, which environment is `DEFAULT` resolved against? For `b()`,
-   does the default expression get evaluated at all?
+2. Where does `h`'s value come from for `a()`? Does binding ever evaluate a call
+   in a default? Why not?
 
 ```python
 def f(a, *rest, **opts): a.go()
 def call_a(items): f(*items)
 ```
 
-3. `call_a`'s call to `f` passes a call-site splat. Which parameters bind to
-   `Unknown`? Is `a.go()` still a node in the tree?
+3. Which parameters are `Unknown` in `f`'s key? Does `a.go()` produce a node?
 
 ```python
-def outer():
-    h = Handler()
-    def inner(): h.go()
-    inner()
+def make_handler(writer):
+    def handle(data): writer.write(data)
+    return handle
+def read_json(): make_handler(JsonWriter())(1)
 ```
 
-4. Does `h` get looked up through `Env.enclosing`, or does it arrive as an
-   eagerly-bound argument? What would change if `inner` instead took `h` as
-   a parameter, called as `inner(h)`?
+4. Write `make_handler`'s summary. Where does `handle`'s `writer` come from when
+   it is called in `read_json`?
 
 ```python
 def make(): return JsonWriter()
@@ -52,9 +50,8 @@ def run():
     w.write(1)
 ```
 
-5. Resolving `w.write(1)`'s receiver needs `make`'s return value. Where
-   does that value come from, why is it there by the time `w` is bound, and
-   why isn't `make` counted twice?
+5. Where does `w`'s value come from, and why isn't `make` walked twice if ten
+   functions call it?
 
 ```python
 def on_success(r): audit.record(r)
@@ -63,18 +60,14 @@ def a(): run("x", on_success)
 def b(): run("y", on_success)
 ```
 
-6. One frame calling `run` twice with the same callback vs. two frames each
-   calling it once — which of `a()`/`b()`'s shape actually demonstrates
-   context sensitivity, and why does the other shape prove nothing?
+6. How many contexts of `run`? How many rendered `run` nodes?
 
 ```python
 @retry
 def fetch(): return Handler()
 ```
 
-7. State the decorator rule in one sentence, and the specific risk it
-   accepts in exchange for not blanking out every decorated function in a
-   real project.
+7. State the decorator rule, and the risk it accepts.
 
 ```python
 def f(): f()
@@ -82,19 +75,15 @@ def g(): h()
 def h(): g()
 ```
 
-8. For each of `f` and `g`/`h`, say how many nodes appear in the tree and at
-   what depth the ancestor guard fires.
+8. Draw the rendered trees for `main → f` and `main → g`. How many walks of
+   each body? How does this differ from the Jedi driver's output?
 
-9. Recursion is walked once. Give the fixture from this folder where that
-   costs precision, say which call loses its edge, and why.
+9. In the parser (`parse_expr`, `parse_atom`, `combine`), `combine` is first
+   walked during the fixpoint. Why does it join the group instead of being
+   walked again in every round?
 
-10. `functools.partial(f, x)` and manual curry (`def make(n): def inner():
-    ...; return inner`) both "return a function that remembers an earlier
-    argument." Under the **base** design (before `04`'s `Closure`/`ActivationId`
-    fix), does either resolve precisely when called from a different frame
-    than where it was created? Which one's imprecision is permanent by
-    design, and which one's is a fixable gap — and why that distinction
-    matters?
+10. Why does the a/b/c chain need repeated rounds, and why does that not mean
+    walking any body twice?
 
 ---
 

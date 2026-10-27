@@ -1,78 +1,62 @@
-# 01 — Functions: every case a plain function call can produce
+# 02 — Functions: every shape a plain call takes
 
-**Goal:** given any function call in a Python file — plain, defaulted,
-starred, nested, returning a value, passed as a callback, curried,
-decorated, or recursive — you can say by hand what the call tree looks
-like, and why.
+**Goal:** given any function call — plain, defaulted, starred, nested,
+returning a value, passed as a callback, curried, decorated, or recursive — you
+can say which contexts it creates, what each summary holds, and what the
+rendered tree looks like.
 
-Everything here is built entirely out of [`00-values/`](../00-values/README.md)'s
-six concepts. Nothing in this folder introduces a new type — only new
-*shapes of call site* for the same `resolve_call` / `bind_parameters` /
-`walk_body` machinery to handle.
+Everything here is built from [`00-values/`](../00-values/README.md) (one walk)
+and [`01-summaries/`](../01-summaries/README.md) (how walks are tied together).
+No new machinery, except for recursion in file 8.
 
 ---
 
 ## How this folder is organised
 
-Eight files, one case each, in the order you should read them — later
-files lean on earlier ones:
-
 | | file | the case | the one new idea |
 |---|---|---|---|
-| 1 | [`01-calling-a-plain-function.md`](01-calling-a-plain-function.md) | ★ the base case | the full trace, step by step |
-| 2 | [`02-defaults-and-keywords.md`](02-defaults-and-keywords.md) | `f(a, b=X)` | defaults evaluate in the **defining** scope |
-| 3 | [`03-star-args-and-splats.md`](03-star-args-and-splats.md) | `*args`, `**kwargs`, `f(*items)` | bind to `Unknown` rather than guess an alignment |
-| 4 | [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md) | nested `def`, free variables, lambdas | ★ `Env.enclosing` — the closure chain, and the gap in an earlier draft's `closure_parent` that led to it |
-| 5 | [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) | ★ `w = make(); w.write()` | evaluating a call walks it and returns its value — one walk, no lookup |
-| 6 | [`06-callbacks-and-higher-order.md`](06-callbacks-and-higher-order.md) | functions as values | dispatch on the **value**, never on the syntax |
-| 7 | [`07-curry-partial-and-decorators.md`](07-curry-partial-and-decorators.md) | curry, `functools.partial`, decorators | curry is free; partial stays opaque; decorators resolve undecorated |
-| 8 | [`08-recursion-and-termination.md`](08-recursion-and-termination.md) | direct/mutual recursion | the ancestor guard, applied, with a callback proving it's precise |
+| 1 | [`01-calling-a-plain-function.md`](01-calling-a-plain-function.md) | the base case | the full trace, step by step |
+| 2 | [`02-defaults-and-keywords.md`](02-defaults-and-keywords.md) | `f(a, b=X)` | defaults belong to the defining scope |
+| 3 | [`03-star-args-and-splats.md`](03-star-args-and-splats.md) | `*args`, `**kwargs`, `f(*items)` | `Unknown` rather than a guessed alignment |
+| 4 | [`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md) | nested `def`, free variables | captured values come from where the closure was made |
+| 5 | [`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) | `w = make(); w.write()` | returns are part of the summary |
+| 6 | [`06-callbacks-and-higher-order.md`](06-callbacks-and-higher-order.md) | functions as values | different callbacks, different contexts |
+| 7 | [`07-curry-partial-and-decorators.md`](07-curry-partial-and-decorators.md) | curry, `functools.partial`, decorators | which ones resolve, and why |
+| 8 | [`08-recursion.md`](08-recursion.md) | direct, mutual, parsers, visitors | ★ pending values, groups, the fixpoint |
 
-Then [`exam.md`](exam.md) for the whole folder.
+Then [`exam.md`](exam.md).
 
-**Files 1, 5 and 6 are the core.** 1 is the trace you'll replay in your
-head for every call site you ever debug; 5 is the single highest-value
-addition over a naive port; 6 is the one that shows the design was never
-about functions-as-syntax in the first place. **File 4 is the one with a
-confirmed gap, now fixed in the plan** — an earlier draft's `closure_parent` is checked
-against the real Jedi driver and shown to break the moment a closure is
-called from a different frame than the one that defined it (curry, file 7,
-inherits the same gap). The plan now uses `Closure { func, activation }`
-and `Env.enclosing` instead. Read it for the bug, not just the mechanism.
+**Files 1, 5 and 8 are the core.** 1 is the trace you'll replay for every call
+you ever debug. 5 is what a line-by-line port of `call_resolver.py` would lose.
+8 is the hardest part of the design, and the one real code stresses most.
 
 ---
 
 ## Read first
 
-- Everything in [`00-values/`](../00-values/README.md) — this folder
-  assumes all six files
-- `plan/03-call-tree/05-binding-arguments.md`, `07-callbacks-and-higher-order.md`,
-  `10-return-values-and-state.md`
+- [`plan/03-call-tree/06-binding-arguments.md`](../../../plan/03-call-tree/06-binding-arguments.md),
+  [`10-one-call.md`](../../../plan/03-call-tree/10-one-call.md),
+  [`11-closures-and-callbacks.md`](../../../plan/03-call-tree/11-closures-and-callbacks.md),
+  [`12-recursion.md`](../../../plan/03-call-tree/12-recursion.md)
 
 ---
 
 ## Done when
 
-- [ ] you can trace `emit(JsonWriter(), 1)` from `resolve_call` down to the
-      leaf, naming every step, without looking at `01`
-- [ ] you can state the defaults-evaluate-in-the-defining-scope rule and
-      say what silently breaks if you get it backwards
-- [ ] you can say, for a call-site splat, why ALL parameters (not just the
-      starred one) become `Unknown`
-- [ ] you can explain why `inner`'s frame is a child of the call site, not
-      of the `def inner:` statement
-- [ ] you can explain where `w = make()`'s value comes from (evaluating
-      the call walks `make` and returns it) and why Python's evaluation
-      order needs no separate check
-- [ ] you can trace `walk(node)` and say why recursion walked once leaves
-      `r.close()` without an edge
-- [ ] you can trace a callback through two levels of parameter passing
-      using only `env` lookups, no special-casing
-- [ ] you can say which of curry / `functools.partial` / decorators
-      resolves fully, which stays opaque, and which is deliberately
-      imprecise — and why each is the way it is
-- [ ] you can draw the tree for `walk(root, visit)` with three levels of
-      recursion and get the `on_node_found` node count right
+- [ ] you can trace `emit(JsonWriter(), 1)` from `eval_call` to the leaf,
+      naming every step, without looking at file 1
+- [ ] you can say where a default's value comes from, and why binding never
+      evaluates a call
+- [ ] you can say why a splat at the call site makes every parameter `Unknown`
+- [ ] you can trace an escaping closure (`make_handler`) and say why it doesn't
+      matter where it's called from
+- [ ] you can write the summary of a factory and say how the caller gets the
+      object
+- [ ] you can say how many contexts of `run` two different callbacks create
+- [ ] you can trace a parser's cycle through its fixpoint rounds, and say why
+      each body is walked once
+- [ ] you can say what a `Recursive` leaf is, and how it differs from Jedi's
+      output
 
 ---
 

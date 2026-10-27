@@ -55,7 +55,7 @@ comparable to the golden responses from
 | Command | RPC equivalent | Output |
 |---|---|---|
 | `parse <file>` | `parse_file` | `{nodes, content, modified}` |
-| `calls <file>` | `resolve_calls` | `{call_frame_stack, truncated, stats}` |
+| `calls <file>` | `resolve_calls` | `{call_frame_stack, graph, stats}` |
 | `mro <file>` | `parse_file(resolve_mro=true)` | nodes with `base_classes` |
 | `ids <file>` | `read_or_inject_file_id` | `{file_id, modified}` |
 | `all <file>` | — | every method, one JSON object |
@@ -71,8 +71,10 @@ comparable to the golden responses from
     --entry <name>      for `calls`: start from this function (default: module level)
     --trace             human-readable interpreter walk to stderr
     --stats             timing + counters to stderr
-    --limits k=v,...    override any 03-call-tree/08 Limits field (e.g. max_union_fanout=8, or =off)
-    --merged            for `calls`: apply the backend-side merge (03-call-tree/09) before printing,
+    --limits k=v,...    override any 03-call-tree/13 Limits field (e.g. fp_depth=3, max_union_fanout=off)
+    --no-reuse          recompute every summary instead of reusing it; output must not change
+    --graph             for `calls`: print the context graph instead of the rendered tree
+    --merged            for `calls`: apply v-noc's merge (03-call-tree/14) before printing,
                         to compare with the Jedi driver's output by eye
     --repeat <n>        run n times, assert identical output (determinism check)
 ```
@@ -105,55 +107,59 @@ into something you see on day one.
 
 ## `--trace` — the reason this CLI exists
 
-JSON tells you *what* the tree is. Trace tells you *why*. For a
-context-sensitive interpreter this is the difference between a ten-minute fix
-and an afternoon.
+JSON tells you *what* the graph is. Trace tells you *why*. For a
+context-sensitive analysis this is the difference between a ten-minute fix and
+an afternoon.
 
 ```
-resolve_call  emit(...)                          main.py:12:4   depth=1 budget=99998
-  callee: Name("emit")
-    env miss → ty → FunctionLiteral(emit)
-  args:
-    [0] JsonWriter()  → Instance{JsonWriter, #3}         ← construct
-    [1] {"a": 1}      → Ty(dict[str, int])               ← ty fallback
-  bind: writer ← Instance{JsonWriter,#3}
-        data   ← Ty(dict[str, int])
-  ✓ FunctionSchema/8f2a…  qname=app.emit
-  │
-  ├─ resolve_call  writer.write(...)             main.py:6:4    depth=2
-  │    callee: Attribute(Name("writer"), "write")
-  │      recv: env HIT  writer → Instance{JsonWriter,#3}
-  │      .write → mro[JsonWriter] → BoundMethod{JsonWriter.write, recv=#3}
-  │    bind: self ← Instance{JsonWriter,#3}
-  │          d    ← Ty(dict[str, int])
-  │    ✓ FunctionSchema/1b7c…  qname=app.JsonWriter.write
-  │    │
-  │    └─ resolve_call  json.dumps(...)          main.py:2:14   depth=3
-  │         ✗ skipped: not project code (site-packages)
-  │
-  └─ (end emit)
+walk  app.emit  ctx#7 {writer: Instance{JsonWriter}, data: Unknown}     main.py:5
+  materialize: writer ← Instance{JsonWriter, Entry(P0)}
+  call  writer.write(data)                         main.py:6:4
+    callee: Attribute(Name("writer"), "write")
+      recv: env HIT  writer → Instance{JsonWriter, Entry(P0)}
+      .write → vnoc::member → BoundMethod{JsonWriter.write, recv=Entry(P0)}
+    key   JsonWriter.write  ctx#8 {self: Instance{JsonWriter}, d: Unknown}
+    get   ctx#8 → walk (new)
+    │ walk  app.JsonWriter.write  ctx#8
+    │   call  json.dumps(...)                      main.py:2:14
+    │     → External(json.dumps)
+    │ end   ctx#8  Finished  returns [Plain(Ty(None))]  effects 0
+    resolve: returns → [Ty(None)]
+    apply:   no effects
+end   ctx#7  Finished  returns [Plain(Ty(None))]  effects 0
+
+walk  app.read_csv  ctx#9
+  call  emit(CsvWriter(), 2)                       main.py:12:4
+    key   emit  ctx#10 {writer: Instance{CsvWriter}, data: Data(int)}
+  ...
+  call  emit(JsonWriter(), 1)                      main.py:13:4
+    key   emit  ctx#7  → REUSE (Ready)
 ```
 
-**Log every decision, especially the negative ones.** The five skip reasons from
-[`03-call-tree/01`](../03-call-tree/01-what-jedi-actually-does.md#the-loop-in-pseudocode)
-each get a distinct marker:
+**Log every decision, especially the negative ones.** Each skip, reuse and
+limit gets a distinct marker:
 
 ```
 ✗ builtin name             (call_resolver.py:114)
-✗ not project code         (call_resolver.py:141)
-✗ no ID: in docstring      (call_resolver.py:154)   ← the silent one
-✗ already seen this frame  (call_resolver.py:149)
-✗ ancestor cycle guard     (call_resolver.py:157)
-✗ budget exhausted / depth cap
-✗ fan-out cap (union had 12 members, max 4)
+✗ not project code         (shown: no; walked: no)
+✗ no ID: in docstring      (shown: no; walked: yes)   ← the silent one
+↺ reuse                    (Ready summary)
+⟳ pending                  (recursion: recorded, not entered)
+✂ cut                      (max_stack / contexts / contexts_per_func / deadline)
+✗ fan-out cap              (union had 12 members, max 4)
+⚠ annotation fallback      (h ← Handler, from the annotation)
+⚠ deep write fallback      (past max_path: weak Unknown at P0.a.b.c.d.e.f.g)
 ```
 
 The `no ID:` case is the one that will waste your time — a callee vanishes from
 the tree with no other symptom. Make it loud in trace mode.
 
-Also mark **env hit vs miss** on every callee and every argument. That single
-annotation tells you whether context-sensitivity is working, which is the thing
-you are actually building.
+Also mark **env hit vs miss** on every callee and argument, and print each key.
+A key that differs where you expected reuse, or matches where you expected two
+contexts, is the first thing to look at.
+
+For a recursion group, trace each fixpoint round: the members, the summaries
+that changed, and the contexts that joined.
 
 Implement it as a `Tracer` trait with a no-op default so release builds pay
 nothing:
@@ -185,17 +191,27 @@ fixtures/
 │   ├── 01-positional.expected.json
 │   ├── 02-keyword.py
 │   └── ...
+├── walk/
 ├── attributes/
-├── callbacks/
-└── termination/
+├── keys/
+├── calls/
+├── closures-callbacks/
+├── recursion/
+└── core/
 ```
 
-One directory per chapter's fixture list —
-[`01`](../03-call-tree/01-what-jedi-actually-does.md#the-invariants-to-test-against) (12),
-[`05`](../03-call-tree/05-binding-arguments.md#test-fixtures-for-this-chapter) (9),
-[`06`](../03-call-tree/06-attributes-and-self.md#fixtures) (8),
-[`07`](../03-call-tree/07-callbacks-and-higher-order.md#fixtures) (8).
-**37 fixtures**, each a few lines of Python, all running in milliseconds.
+One directory per chapter's fixture list in `plan/03-call-tree/`:
+[`01`](../03-call-tree/01-what-jedi-actually-does.md#the-invariants-to-test-against),
+[`05`](../03-call-tree/05-the-walk.md#fixtures),
+[`06`](../03-call-tree/06-binding-arguments.md#fixtures),
+[`07`](../03-call-tree/07-attributes-and-self.md#fixtures),
+[`08`](../03-call-tree/08-keys.md#fixtures),
+[`10`](../03-call-tree/10-one-call.md#fixtures),
+[`11`](../03-call-tree/11-closures-and-callbacks.md#fixtures),
+[`12`](../03-call-tree/12-recursion.md#fixtures),
+[`15`](../03-call-tree/15-checks-and-build-order.md#fixtures-for-the-core).
+Each is a few lines of Python with its expected edges, and runs in
+milliseconds. Every fixture also runs in `--no-reuse` mode.
 
 `--bless` is the ergonomic win: change the interpreter, run `test --bless`,
 read the *diff* in `git diff`. Reviewing a JSON diff is how you notice you broke
@@ -247,8 +263,9 @@ pylspt-dev calls big_file.py --repeat 10
 
 Catches hash-map iteration order and rayon merge order, which are the two ways
 this pipeline goes non-deterministic
-([`03-call-tree/09`](../03-call-tree/09-path-identity.md#determinism-)). Cheap
-to run, and a flaky parity suite is much harder to diagnose than a failing one.
+([`03-call-tree/14`](../03-call-tree/14-output.md#determinism)). Run it with
+the deadline off (`--limits deadline=off`). Cheap to run, and a flaky parity
+suite is much harder to diagnose than a failing one.
 
 ---
 
@@ -261,12 +278,14 @@ call tree     14.1ms
 ─────────────────────
 total         23.7ms
 
-nodes visited        1,284
+contexts / walks     312 / 312
+reuse hits           1,904    ← the summaries paying off
+groups / rounds      3 / 11   (largest group: 4)
 env hits / misses    412 / 871
-ty inference calls   871
 unknown values       94       ← precision signal
-skipped: builtin 203  non-project 88  no-id 12  cycle 4  budget 0
-truncated: false
+annotation fallbacks 17   types dropped 3   deep-write fallbacks 0
+skipped: builtin 203  non-project 88  no-id 12
+cuts: 0   cycle gaps: 0   render cuts: 0
 ```
 
 `unknown values` and `no-id` are your precision dashboard. When someone says
@@ -299,22 +318,23 @@ the RPC server also depends on. Cheap way to find those bugs early.
 | `--repeat` | with M2 | above |
 | `ids` + `--write` guard | with M3 | injection |
 | `mro` | with M4 | MRO |
-| `calls` + `--stats` | with M5 | call tree |
-| `--trace` | **with M5, before M6** | ★ do not defer |
-| `--limits` | with M6 | budget |
+| `calls` + `--stats` + `--graph` | with M5 (S2) | call tree |
+| `--trace` | **with M5 (S2), before S3** | ★ do not defer |
+| `--no-reuse` | with M5 (S3) | the solver |
+| `--limits` | with M5 (S3) | `Limits` |
 | `--watch` | with M8 | — |
 
-`--trace` landing before M6 is the important one. M6 is where you will spend
-most of the project, and it is the milestone where "the output is wrong and I
-don't know why" is the default state.
+`--trace` landing early is the important one. The call tree is where you will
+spend most of the project, and it is where "the output is wrong and I don't
+know why" is the default state.
 
 ---
 
 ## Deliverable
 
-`pylspt-dev` covering all six commands, 37 fixtures with goldens sourced from
-the Python driver, `--bless` workflow, `--trace` output, and determinism
-checking — all sharing code with the server binary.
+`pylspt-dev` covering all six commands, the fixture suites with goldens sourced
+from the Python driver, `--bless` workflow, `--trace` output, `--no-reuse`, and
+determinism checking — all sharing code with the server binary.
 
 ---
 

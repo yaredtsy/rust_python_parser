@@ -1,11 +1,11 @@
-# 02.06 — `@staticmethod`, `@classmethod`, and `@property`
+# 03.06 — `@staticmethod`, `@classmethod`, and `@property`
 
 Four receiver-binding rules total — plain method is the one you've already
 built. This file is the other three, side by side, so the differences
 stay sharp instead of blurring together.
 
 **Fixture:** `python/receiver_rules.py`. **Reading:**
-[`plan/03-call-tree/05-binding-arguments.md`](../../../plan/03-call-tree/05-binding-arguments.md)
+[`plan/03-call-tree/06-binding-arguments.md`](../../../plan/03-call-tree/06-binding-arguments.md)
 §"5. Decorated functions" table.
 
 ---
@@ -61,16 +61,13 @@ s.active_handler.handle(3)
 
 The receiver-binding rule for `active_handler` itself is identical to a
 plain method's — `self` binds to the instance. What's different is *when*
-it gets invoked: `s.active_handler` — no parentheses — must still trigger a
-full `resolve_call`-style evaluation of the getter's body, because the
-expression `s.active_handler` **is** a call, syntactically disguised as an
-attribute access. Where this needs to be handled is in `eval`'s
-`Expr::Attribute` arm (`00-values/03`): when `member()` resolves an
-attribute to something decorated `@property`, `eval` must call it
-immediately — binding `self` to the receiver, walking its body for value
-flow exactly like `05-returns-and-value-flow.md`'s machinery — rather than
-packaging it as a `BoundMethod` waiting to be invoked later by an explicit
-`(...)` the source will never actually contain.
+it gets invoked: `s.active_handler` — no parentheses — is still a call,
+disguised as an attribute access. When `member()` finds a `@property` on the
+class side, it calls the getter right there: a project call with `self` bound
+to the receiver, keyed, answered by the getter's summary, and recorded as an
+edge at the attribute expression's site. The value is the getter's returns
+(`plan/03-call-tree/07` § Properties), rather than a `BoundMethod` waiting for
+a `(...)` the source never contains.
 
 Miss this, and `s.active_handler.handle(3)` would try to call `.handle` on
 a `BoundMethod` value (the getter itself, uninvoked) instead of on
@@ -105,18 +102,15 @@ Using `python/receiver_rules.py`:
 1. `{ x → Ty(int) }` — no `self`/receiver entry at all. `x` is matched
    directly against the first (and only) parameter, because
    `@staticmethod` suppresses receiver-binding entirely.
-2. `{ cls → Class(Service), handler → Instance{Handler, O1} }`. Inside
+2. `[cls ← Class(Service), handler ← Instance{Handler}]`. Inside
    `create`'s body, `cls` holds `AbstractValue::Class(Service)`, so
    `cls(handler)` resolves through the ordinary constructor path —
-   `Callable::Class(Service)` — minting a fresh `Instance{Service, O2}`,
-   exactly as if the source had written `Service(handler)` directly.
-3. When `s.active_handler` is evaluated — `eval`'s `Expr::Attribute` arm
-   must recognise (via `member()`'s result being a property-flagged
-   function) that this attribute access itself constitutes an implicit
-   call, and interpret the getter's body right there, producing
-   `Instance{Handler, Ox}` (whatever `s`'s own `.handler` attribute holds)
-   as the value of the whole `s.active_handler` sub-expression — *before*
-   `.handle(3)` is ever applied to it. `.handle(3)` then runs as an
+   `Callable::Class(Service)` — minting a `New` origin at that site, exactly
+   as if the source had written `Service(handler)` directly.
+3. When `s.active_handler` is evaluated: `member()` finds the property and
+   calls the getter there. Its summary returns `Ref(Param(0).handler)`, which
+   resolves to whatever `s.handler` holds — the `Handler` — as the value of
+   `s.active_handler`, *before* `.handle(3)` is applied to it. `.handle(3)` then runs as an
    ordinary method call on that instance, same as any other.
 
 </details>

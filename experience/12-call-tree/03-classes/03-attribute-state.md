@@ -1,151 +1,104 @@
-# 02.03 — Attribute state after `__init__`
+# 03.03 — Attribute state
 
-The one genuinely new piece of machinery in this whole project — everything
-else so far has been binding and walking. This is the chapter your project
-owner named explicitly as the hard case: *"it works for callback, attribute
-calls, stuff."*
+A write in one method, a read in another. The machinery is all in place; this
+file puts it together.
 
 **Fixture:** `python/pipeline.py`. **Reading:**
-[`plan/03-call-tree/06-attributes-and-self.md`](../../../plan/03-call-tree/06-attributes-and-self.md)
-§"The design: an attribute store keyed on origin" and §"Writing".
+[`plan/03-call-tree/07-attributes-and-self.md`](../../../plan/03-call-tree/07-attributes-and-self.md)
+§ "Where attribute state lives" and § "Reading: `member`".
 
 ---
 
-## The shape, restated
+## The shape
 
 ```python
 class Pipeline:
     def __init__(self, handler):
-        self.handler = handler        # ← WRITE here
+        self.handler = handler        # written here
+        self.name = "pipe"
     def run(self, data):
-        self.handler.process(data)    # ← READ here, in a DIFFERENT method
+        self.handler.process(data)    # read here, in a different method
+
+def main():
+    Pipeline(JsonHandler()).run(1)
 ```
 
-Three mechanisms cooperate, and all three already exist in pieces you've
-built:
+Three steps, each already covered:
 
-1. **`self` is bound** to a specific instance — `02-self-and-method-binding.md`.
-2. **`__init__` writes** `self.handler` — needs to be *recorded* somewhere
-   that outlives `__init__`'s own call frame. ★ new, this file.
-3. **`run` reads** `self.handler` — needs to see the write from *this
-   path's* `__init__`, specifically. ★ new, this file.
+1. `Pipeline(JsonHandler())`: `__init__`'s effects land on the new object in
+   `main`'s env ([`01`](01-constructing-an-instance.md)).
+2. `.run(1)`: `member` finds `run` on the class and binds **our** object as the
+   receiver ([`02`](02-self-and-method-binding.md)). The key fingerprints the
+   receiver with its attributes:
+   `run { self: Instance{Pipeline, [handler: Instance{JsonHandler, []}, name: Data(str)]} }`.
+3. `run`'s walk starts with `self.handler` in its env, written by materialize
+   from the key. `self.handler.process(data)` reads it.
 
-## Where the write lives: `Env.attrs`, keyed on `OriginId`
+## Where state lives
 
-Recall from [`00-values/03-env-and-scope.md`](../00-values/03-env-and-scope.md):
+Only in `Env.attrs`, keyed `(origin, name)`:
 
-```rust
-attrs: rpds::HashTrieMap<(OriginId, Name), Values<'db>>
+- attributes the key carried in, for input objects;
+- writes made in this walk;
+- effects and new objects applied from callees.
+
+There is no store shared across walks. Each walk knows exactly what its key told
+it, plus what it did.
+
+## Reading: `member()`
+
+```
+member(Instance{class, origin}, name):
+  1. Env.attrs[(origin, name)]           — this path's state. The precise answer.
+  2. the class side, via vnoc::member    — methods (bound to OUR receiver),
+                                            class variables, properties,
+                                            declared attributes
+  3. an input object's attribute the key didn't hold: an object named by its path
 ```
 
-Keyed on `OriginId`, **not** on scope — this is the field that's shared
-*across* a whole path, unlike `locals`, which is private to one activation.
-`Env::clone()` when entering `run`'s frame carries `attrs` forward
-unchanged; only `locals` starts fresh.
+The order is the design: path-specific state beats the class, and the class
+beats ty's general answer.
 
-## Writing: one pass over `__init__`'s body
+Tracing `self.handler.process(data)` in `run`: `self` is `Entry(Param(0))`.
+`.handler` hits step 1: the key put it there. `.process` is a second `member`
+call, on the handler, and hits step 2: `JsonHandler`'s class has `process`.
 
-```rust
-fn record_self_assignments(
-    &self, init: Definition<'db>, init_env: &Env<'db>, instance_origin: OriginId,
-) -> rpds::HashTrieMap<(OriginId, Name), Values<'db>> {
-    // the same walker as every body (plan/03-call-tree/10 § walk_function);
-    // every Attribute target goes through bind_attribute
-    let end = self.walk_function(init, init_env, Mode::value());
-    end.map_or(init_env.attrs.clone(), |e| e.attrs)
-}
+Step 3 is for objects deeper than the key; file 5 is about it.
+
+## Branches
+
+```python
+def __init__(self, json):
+    if json: self.h = JsonHandler()
+    else:    self.h = CsvHandler()
 ```
 
-There is deliberately **no** `is_name(&attr.value, self_param)` check. `self`
-is already bound in `init_env`, so `self.x = v` is just `bind_attribute`
-evaluating the receiver `self` to `(…, instance_origin)`. The same call also
-handles `self.service.handler = v` (receiver `self.service`, evaluated by the
-chain rule, [`07`](07-bound-methods-chains-and-mro-dispatch.md)). A
-filter on the receiver being the bare `self` name would cap writes at depth 1
-and silently drop the second case. See [`05`](05-assignment-outside-init-and-external-mutation.md).
+Each arm starts from the state before the `if`, and the arms are joined: `self.h`
+is both. The write happened on every path (both arms write), so the effect is
+strong — but its value is the union. Conditions are never evaluated.
 
-**Deliberately not a fixed-point analysis.** One pass. Sequential writes:
-the later one wins. Branches: each arm starts from the state before the
-`if`, and the arms are unioned at the join, so
-`if json: self.h = JsonHandler() else: self.h = CsvHandler()` gives `self.h`
-both. That's the "no branch analysis" rule from `00-values/01`: conditions
-are never evaluated, so every arm is possible — not "the arms run one after
-another". This is O(size of `__init__`), not O(size of the program).
-
-## Reading: `member()`'s priority order
-
-```rust
-fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> {
-    match self {
-        AbstractValue::Instance { class, origin } => {
-            if let Some(v) = cx.env.attrs.get(&(origin, name.into())) {
-                return v.clone();                          // 1. path-specific — the precise answer
-            }
-            for base in class.iter_mro(cx.db, cx.env()) {    // 2. class body, walking the MRO
-                if let Some(sym) = base.own_member(cx.db, name) {
-                    return /* ... BoundMethod, Class, or lift() ... */;
-                }
-            }
-            cx.ty_member(Type::instance(class), name)        // 3. ty: descriptors, __getattr__, etc.
-        }
-        // ...
-    }
-}
-```
-
-**The order is the design.** Instance state beats class members beats
-`ty`'s full generality — each fallback trades precision for coverage.
-Tracing `self.handler.process(data)` inside `run`: `self` is already
-`Instance{Pipeline, O1}` in `run`'s `locals` (bound the same way `self` is
-bound anywhere, `02-classes/02`); `.handler` hits tier 1 of `member`,
-because `__init__` wrote exactly that key when `Pipeline(...)` was
-constructed; `.process` is then a **second** `member()` call, this time on
-whatever `.handler` resolved to, hitting tier 2 (walking `JsonHandler`'s
-MRO for a method named `process`).
+---
 
 ## Exercise
 
-Using `python/pipeline.py`'s `main()`:
+Using `python/pipeline.py`:
 
-1. At what point, in what order, does `attrs` get its one entry — before or
-   after `__init__`'s body finishes walking? Does `name = "pipe"` (the
-   second assignment in `__init__`) also produce an `attrs` entry? Should
-   it?
-2. Trace `self.handler.process(data)` inside `run` using `member()`'s three
-   tiers above. Which tier answers for `.handler`? Which for `.process`?
-3. Suppose `JsonHandler` defined `process` as a `@property` instead of a
-   method. Which tier of `member()` would still find it, and what would
-   change about how the result gets used afterward (hint: re-read
-   `receiver_rules.py`'s `@property` note once you reach
-   [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md))?
+1. Write `__init__`'s summary. Does `self.name = "pipe"` produce an effect?
+2. Write `run`'s key. Which `member` step answers `.handler`, and which
+   `.process`?
+3. If `JsonHandler.process` were a `@property`, which step finds it, and what
+   changes?
 
 <details><summary>Answers</summary>
 
-1. During — each assignment statement in the pass updates `attrs`
-   as it's encountered, so by the time the pass finishes, both `self.handler`
-   and `self.name` have entries (`record_self_assignments` doesn't special-case
-   which attribute name it is — every `self.X = ...` assignment is recorded).
-   Yes, `name = "pipe"` produces an entry too: `(O1, "name") → Ty(str)` —
-   there's no reason to special-case it; the mechanism records every
-   attribute write uniformly.
-2. `.handler` is answered by **tier 1** — `(O1, "handler")` is a direct hit
-   in `attrs`, written by `__init__` on this exact instance. `.process` is
-   answered by **tier 2** — `JsonHandler` (whatever `.handler` resolved to)
-   has no per-instance `attrs` entry for `process` (nothing ever assigned
-   `self.process = ...`), so `member()` falls through to walking
-   `JsonHandler`'s MRO and finds `process` defined directly on the class.
-3. Still tier 2 — `own_member` finds `process` on the class body regardless
-   of whether it's a plain method or a property; `member()` doesn't
-   special-case properties itself (that's `ty`'s job, via tier 3's
-   `cx.ty_member` for anything tier 2 doesn't resolve plainly, or via how
-   the *caller* of `member()` decides to invoke what tier 2 returns). What
-   changes is downstream: a property's "value" is the result of *calling*
-   its getter, not the function object itself — so wherever `eval`
-   processes an `Expr::Attribute`, it needs to know this access should
-   trigger an implicit call rather than just producing a `BoundMethod` to
-   be called later. That distinction is exactly what
-   [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md)
-   covers.
+1. `effects: [Param(0).handler = Ref(Param(1)), strong; Param(0).name = Plain(Ty(str)), strong]`.
+   Yes: every attribute write on an input becomes an effect, whatever its value.
+2. `run { self: Instance{Pipeline, [handler: Instance{JsonHandler, []}, name: Data(str)]}, data: .. }`.
+   (`name` is in the fingerprint because fingerprints carry every attribute to
+   `fp_depth`.) `.handler`: step 1. `.process`: step 2.
+3. Still step 2: `vnoc::member` finds it on the class. What changes is that
+   `member` calls the getter at once ([`06`](06-classmethod-staticmethod-property.md)),
+   so `self.handler.process` would be the getter's returns, not a bound method.
 
 </details>
 

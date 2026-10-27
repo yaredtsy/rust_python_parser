@@ -66,8 +66,8 @@ def chained_returns():
 
 
 def rec(n):
-    """4. Recursive through its OWN return value -- must terminate at
-    Unknown: the inner call is cut by is_ancestor and reads nothing stored.
+    """4. Recursive through its OWN return value. Walked once; the inner
+    call is pending, and the fixpoint finds no value: rec returns nothing.
 
     ID: f5000000-000b-0000-0000-000000000000
     """

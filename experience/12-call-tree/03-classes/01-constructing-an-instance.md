@@ -1,14 +1,12 @@
-# 02.01 — Constructing an instance
+# 03.01 — Constructing an instance
 
-The class-side base case, mirroring
-[`01-functions/01-calling-a-plain-function.md`](../01-functions/01-calling-a-plain-function.md)
-exactly — the only new idea is that calling a class doesn't run the class's
-code, it mints a value and then calls `__init__` *as an ordinary function
-call* against that value.
+The class-side base case. Calling a class doesn't run the class body: it makes a
+new object, then calls `__init__` on it as an ordinary method call. What
+`__init__` writes on `self` comes back as effects on the new object.
 
 **Fixture:** `python/construct.py`. **Reading:**
-[`plan/03-call-tree/03-the-abstract-interpreter.md`](../../../plan/03-call-tree/03-the-abstract-interpreter.md)
-§"The main loop", the `Callable::Class` arm.
+[`plan/03-call-tree/10-one-call.md`](../../../plan/03-call-tree/10-one-call.md)
+§ "Constructors".
 
 ---
 
@@ -21,89 +19,86 @@ class Pipeline:
     def run(self, data):
         self.handler.process(data)
 
-Pipeline(JsonHandler()).run(1)
+def main():
+    Pipeline(JsonHandler()).run(1)
 ```
 
-Two calls here, chained: `Pipeline(JsonHandler())` constructs, `.run(1)`
-calls a method on the result. This file is about the first half only —
-[`02-self-and-method-binding.md`](02-self-and-method-binding.md) picks up
-the second.
+This file is the first half: `Pipeline(JsonHandler())`. The second half,
+`.run(1)`, is [`02`](02-self-and-method-binding.md) and [`03`](03-attribute-state.md).
 
 ## The trace
 
 ```
-resolve_call(Pipeline(JsonHandler()), env, frame)
-  1. eval_callee(Pipeline) → env miss → ty: Type::ClassLiteral(Pipeline)
-     → lift → AbstractValue::Class(Pipeline)
-  2. eval_arguments((JsonHandler(),)) → [Instance{JsonHandler, O1}]
-  3. target = Pipeline → Callable::Class(Pipeline)
-     qname, docstring id, is_ancestor checks — same as any function target
-     child = frame.add_child("Pipeline", "ClassSchema/<id>")
-  4. lookup_init(Pipeline) → finds `__init__`
-  5. instance = construct_instance(Pipeline, &args, call, env)
-                 — interns OriginKey{file, range, Pipeline, args}; a new key
-                   gets a FRESH OriginId and runs __init__'s self.X scan once
-  6. init_env = bind_parameters(
-         __init__, args, receiver = Some(instance)   // ★ `self` ← the NEW instance
-     )
-  7. walk_body(__init__, init_env, child)
-       finds `self.handler = handler`
-       → this is an ASSIGNMENT to an Attribute target, not a call —
-         02-classes/03 picks this up; nothing to resolve here
+eval  Pipeline(JsonHandler())                     in main's walk
+  1. callee: Name "Pipeline" → ty: ClassLiteral → Class(Pipeline)
+  2. arguments: JsonHandler() → (its own construction) → Instance{JsonHandler, New{site A}}
+  3. before = main's env
+  4. a class: construct.
+     a. mint the new object: origin New{site B, t: 0, combo: 0, made: Instance}
+        fingerprint: Instance{Pipeline, attrs: []}
+     b. find __init__ through Pipeline's MRO (vnoc::member on the class)
+     c. bind: [self ← the new object, handler ← Instance{JsonHandler}]
+        key:  Pipeline.__init__ { self: Instance{Pipeline, []}, handler: Instance{JsonHandler, []} }
+     d. get → walk __init__:
+        │ self ← Entry(Param(0)), handler ← Entry(Param(1))
+        │ self.handler = handler     → write (Entry(Param(0)), handler), Must
+        │ end: effects [Param(0).handler = Ref(Param(1)), strong]
+     e. phase 1: Param(0) → the new object; Ref(Param(1)) → the JsonHandler
+        phase 2: attrs[(New{site B}, handler)] = the JsonHandler   (replaced)
+  value: Instance{Pipeline, New{site B}}
+  edge:  Construct { class: Pipeline, init: Some(__init__{..}) }
 ```
 
-Compare this to calling a plain function: steps 1–3 are **identical** to
-[`01-functions/01`](../01-functions/01-calling-a-plain-function.md)'s trace
-— the class-vs-function branch only appears at step 4 onward. Constructing
-is not a special kind of call; it's the same `resolve_call` entry point,
-dispatching on what kind of `Callable` the target turned out to be.
+Steps 1–3 are the same as any call. A class only differs at step 4: the walk
+makes the object, then `__init__` is an ordinary method call on it. There is no
+separate "constructor interpreter", and no special store for what constructors
+write: `__init__`'s write to `self.handler` is an effect on `Param(0)`, like any
+method's write to its receiver.
 
-## Why `__init__`'s body runs through the exact same `walk_body`
+The rendered node is `ClassSchema/<id>`, with `__init__`'s calls as its
+children.
 
-There is no separate "constructor interpreter." `__init__` is a function
-like any other — `bind_parameters` binds its `self` parameter to the fresh
-instance (receiver binding, covered properly in
-[`02-self-and-method-binding.md`](02-self-and-method-binding.md)), and
-`walk_body` walks it exactly like it would walk `emit`'s body in
-`01-functions/01`. The only genuinely new piece of machinery anywhere in
-this folder is the **attribute store** — recording what `self.handler =
-...` wrote, so a *different* method can read it back later. That's next.
+## Sharing, and identity
+
+Every `Pipeline(JsonHandler())` in the project has the same `__init__` key, so
+`__init__` is walked once. But each site mints its own origin, so two objects
+built at two sites never share attributes. The summary is shared; the objects
+aren't.
+
+## No `__init__` body
+
+A dataclass, `NamedTuple` or attrs class has a synthesised `__init__`. Then
+`init: None`: the class edge is still there, nothing is walked, the object has
+no attributes, and `member` falls through to ty's field types. The same if no
+class in the MRO has an `__init__` body.
+
+---
 
 ## Exercise
 
 Using `python/construct.py`:
 
-1. At what exact point in the trace is the fresh `OriginId` minted? Could
-   it be minted any earlier (e.g. before `__init__`'s args are bound) or
-   later (e.g. after `__init__`'s body finishes)? What would break in each
-   case?
-2. Does `Pipeline`'s own class body (not `__init__`, just the class
-   statement) ever get "called" or "walked" as part of constructing an
-   instance? Compare to how `def` statements for plain functions are
-   handled in [`01-functions/04`](../01-functions/04-closures-and-nested-functions.md).
-3. `main()` resolves `Pipeline(JsonHandler())` first, then `.run(1)` on the
-   result. From this file's trace alone, can you tell what `self.handler`
-   is equal to inside `run`? Why not — what's still missing?
+1. When is the new object's origin minted, and could it be minted after
+   `__init__` is walked?
+2. Is `Pipeline`'s class body (the `class Pipeline:` block) walked when an
+   instance is built?
+3. After the trace, what does `main` know about the new object's `handler`?
+   What does it still not know about `run`?
+4. Two `Pipeline(JsonHandler())` calls on two lines: how many `__init__` walks,
+   how many origins?
 
 <details><summary>Answers</summary>
 
-1. At step 5, right before `__init__`'s env is built — the instance has to
-   exist before it can be bound to `self`. Minting it earlier (before
-   arguments are evaluated) would be harmless but pointless; minting it
-   *later* (after `__init__`'s body runs) would be a real bug — any
-   `self.handler = handler` write inside `__init__` needs a concrete
-   `OriginId` to key the attribute store entry on, and there isn't one
-   until the instance exists.
-2. No — the class **statement** itself (the `class Pipeline:` block) binds
-   a class value once, when the module is loaded, exactly the way a `def`
-   statement binds a function value without running its body
-   (`01-functions/04`'s "one rule, three spellings"). Only `__init__`'s
-   *body* gets walked, and only when a construction call actually happens.
-3. No — this file's trace stops at `__init__`'s body being walked; it
-   doesn't show *what* gets recorded when `self.handler = handler` runs.
-   That's exactly [`03-attribute-state-after-init.md`](03-attribute-state-after-init.md)'s
-   subject — this file only gets you to the point where the write is
-   *about* to happen.
+1. Before `__init__` is keyed: the new object is `__init__`'s parameter 0, and
+   its effects are resolved onto that origin. Minting it afterwards would leave
+   the effect `Param(0).handler` nowhere to land.
+2. No. The class statement binds a class value when it runs, the way a `def`
+   binds a function. Only `__init__`'s body is walked, and only through its
+   summary.
+3. `attrs[(New{site B}, handler)]` is the `JsonHandler`. Nothing about `run`
+   yet: `run` is keyed and walked when `.run(1)` is evaluated, with this state in
+   its key.
+4. One walk (one key). Two origins (two sites).
 
 </details>
 

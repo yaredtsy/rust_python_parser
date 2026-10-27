@@ -12,10 +12,8 @@ test harnesses that earlier ones build.
 
 1. Assemble a corpus: ≥200 real `.py` files from projects v-noc actually
    analyses, plus the fixture files from
-   [`03-call-tree/01`](../03-call-tree/01-what-jedi-actually-does.md#the-invariants-to-test-against),
-   [`05`](../03-call-tree/05-binding-arguments.md#test-fixtures-for-this-chapter),
-   [`06`](../03-call-tree/06-attributes-and-self.md#fixtures),
-   [`07`](../03-call-tree/07-callbacks-and-higher-order.md#fixtures).
+   `plan/03-call-tree/` (each chapter ends with its fixtures; the index is in
+   [`15`](../03-call-tree/15-checks-and-build-order.md#fixtures-for-the-core)).
 2. Run the existing Python driver over all of it. Record every RPC
    request/response pair as JSON on disk.
 3. **Record timings too** — per-file, per-method. This is your baseline; without
@@ -25,11 +23,11 @@ Deliverable: `tests/golden/{requests,responses,timings}/`, plus the per-fixture
 `.expected.json` files that [`00-dev-cli.md`](00-dev-cli.md)'s `test` command
 diffs against. **Generate those from the Python driver, not from Rust output.**
 
-> The open question from
-> [`03-call-tree/09`](../03-call-tree/09-path-identity.md#two-calls-to-the-same-function-from-the-same-frame)
-> — whether two calls to `emit` with different arguments merge into one node or
-> produce two — **is answered here, by observation.** Do not design `Frame`
-> until you have looked at that JSON.
+> The goldens are the **saved** shape: the Jedi driver merges two calls to the
+> same function from one frame into one node. pylspt sends one node per call
+> site and v-noc merges on save
+> ([`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge)),
+> so the differ merges pylspt's output with the same rule before comparing.
 
 ## M1 — Build wiring + version report
 
@@ -73,49 +71,26 @@ divergences on nested classes and generics — resolve each one deliberately.
 > already be dramatically faster.** Ship it behind a flag if you can; real usage
 > will surface parity issues faster than any test suite.
 
-## M5 — Call tree, context-free
+## M5 — Call tree, part 1: the core and the benchmark
 
-[`03-call-tree/03`](../03-call-tree/03-the-abstract-interpreter.md), with `Env`
-always empty. Every callee resolved via ty. Effectively a recursive
-`outgoing_calls` with your schema, `is_ancestor` guard, budget, and dedup.
+[`03-call-tree/`](../03-call-tree/03-design.md), build steps S1–S5 from
+[`15`](../03-call-tree/15-checks-and-build-order.md#build-order): the summary
+types, the walker, one call with snapshot resolve and apply, the solver with
+no-reuse mode, recursion groups and their fixpoint, then a benchmark against
+the Jedi driver on one real repository.
 
-**Gate:** produces a *plausible* tree with the right shape, `target_id`s,
-`call_count`s, and merge behaviour. Fixtures 3–12 from
-[`03-call-tree/01`](../03-call-tree/01-what-jedi-actually-does.md#the-invariants-to-test-against)
-pass. Fixtures 1–2 (context-sensitive) **fail** — expected.
+**Gate:** each step's own gate, and the S5 numbers recorded. S5 decides whether
+the design gives v-noc the improvement it needs before the rest is built.
 
-*Deliberately a separate milestone. It exercises all the plumbing — traversal,
-frames, budget, serialisation, project filtering, builtin filtering, ID lookup —
-without the hard part. When M6 misbehaves you will know the bug is in the
-environment, not the scaffolding.*
+## M6 — Call tree, part 2 ★ the project
 
-## M6 — Context sensitivity ★ the project
+S6–S11: CPA combos, closures, the remaining cost limits, graph output and
+stable IDs, the known-limit fixtures and the depth measurements, then the PyCG,
+Jarvis and full Jedi parity runs.
 
-[`04`](../03-call-tree/04-value-domain.md) →
-[`05`](../03-call-tree/05-binding-arguments.md) →
-[`06`](../03-call-tree/06-attributes-and-self.md) →
-[`07`](../03-call-tree/07-callbacks-and-higher-order.md).
-
-Sub-steps, each independently testable:
-
-| | | Gate |
-|---|---|---|
-| M6.1 | `AbstractValue` + `lift` from ty | `size_of ≤ 16`; unions explode, don't collapse |
-| M6.2 | `Env` + parameter binding | the 9 binding fixtures |
-| M6.3 | callee resolution from env | fixtures 1, 2 (cross-scope `emit`, 3-deep pass-through) |
-| M6.4 | attributes + `self` + origin | the 8 attribute fixtures, esp. #2 (two live instances) |
-| M6.5 | callbacks | the 8 callback fixtures |
-| M6.6 | local assignment tracking | ch.10 fixtures 7, 8, 15, 16 |
-| M6.7 | return-value flow | ch.10 fixtures 1–6, 12, 17–23 |
-| M6.8 | generalised object state | ch.10 fixtures 9, 10, 11, 13, 14 |
-
-M6.6–M6.8 are [`03-call-tree/10`](../03-call-tree/10-return-values-and-state.md)
-— value flow. **Not optional**: Jedi performs this natively today, so omitting
-it regresses rather than matching. M6.6 before M6.7 — returns need somewhere to
-land or they're unobservable.
-
-**Gate:** full `resolve_calls` parity against golden on the fixture set, then
-on the real corpus.
+**Gate:** full `resolve_calls` parity against golden on the fixture set, then on
+the real corpus, with every difference explained
+([`15`](../03-call-tree/15-checks-and-build-order.md#parity-with-the-jedi-driver)).
 
 ## M7 — Transport
 
@@ -129,16 +104,17 @@ debugging entry point, sharing `lib.rs` with the server.*
 
 ## M8 — Performance
 
-[`03-call-tree/08`](../03-call-tree/08-termination-and-cycles.md) layer 5
-(memoising context-independent subtrees), parallelism via `db` snapshots,
-profiling.
+Parallelism via `db` snapshots, profiling, and the v1.1 cross-request summary
+cache ([`15`](../03-call-tree/15-checks-and-build-order.md#growth-path)).
+Summaries per context are already the main optimisation; they are the design,
+not an add-on.
 
 **Gate:** p50/p95/p99 vs the M0 baseline, on the same corpus, same machine.
 Publish the numbers.
 
 *Deliberately last. You cannot optimise what you cannot measure against a
-correct baseline, and the memoisation in layer 5 is easy to get subtly wrong
-in a way that only shows up as wrong output.*
+correct baseline, and a cross-request cache is easy to get subtly wrong in a way
+that only shows up as wrong output. The no-reuse check is what catches it.*
 
 ---
 
@@ -150,8 +126,8 @@ M1  █                           wiring
 M2  ████                        syntax
 M3  ███                         IDs
 M4  █                           MRO
-M5  ████                        scaffolding
-M6  ██████████████████████      ★ the project
+M5  ██████████                  call tree core + benchmark
+M6  ██████████████████          ★ the project
 M7  ██                          transport
 M8  ████                        perf
 ```
@@ -169,23 +145,24 @@ underestimated.
 | Python version divergence changes which files parse | M1 | measure at M1, document, decide policy |
 | Column semantics (UTF-8 vs char) break positions | M2 | non-ASCII fixture, early |
 | Qualified names don't match Jedi's | M4 | table-driven test on 4 known cases |
-| ~~Merge-by-qname semantics misunderstood~~ | — | **resolved:** frame identity is `(parent, qname)`; see [`03-call-tree/09`](../03-call-tree/09-path-identity.md#the-merge-rule) |
+| ~~Merge-by-qname semantics misunderstood~~ | — | **resolved:** pylspt sends one node per call site, v-noc merges by `(parent, qname)` on save; see [`03-call-tree/14`](../03-call-tree/14-output.md#call_count-and-v-nocs-merge) |
 | ~~`pub(crate)` blocks member lookup~~ | — | **resolved:** forked, with `types/vnoc.rs` wrappers; see [`01-crates/04`](../01-crates/04-public-vs-private-api.md) |
-| Exponential blowup on real input | M6/M8 | budget from day one, not retrofitted |
-| Non-deterministic output | M5+ | 10× repeat test in CI from M5 |
-| ty inference gaps → `Unknown` | M6 | fallbacks everywhere; count `Unknown`s and report |
-| Value flow silently dropped → regression vs Jedi | M6.6–6.8 | ch.10 fixtures; watch the "jedi resolved, ty didn't" row in the divergence log |
-| Reading a call's value adds tree nodes, or reads before the call was walked | M6.7 | ch.10 fixtures 12, 18 |
+| Exponential blowup on real input | M5 | summaries per context, cost limits from S3, measured at S5 |
+| Non-deterministic output | M5+ | 10× repeat test in CI from M5, deadline off |
+| ty inference gaps → `Unknown` | M5 | fallbacks everywhere; count `Unknown`s and report |
+| Value flow silently dropped → regression vs Jedi | M5 | the walk and one-call fixtures; watch the "jedi resolved, ty didn't" row in the divergence log |
+| Reuse changes the output (a walk read something its key doesn't hold) | M5 | no-reuse mode on every fixture, from S3 |
+| Recursion-heavy code (parsers, visitors) re-walked or losing values | M5 | the S4 recursion fixtures; group sizes and rounds in the S5 numbers |
 
 The two that actually sink projects: **deciding Option A/B too late** and
-**adding the budget too late** (retrofitting cancellation into a recursive
-descent is miserable).
+**adding the cost limits too late** (retrofitting cancellation into a
+recursive descent is miserable).
 
-The first one is now settled — the fork landed at exercise 08 rather than at
-M6.4, which is roughly as late as it could have been without hurting. The cost
-of having answered it late was one hand-rolled C3 in `src/mro.rs` and the
-`covering_node` round trip around it; the cost of answering it at M6.4 would
-have been a half-written `member.rs`. Keep the row as a reminder of what a
+The first one is now settled — the fork landed at exercise 08 rather than in
+the middle of the call tree, which is roughly as late as it could have been
+without hurting. The cost of having answered it late was one hand-rolled C3 in
+`src/mro.rs` and the `covering_node` round trip around it; the cost of answering
+it during the call tree would have been a half-written `member.rs`. Keep the row as a reminder of what a
 late decision looks like when you get away with it.
 
 ---

@@ -1,12 +1,13 @@
-# 01.02 — Defaults and keyword arguments
+# 02.02 — Defaults and keyword arguments
 
-Same machinery as the previous file — `bind_parameters` — with the two
+Same machinery as the previous file — `bind_parameters`, which matches the
+call's values to parameters before they become the callee's key — with the two
 details that are easy to get backwards.
 
 **Fixture:** `python/defaults.py`. **Reading:**
-[`plan/03-call-tree/05-binding-arguments.md`](../../../plan/03-call-tree/05-binding-arguments.md)
+[`plan/03-call-tree/06-binding-arguments.md`](../../../plan/03-call-tree/06-binding-arguments.md)
 §"Five things that are easy to get wrong", items 1–2 (item 1 is self-binding,
-covered in `02-classes/02`; this file is items 2 and the keyword case).
+covered in `03-classes/02`; this file is item 2 and the keyword case).
 
 ---
 
@@ -21,13 +22,12 @@ keyword_order(b=Handler(), a=Handler())    # reversed order
 list, and for each parameter checks the keyword map first:
 
 ```rust
-if let Some(v) = args.keywords.get(param.name()) {
-    locals.insert_mut(param.name().clone(), v.clone());
-} else if let Some(v) = positional.next() {
-    locals.insert_mut(param.name().clone(), v.clone());
-} else if let Some(default) = param.default() {
-    ...
-}
+slots.push(
+    args.keyword(param.name()).cloned()                       // a keyword, by name
+        .or_else(|| positional.next().cloned())               // else the next positional
+        .or_else(|| default_value(s, w, func, param, defining)) // else the default
+        .unwrap_or_else(|| smallvec![AbstractValue::Unknown]),
+);
 ```
 
 Written-order of the keywords at the call site is irrelevant — `b=` and
@@ -44,13 +44,17 @@ def process(h=DEFAULT):
 ```
 
 `DEFAULT` is not looked up in the **caller's** environment — it never could
-be; a default expression is only ever evaluated once, when nobody has
-called the function yet. It must be evaluated against **the module scope of
-the function's own definition**:
+be; a default expression runs once, when the `def` statement runs, before
+anyone has called the function. It belongs to **the scope that defined the
+function**.
 
-```rust
-let v = self.eval(default, &self.env_of_defining_scope(func));
-```
+The walk that ran the `def` already evaluated the default and recorded any
+calls in it. Binding never evaluates a call again. So `default_value` is:
+
+- a module-level function: ty's type of the default expression, lifted
+  (`DEFAULT` is a module global, so ty answers it);
+- a nested `def`: a name is read from the closure's defining run
+  (`def inner(h=h)`); anything else is ty's type, lifted.
 
 Get this wrong — evaluate the default in the *caller's* env instead — and
 the failure mode is the one you'll never notice while testing: `env.lookup("DEFAULT")`
@@ -79,22 +83,20 @@ Using `python/defaults.py`:
 
 1. The defining scope — `defaults.py`'s module scope, the same place
    `DEFAULT = Handler()` itself lives — regardless of which module
-   `call_with_default` is defined in. `h` is bound to that one
-   `Handler()` instance (`AbstractValue::Instance{Handler, O_default}`,
-   where `O_default` is the origin minted once for `DEFAULT = Handler()`
-   at module load, not a fresh one per call).
+   `call_with_default` is defined in. `DEFAULT` is a module global, so ty
+   answers it: `h` is `Instance{Handler, OPAQUE}`, and `h.go()` finds
+   `Handler.go` through the class.
 2. No — `bind_parameters`'s logic checks keywords, then positionals, then
    falls to the default only when both are absent; `process(Handler())`
-   supplies a positional, so the default branch never runs. Evaluating it
-   anyway would be a correctness bug (not just waste) if the default
-   expression had a side effect your interpreter modelled — e.g. a call
-   that writes to `attrs` — since that write would then happen on every
-   call, including ones that explicitly overrode the default and should
-   never have triggered it.
-3. `{ a → Instance{Handler, O1}, b → Instance{Handler, O2} }` — two fresh
-   origins, one per `Handler()` construction at the call site, bound by
-   keyword name, with `b`'s value landing correctly on `b` despite being
-   written first in the source.
+   supplies a positional, so the default branch never runs. Binding never
+   evaluates a call in any case: a default's calls belong to the walk that
+   ran the `def`. Evaluating one again at every call would record its call
+   site in the wrong walk, once per caller.
+3. `[a: Instance{Handler, New{site 2}}, b: Instance{Handler, New{site 1}}]`
+   in the caller — two origins, one per `Handler()` site, matched by keyword
+   name, with `b`'s value landing on `b` despite being written first. The key
+   is `{a: Instance{Handler, []}, b: Instance{Handler, []}}`, and `alias` says
+   they are two different objects.
 
 </details>
 

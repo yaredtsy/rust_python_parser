@@ -1,17 +1,15 @@
-# 01.07 — Curry, `functools.partial`, and decorators
+# 02.07 — Curry, `functools.partial`, and decorators
 
-Three different-looking patterns, and the same underlying question each
-time: *this expression evaluated to another function — can I still see
-inside it?* The honest answer is "sometimes," and this file is about
-knowing which case you're in.
+Three ways a function hands you back another function, and the same question
+each time: can the analysis still see inside it?
 
 **Fixture:** `python/curry.py`. **Reading:**
-[`plan/03-call-tree/07-callbacks-and-higher-order.md`](../../../plan/03-call-tree/07-callbacks-and-higher-order.md)
-§"3. Decorators" and §"5. `functools.partial`...".
+[`plan/03-call-tree/11-closures-and-callbacks.md`](../../../plan/03-call-tree/11-closures-and-callbacks.md)
+§ "Decorators" and § "Out of scope, on purpose".
 
 ---
 
-## Curry — the escaping-closure case, not a free pass
+## Curry: resolves fully
 
 ```python
 def make_adder(n):
@@ -19,79 +17,39 @@ def make_adder(n):
         return x + n
     return add
 
-add_one = make_adder(1)
-add_one(5)
+def use_curry():
+    add_one = make_adder(1)
+    add_one(5)
 ```
 
-This *looks* like it should need no new machinery — just
-[`05-returns-and-value-flow.md`](05-returns-and-value-flow.md) (a function
-returning a value) composed with
-[`04-closures-and-nested-functions.md`](04-closures-and-nested-functions.md)
-(the returned value is itself a nested function, closing over `n`). That
-was this file's original claim. **It's wrong, for the exact reason
-`04`'s "escaping-closure gap" section exists** — and this fixture is a
-sharper example of it than `04`'s own, because curry's whole *point* is
-assigning the closure to a name and calling it **later, from somewhere
-else**. `add_one(5)` runs inside `use_curry`'s frame — a different frame
-from `make_adder`'s, which is the one that actually bound `n`.
+This is file 5 (a function returns a value) composed with file 4 (the value is a
+closure). `make_adder {n: Data(int)}` returns
+`Closure { func: add, free: [(n, [Ref(Param(0))])] }`. `use_curry` resolves it:
+`add_one` is a closure over `n → Ty(int)`. `add_one(5)` keys
+`add { x: Data(int), free: [(n, Data(int))] }`.
 
-```
-eval_call_result(make_adder(1))
-  → case (b): project function → read make_adder's stored return (walked just before)
-  → the body's one `return add` → eval(Name "add")
-    → NOT an env hit — record_bindings has no arm for `def add:`, so
-      nothing in env.locals was ever set for the name "add"
-    → falls to the ty-fallback: ty's own lexical scoping finds the nested
-      def regardless of our env → Type::FunctionLiteral(add) → lift
-    → AbstractValue::Function(add)        — a BARE handle, no enclosing run
-add_one = Function(add)
-add_one(5)
-  → eval_callee(add_one) → env hit → Function(add)
-  → bind_parameters(add, args, None, caller_env = use_curry's env)
-  → parent: closure_parent(add, caller_env)      ← EARLIER DRAFT; the plan now
-                                                   uses Closure.activation as `enclosing`
-    → caller_env is use_curry's env, which never had `n` in it —
-      `n` was a parameter of make_adder, a call that already returned
-  → inside add's body, env.lookup("n") → MISSES, both locals and enclosing
-```
+It doesn't matter that `add_one` is called from `use_curry` and not from
+`make_adder`: the captured values travel with the closure. Curry is the idiom
+where this matters most, because its whole point is calling the closure later,
+somewhere else.
 
-Under the earlier draft, **`add_one(5)`'s `x + n` cannot resolve `n`
-correctly** — `n` falls through to whatever `ty` infers for a bare,
-unbound name in that position, which is not going to be `1`. That's why the
-plan now has the fix `04` describes: bind `add` to
-`Closure { func: add, activation: <this run of make_adder> }` at the point the `def add:`
-statement is walked (while `n` is still in `make_adder`'s own `locals`),
-and read that run's env — not whichever frame `add_one` is later called
-from — as `add`'s `enclosing` every time it's invoked.
-
-With that fix in place, curry resolves at full precision, and *then* the
-original framing holds: it's `05` and `04` composed, no new case. Without
-it, curry is the fixture that makes the escaping-closure gap impossible to
-ignore, because it's not an edge case here — it's the entire idiom.
-
-## `functools.partial` — resolves to nothing, on purpose
+## `functools.partial`: opaque, on purpose
 
 ```python
 bound = functools.partial(takes_two, Handler())
 bound(5)
 ```
 
-`functools.partial` is stdlib — `is_project_code` returns `false` for it —
-so the tree stops at `functools.partial(...)` and **the bound argument is
-never recovered**. `bound` itself becomes `Ty(<whatever ty infers for a
-partial object>)`, almost certainly too opaque to resolve further, and
-`bound(5)`'s call simply produces no useful children.
+`functools.partial` is stdlib. The call is `External`, its value is ty's type
+for a `partial` object, and `bound(5)` has no project target. `takes_two` is
+never reached through it, and the `Handler()` bound into it is never recovered.
 
-This is **current behaviour, deliberately preserved**, not a gap to fill
-reflexively. If a fixture against the real driver ever shows this losing
-something that matters on a real project, the right response is to measure
-how often, then consider a narrow, explicit special case for
-`functools.partial` specifically (treat it like a constructor: capture the
-bound positional/keyword args, produce something like
-`AbstractValue::Partial { func, bound_args }`) — not a general mechanism for
-arbitrary opaque callables.
+That is the Jedi driver's behaviour, kept. If a real project shows it losing
+edges that matter, measure how often, then consider a narrow special case for
+`functools.partial` alone (treat it like a constructor that records its bound
+arguments). Not a general mechanism for opaque callables.
 
-## Decorators — resolve to the undecorated function, by rule
+## Decorators: transparent, by rule
 
 ```python
 def retry(fn):
@@ -103,72 +61,44 @@ def fetch():
     return Handler()
 ```
 
-Structurally, `fetch` now denotes `retry(fetch)` — if you resolved it
-*literally*, `fetch()` would mean "call whatever `retry` returned," and
-`ty`'s own answer for a decorated function's type is usually the
-decorator's declared return type (often a generic `Callable`, sometimes
-`Unknown`) — which loses the underlying function entirely.
+Taken literally, `fetch` is `retry(fetch)`, and ty types it as whatever `retry`
+returns, which usually loses the function. So:
 
-> **Rule: if a name resolves to a function *definition*, use the
-> UNDECORATED function for call-tree purposes.** Decorators are treated as
-> transparent.
+> **A name bound by a `def` resolves to that `def`'s own function. Decorators
+> are transparent.**
 
-This is a **deliberate, documented imprecision** — write it down as a
-choice, with a fixture pinning it, not as an oversight. Decorated functions
-are extremely common in real code (`@app.route`, `@pytest.fixture`,
-`@lru_cache`, the `@retry` here); treating every one as opaque would blank
-out large parts of a real project's tree. The cost: a decorator that
-*actually* changes arity or behaviour (`functools.partial`-like decorators)
-makes the undecorated-function assumption produce an incorrect binding —
-[`05-binding-arguments.md` in the plan](../../../plan/03-call-tree/05-binding-arguments.md)'s
-point #5 ("detect a non-trivial decorator list and fall back to binding
-everything `Unknown`") is the safety valve for that case specifically.
+`fetch()` keys `fetch`, and the tree shows `fetch`'s body, not `wrapper`'s.
+`@app.route`, `@pytest.fixture` and `@lru_cache` are everywhere, and treating
+them as opaque would blank out large parts of real projects. It is a deliberate
+imprecision, pinned by a fixture.
+
+The binding side has a safety rule: a decorator that might change the signature
+(not on a small allow-list such as `lru_cache` and `functools.wraps`-style
+wrappers) binds every parameter to `Unknown`, rather than risk a shifted
+binding ([`plan/03-call-tree/06`](../../../plan/03-call-tree/06-binding-arguments.md)).
+
+---
 
 ## Exercise
 
-Using `python/curry.py`:
-
-1. `use_curry()` — under the **unfixed** base design, does `add_one(5)`
-   resolve `n` correctly? Walk the trace above and say exactly where it
-   goes wrong. Then say what changes once the `Closure`/`ActivationId` fix from
-   `04` is in place.
-2. `use_partial()` — what does the tree look like for `bound(5)`? Is
-   `Handler.go` reachable from this call at all, under the base design?
-3. `use_decorated()` calls `fetch()`. Per the undecorated-function rule,
-   does the tree show `wrapper`'s body (the `return fn(*a, **kw)` line) or
-   `fetch`'s own body (`return Handler()`)? Justify from the rule, not from
-   what feels more "correct" semantically.
+1. `use_curry()`: write `make_adder`'s summary and `add`'s key at `add_one(5)`.
+2. `use_partial()`: is `Handler.go` reachable? What would have to change for it
+   to be?
+3. `use_decorated()`: does the tree under `fetch` show `wrapper`'s call to
+   `fn`, or `fetch`'s construction of `Handler`?
 
 <details><summary>Answers</summary>
 
-1. No — it goes wrong at the point `add`'s body looks up `n`.
-   `bind_parameters(add, args, None, caller_env)` is called with
-   `caller_env = use_curry`'s env (wherever `add_one(5)` textually is),
-   not `make_adder`'s env (where `n` was actually bound and had already
-   returned by this point). `closure_parent(add, caller_env)` has no way
-   to recover `make_adder`'s env from that input, so `env.lookup("n")`
-   inside `add` misses both `locals` and `enclosing`, and falls through to
-   whatever `ty` infers for a bare name in that position — not `1`. Once
-   the `Closure { func, activation }` fix is in place, `add` is bound
-   to that closure (pointing at the run where `n = 1`) at the point `def add:` is walked
-   inside `make_adder`, and `add_one(5)` reads *that run's* env
-   regardless of which frame it's called from — resolving to `1 + 5`
-   precisely, with no union and no opaque fallback.
-2. No — the tree stops at `functools.partial(takes_two, Handler())`,
-   because `functools.partial` itself is not project code. `bound(5)`
-   produces no children; `Handler.go` is not reachable through this call in
-   the base design, even though a human reading the source can see that it
-   obviously will be invoked at runtime. This is the documented, deliberate
-   gap.
-3. `fetch`'s own body (`return Handler()`) — the rule says resolve to the
-   **undecorated** function for call-tree purposes, so `fetch()` is treated
-   as if `@retry` weren't there at all. `wrapper`'s body is never shown as
-   part of this call, even though at runtime `wrapper` is what actually
-   executes first. This is the imprecision the rule accepts in exchange for
-   not blanking out every `@app.route`-decorated handler in a real project.
+1. `make_adder`: `returns: [Closure { add, free: [(n, [Ref(Param(0))])] }]`.
+   `add`'s key: `{ x: Data(int), free: [(n, Data(int))] }`.
+2. No: the call is to stdlib, so nothing past it is walked. A special case that
+   treats `functools.partial(f, *args)` as a value holding `f` and its bound
+   arguments would make `bound(5)` call `takes_two` with them.
+3. `fetch`'s own body: a `Handler` construction. Decorators are transparent, so
+   `wrapper` is never part of the tree for this call.
 
 </details>
 
 ---
 
-→ Next: [`08-recursion-and-termination.md`](08-recursion-and-termination.md)
+→ Next: [`08-recursion.md`](08-recursion.md)

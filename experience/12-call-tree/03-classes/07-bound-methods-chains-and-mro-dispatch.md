@@ -1,89 +1,61 @@
-# 02.07 — Bound methods, attribute chains, and MRO dispatch
+# 03.07 — Bound methods, attribute chains, and MRO dispatch
 
-Closing this folder by tying it back to `01-functions/06` (callbacks) and
-to the one piece of real, already-merged code in this repo that this whole
-exercise has been building toward: `vnoc::member`.
+Closing the folder: chains at any depth, bound methods carried as values,
+`super()`, and the one piece of real, merged code this exercise has been
+building toward: `vnoc::member`.
 
-**Fixture:** `python/receiver_rules.py` (`attribute_chain`),
-`python/inheritance.py`. **Reading:**
-[`plan/03-call-tree/06-attributes-and-self.md`](../../../plan/03-call-tree/06-attributes-and-self.md)
-§"★ Step 2 is now one wrapper call", and `src/attrs.rs` in this repo (not
-`plan/`, not an exercise fixture — real, merged, tested code).
+**Fixtures:** `python/receiver_rules.py` (`attribute_chain`),
+`python/deep_chain.py`, `python/inheritance.py`. **Reading:**
+[`plan/03-call-tree/07-attributes-and-self.md`](../../../plan/03-call-tree/07-attributes-and-self.md)
+§ "Attribute chains", § "Inherited attributes and `super()`", § "`vnoc::member`",
+and `src/attrs.rs` in this repo.
 
 ---
 
-## Attribute chains: `member()`, applied three times
+## Attribute chains: `member`, applied per hop
 
 ```python
+session = Session(Service(Handler()))
 session.service.handler.handle(4)
 ```
 
 ```
-eval(session.service.handler.handle)      ← the CALLEE of this call
-  = member(member(member(eval(session), "service"), "handler"), "handle")
-
-eval(session)                   → env hit → Instance{Session, O1}
-member(Instance{Session,O1}, "service")
-  → attrs[(O1, "service")]       → Instance{Service, O2}     (written in Session.__init__)
-member(Instance{Service,O2}, "handler")
-  → attrs[(O2, "handler")]       → Instance{Handler, O3}     (written in Service.__init__)
-member(Instance{Handler,O3}, "handle")
-  → attrs has no "handle" entry  → MRO walk on Handler finds `handle` directly
-  → BoundMethod{ func: Handler.handle, receiver: intern(Instance{Handler,O3}) }
+eval(session)                         → env hit → Instance{Session, S}
+member(Instance{Session, S}, service) → attrs[(S, service)]  → Instance{Service, V}  (from Session.__init__'s effect)
+member(Instance{Service, V}, handler) → attrs[(V, handler)]  → Instance{Handler, H}  (from Service.__init__'s effect)
+member(Instance{Handler, H}, handle)  → no attrs entry → class side
+                                        → BoundMethod{Handler.handle, receiver: H}
 ```
 
-`self.a.b.c()` is exactly this, applied to `self` instead of a plain name —
-no new mechanism. The one thing worth watching: because `member` returns
-`Values` (plural), a chain over an **ambiguous** link fans out
-multiplicatively — a chain where each link has 3 possibilities is 27 paths
-by the third hop. `00-values/06`'s `MAX_CHAIN_FANOUT` exists specifically
-for this; cap it there, not here.
+`self.a.b.c()` is the same, starting from `self`. Depth is not a feature of the
+store: `eval` of an attribute recurses on its receiver expression, and each hop
+is one `member` call.
 
-## Depth is recursion, not a store feature
+- **Mid-chain `Unknown`**: `member` on `Unknown` is `Unknown`, so the chain
+  dies quietly and the final call has no target (`unknown_mid_chain`).
+- **Fan-out**: `member` returns `Values`, so an ambiguous link multiplies.
+  `max_chain_fanout` (8) caps it per hop, after dedup, so two paths to the same
+  object cost nothing (`ambiguous_link`).
+- **Mixed hops**: each hop looks only at its own receiver, so
+  `config.SERVICE.client.send()` (module → instance → instance) needs nothing
+  extra. A module hop also finds submodules the program imported
+  (`pkg.sub.mod.f()`).
+- **Writes at depth** are [`05`](05-writes-anywhere-and-deep-writes.md).
 
-`Env` maps names to `Values`, and an `Instance` carries its own `OriginId`, so
-hop *n+1* is the same lookup as hop *n*. The only depth-related code is that
-`eval` of `Expr::Attribute` recurses on `attr.value`:
-
-```rust
-Expr::Attribute(attr) => {
-    let recvs = self.eval(&attr.value, env, model);     // `a.b.c` -> eval `a.b` -> eval `a`
-    let mut out = Values::new();
-    for recv in recvs.into_iter().take(MAX_CHAIN_FANOUT) {
-        out.extend(recv.member(cx, &attr.attr.id));
-        if out.len() >= MAX_CHAIN_FANOUT { break; }
-    }
-    dedup(&mut out);
-    if out.is_empty() { smallvec![Unknown] } else { out }
-}
-```
-
-- **Mid-chain `Unknown`:** `Unknown.member(..)` is `[Unknown]`, so the chain
-  quietly dies and the final call has no edge (`unknown_mid_chain` in
-  `python/deep_chain.py`).
-- **Cap per hop, after dedup:** two paths to the same instance cost nothing.
-- **Mixed hops:** each hop looks only at its own receiver's variant, so
-  `config.SERVICE.client.send()` (module -> instance -> instance) needs
-  nothing extra. A module hop also resolves **submodules** that the program
-  imported (`pkg.sub.mod.f()`), see the plan's "Module chains".
-- **Writes at depth** are `05` §(c).
-
-## Bound methods as callbacks — closing the loop with `01-functions/06`
+## Bound methods as values
 
 ```python
 run(fetch, self.handler.on_done)
 ```
 
-`self.handler.on_done` is evaluated once, at the call site, producing a
-`BoundMethod{func: on_done, receiver: <interned handler instance>}` via the
-exact chain above. **The receiver must survive the trip through `run`'s
-parameter** — by the time `cb()` actually executes inside `run`'s body,
-the expression `self.handler.on_done` is long gone from the AST being
-walked; only the *value* `cb` was bound to remains. This is precisely why
-`00-values/02` interns the receiver as a `ValueId` rather than re-deriving
-it lazily: there would be nothing left to re-derive it *from*.
+`self.handler.on_done` is evaluated once, at the call site, to
+`BoundMethod { on_done, receiver }`. The receiver is interned as a `ValueId`
+([`00-values/02`](../00-values/02-origins.md)), because by the time `cb()` runs
+inside `run`, the expression is long gone. Across the call it becomes
+`Fp::Bound { recv }`, and a write the method makes on its receiver comes back as
+an effect at `Param(0).Recv` ([`02-functions/06`](../02-functions/06-callbacks-and-higher-order.md)).
 
-## `super()` and inheritance — same origin, nothing special needed
+## `super()`: an ordinary call on the same receiver
 
 ```python
 class Base:
@@ -93,27 +65,25 @@ class Child(Base):
         super().__init__()
         self.x = 1
     def go(self):
-        self.log.write("hi")     # ← from Base.__init__, not Child's own
+        self.log.write("hi")     # written by Base.__init__
 ```
 
-```rust
-// eval: Call { func: Name("super"), args: [] } in a method body
-//   → AbstractValue::Instance { class: <next in MRO>, origin: SAME origin as self }
-```
+`super().__init__` looks `__init__` up in the receiver's MRO after `Child`, and
+binds it to **the same receiver**. So `super().__init__()` is a call to
+`Base.__init__` with `self` = `Child.__init__`'s `self`, which is
+`Entry(Param(0))`. `Base.__init__`'s effect `Param(0).log = Obj(0)` lands on
+`Child.__init__`'s parameter 0, so `Child.__init__`'s own summary has
+`Param(0).log` too. When `Child()` is built, the new object gets `log`, and
+`go`'s key carries it.
 
-Make `super().__init__()` an ordinary call whose receiver is **the same
-instance** (same `OriginId`) as `self` in the calling `__init__`. Nothing
-else is needed — `Base.__init__`'s `self.log = Logger()` write lands under
-key `(that same origin, "log")`, and `Child.go`'s read of `self.log` finds
-it via tier 1 of `member()`, exactly as if `Child` had written it directly.
-Inheritance falls out of origin-sharing, not out of any MRO-aware code in
-the attribute store itself.
+Nothing about the attribute store knows about inheritance. It falls out of the
+receiver being the same object. **[check]** what the Jedi driver produces for
+`inheritance.py`; if it produces nothing, match it.
 
-## ★ Where "walk the MRO" stopped being your code
+## Where "walk the MRO" stopped being your code
 
-Tier 2 of `member()` — "walk the MRO for a class member" — is not
-something this project implements from scratch. It's **one already-merged
-wrapper**, real code in this repository:
+The class side of `member` (step 2) is not reimplemented. It is one wrapper,
+merged in this repo:
 
 ```rust
 // vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs
@@ -124,11 +94,10 @@ pub fn member<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>
 }
 ```
 
-`ty`'s own `Type::member` already handles the MRO walk, descriptors,
-`__getattr__`, metaclasses and properties — correctly, because it's the
-*same* lookup `ty` uses for its own diagnostics. `src/attrs.rs` in this
-repo already has a passing test proving the key property this whole
-chapter has been building toward:
+ty's own `Type::member` handles the MRO, descriptors, `__getattr__`, metaclasses
+and properties, correctly, because it's the lookup ty uses for its own
+diagnostics. `src/attrs.rs` has a test proving the property this whole folder
+relies on:
 
 ```rust
 // src/attrs.rs — member_answer_depends_on_which_instance_you_pass
@@ -138,73 +107,46 @@ assert_ne!(handler_handle.display(db, &env).to_string(),
            loud_handle.display(db, &env).to_string());
 ```
 
-**the wrapper answers "what is `.handle` on *this* receiver's type" — it
-never decides *which* receiver to pass.** That choice — "`self.handler` is,
-on *this* path, a `LoudHandler`" — is entirely your `attrs` store and your
-`OriginId`s, the parts of this whole folder that are actually yours to
-write. Go read `experience/08-classes-and-mro/README.md`'s step 5 if you
-haven't yet; it's the same wrapper, exercised from the other direction.
+**The wrapper answers "what is `.handle` on this receiver's type". It never
+decides which receiver to pass.** "`self.handler` is a `LoudHandler` on this
+path" is the env, the key and the origins: the parts that are yours to write.
+And for a method it finds, `member` binds **your** receiver, not ty's, so the
+method's walk sees the object's state.
+
+---
 
 ## Exercise
 
-Using `python/inheritance.py`:
-
-1. Trace `Child().go()`. At what point does `self.log` get its value, and
-   whose `__init__` wrote it?
-2. If `Child` had its own `log` attribute too (say, `Child.__init__` also
-   did `self.log = SpecialLogger()` *after* calling `super().__init__()`),
-   what would `go()` read — `Base`'s `Logger()` or `Child`'s
-   `SpecialLogger()`? Why (tie this back to `03`'s "last write wins" rule)?
-3. For `receiver_rules.py`'s `attribute_chain()`, how many separate
-   `member()` calls does resolving the callee of
-   `session.service.handler.handle(4)` require? Which one(s) hit `attrs`,
-   and which hit the MRO walk?
-4. In `deep_chain.py`'s `ambiguous_link`, `holder` has two possible values.
-   What does `holder.service.handler.handle(3)` produce, and what bounds it?
-5. In `unknown_mid_chain`, which hop yields `Unknown`, and what happens to the
-   hops after it?
+1. `inheritance.py`: trace `Child().go()`. Whose `__init__` wrote `self.log`, and
+   how did it reach `go`?
+2. If `Child.__init__` also did `self.log = SpecialLogger()` after
+   `super().__init__()`, what does `go()` read? Why?
+3. `receiver_rules.py`, `attribute_chain()`: how many `member` calls for the
+   callee of `session.service.handler.handle(4)`? Which hit the env, which the
+   class side?
+4. `deep_chain.py`, `ambiguous_link`: `holder` has two values. How many edges
+   does `holder.service.handler.handle(3)` produce?
+5. `deep_chain.py`, `unknown_mid_chain`: which hop gives `Unknown`?
 
 <details><summary>Answers</summary>
 
-1. `self.log`'s value comes from `attrs[(O, "log")]`, where `O` is `Child()`'s
-   own origin — written not by `Child.__init__` but by `Base.__init__`,
-   reached via `super().__init__()`, which evaluates to
-   `Instance{Base, O}` — **the same origin** as `self` in `Child.__init__`.
-   `Base.__init__`'s `self.log = Logger()` therefore writes into exactly
-   the slot `Child.go` later reads.
-2. `Child`'s `SpecialLogger()` — because `record_self_assignments`/`record_bindings`
-   applies sequential writes in order (last write wins — these two aren't
-   in different `if` arms), and the `self.log =
-   SpecialLogger()` statement runs *after* `super().__init__()`'s write, in
-   program order, inside the *same* `__init__` call (both writes share the
-   same instance's origin, same as question 1). This is `03`'s "last write
-   wins" rule, now shown to apply across a `super()` call boundary exactly
-   as it would across two statements in one method.
-3. Three `member()` calls: `(session, "service")`, `(result, "handler")`,
-   `(result, "handle")`. The first two hit `attrs` directly (both
-   `Session.__init__` and `Service.__init__` wrote exactly these keys on
-   their respective instances). The third — `"handle"` — has no `attrs`
-   entry for `Handler`'s instance (nothing ever assigned `self.handle =
-   ...`), so it falls through to the MRO walk, which finds `handle` defined
-   directly on the `Handler` class body.
-
-4. Two `Session()` call sites mint two origins, `O_a` and `O_b`, so `holder`
-   is a 2-value `Values`. Hop 1 gives two `Service` instances, hop 2 gives
-   two `LoudHandler` instances (`Session.__init__`'s depth-2 write replaced
-   `Service`'s `Handler()` on each), and hop 3 finds the same
-   `LoudHandler.handle` for both. Two paths, **one distinct callee** after
-   dedup, so the fan-out costs nothing against `MAX_CHAIN_FANOUT` (8). The
-   cap only bites when distinct values pile up.
-5. `thing.service`: `thing` is a bare parameter with no annotation, so it is
-   `Unknown`. `Unknown.member("service")` is `Unknown`, and so on to the end.
-   The call has no edge, and nothing panics or guesses.
+1. `Base.__init__`, through `super().__init__()`, a call with the same receiver.
+   Its effect on `Param(0).log` became `Child.__init__`'s effect, which landed
+   on the new `Child` object; `go`'s key carried `log`.
+2. `SpecialLogger`. In `Child.__init__`'s walk the two writes are sequential on
+   one path: `Base.__init__`'s effect is applied first, then the later write
+   replaces it. Assignment order is respected.
+3. Three. `service` and `handler` hit the env (written by the constructors'
+   effects); `handle` goes to the class side.
+4. One. Two `Session()` sites give two origins, but both chains end at a
+   `LoudHandler`, so after dedup there is one callee, `LoudHandler.handle`.
+5. `thing.service`: `thing` is an unannotated parameter of an entry, so it is
+   `Unknown`, and everything after it is too. No edge, nothing guessed.
 
 </details>
 
 ---
 
-With both `01-functions/` and `02-classes/` done, you've covered every case
-this folder set out to teach. Do the whole-exercise exam next — it's
-cross-cutting, drawing fixtures from both folders at once.
+With both case folders done, do the folder exam, then the whole-exercise exam.
 
-→ [`exam.md`](exam.md)
+→ [`exam.md`](exam.md), then [`../exam.md`](../exam.md)

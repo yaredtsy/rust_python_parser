@@ -34,7 +34,7 @@ def outer():
 def with_lambda():
     """parso treats `Lambda` as a `Function` subclass, so the def-collecting
     scanner never descends into one -- but the CALL resolver is a separate
-    traversal with its own rule to pin. See 06-callbacks-and-higher-order.md.
+    traversal with its own rule to pin. See 04-closures-and-nested-functions.md.
 
     ID: f4000000-0005-0000-0000-000000000000
     """
@@ -74,10 +74,10 @@ def make_handler(writer):
 
 
 def read_json():
-    """`handle` is CALLED here -- a different frame than the one that
-    DEFINED it (`make_handler`'s, which already returned). The naive
-    `closure_parent(func, caller_env)` sees THIS frame's env, which never
-    had `writer` in it at all.
+    """`handle` is CALLED here -- a different function than the one that
+    DEFINED it (`make_handler`, which already returned). Its captured
+    `writer` travels with the closure value; this function's env never had
+    a `writer` at all.
 
     ID: f4000000-000c-0000-0000-000000000000
     """

@@ -2,98 +2,57 @@
 
 Don't read this until you've written your own answers to [`exam.md`](exam.md).
 
-1. `Function(f)` — `f` named, not called. `Class(C)` — `C` named, not
-   called. `Instance{..}` — `C()`. `BoundMethod{..}` — `obj.method` named,
-   not called. `Module(m)` — `import m` then naming `m`. `Ty(t)` — a
-   literal, e.g. `1` or `"x"`. `Unknown` — a value your interpreter never
-   asked anyone about, e.g. a parameter bound to something that itself
-   bottomed out.
+1. `Function(f)`: a module-level `f`, named. `Closure`: a nested `def`, named,
+   inside the function that defined it. `Class(C)`: `C`, named. `Instance`:
+   `C()`, or a parameter holding an object. `BoundMethod`: `obj.method`, named.
+   `Module(m)`: `import m`, then `m`. `Ty(t)`: a literal, a stdlib return.
+   `Pending`: the value of a call into a recursion cycle that hasn't been
+   resolved yet. `Unknown`: a value nobody knows, e.g. a parameter the key holds
+   nothing for and that has no annotation.
 
-2. `Type::Union` is ty's representation of "the set of types this could be,
-   considered together" — operations on a `Union` (`member`, display, etc.)
-   are defined over the whole set at once. `Values` is your domain's
-   decision to keep the same alternatives **separate and enumerable**, so
-   each one can independently produce its own subtree in the output tree.
-   Treating them the same — i.e. collapsing `Values` back into one
-   `Type::Union` — silently rebuilds `ty_ide::outgoing_calls`'s behaviour:
-   two `Pipeline` instances with different handlers (different origins)
-   merge into one `Pipeline` type, so `self.handler` no longer knows which
-   handler it holds. (It is *not* about which `if` branch ran — we don't
-   evaluate conditions, so `Values` holds every arm too.)
+2. `Type::Union` is ty's set, used as a whole. `Values` keeps the members
+   separate and enumerable, so each one can produce its own calls and its own
+   edges. Collapsing `Values` into a `Type::Union` rebuilds
+   `ty_ide::outgoing_calls`: two objects with different state merge into one
+   type, and `self.handler` no longer knows which handler it holds.
 
-3. `Box<AbstractValue>` is a heap allocation, which makes `AbstractValue`
-   lose `Copy`. Since `AbstractValue` gets copied into environments and
-   passed by value constantly, that one `Box` would make every clone that
-   touches a `BoundMethod` allocate. Interning the receiver into a
-   per-request arena and storing its `u32` index (`ValueId`) keeps
-   `AbstractValue` `Copy` and, as a bonus, dedupes identical receivers that
-   repeat across a method-heavy codebase.
+3. Empty means no value reaches this point: every path to it raised, or it
+   waits on a cycle that hasn't produced anything. `[Unknown]` means a value
+   exists and nobody knows what it is.
 
-4. **Different** `OriginId`s. `OriginKey` is (file, range, class, argument
-   values). File, range and class match, but `h` is a `JsonHandler`
-   instance in one call and a `CsvHandler` instance in the other, so the
-   keys differ. That's what stops the second call from reading the first
-   call's cached `__init__` result (`self.h = JsonHandler`). Note the call
-   path would *not* have separated them — both calls come from the same
-   caller — which is why the key uses the arguments, not the path.
-   With equal argument values the two **share** an origin, and that's
-   correct: `__init__` would compute the same attrs both times. Writes made
-   *after* construction live in each path's own `Env.attrs`, so sharing the
-   baseline doesn't leak them.
+4. A `Box` makes the enum non-`Copy`, so every env clone that touches a bound
+   method would allocate or chase pointers. Interning the receiver in a
+   per-walk arena keeps the enum `Copy` and dedupes receivers, which repeat a
+   lot.
 
-5.
-   ```rust
-   self.resolve_from_env(expr, env)
-       .or_else(|| self.resolve_from_ty_if_precise(expr))
-       .unwrap_or_else(|| self.resolve_from_annotation(binding))
-   ```
-   Tier 1 (`env`) may override tier 2 and 3; tier 2 may override tier 3;
-   tier 3 never overrides anything — it only fires when both earlier tiers
-   produced nothing. The ordering is the whole safety argument: a real,
-   path-specific value must never lose to a declared-but-unverified
-   annotation.
+5. `Entry(path)`: an object the caller passed in, named by its path from the
+   inputs. `New { site, .. }`: an object built in this walk, at that site (or
+   one a callee built, returned to this site). `Beyond`: an input object deeper
+   than `max_path`, which holds no state.
 
-6. The chain reaches tier 3: `env` has nothing (the value was `Unknown` at
-   the call site), `ty`'s own inference for an unresolvable argument gives
-   nothing precise either, so `resolve_from_annotation` lifts `Handler` from
-   the parameter's declared type. This should be recorded as a
-   lower-confidence hit — increment an `annotation_fallbacks` counter in
-   your stats — because it's a declared claim, not a traced value; a caller
-   asking "why does this leaf say `Handler`" deserves the honest answer
-   "the annotation, not the trace."
+6. In `main`: `New { site of the constructor }`. In `run`: `Entry(Param(0))`.
+   Origins are walk-local. Each walk names objects by what it can see: `main`
+   saw it built, `run` saw it arrive as parameter 0.
 
-7. **Frame identity is `(parent frame, target_qname)` — two calls to the
-   same function from the same frame are one node; the same function from
-   different frames is different nodes.** Three calls to `f()` from one
-   frame: **one** child, `call_count == 2` (starts at 0, bumped on each
-   call past the first).
+7. Every instance ty hands you shares the one `OPAQUE` origin. If it held
+   state, a write to one would show up on all of them:
+   `a = get_logger(); b = get_db(); a.handler = FileHandler(); b.handler.write()`
+   would resolve to `FileHandler.write`. So writes to it are dropped, and reads
+   go to the class and ty.
 
-8. Return values come out of the tree walk (`01-functions/05`), so the
-   tree's own `is_ancestor` cut is the only guard needed. The walk enters
-   `f`, then `g`, then reaches `f()` again — `f` is an ancestor, so it's
-   cut: no node, no walk. That call's value read finds nothing stored (the
-   outer `f` hasn't finished), so it's `Unknown`. `g` returns `Unknown`,
-   `f` returns `Unknown`, and **`x` is `Unknown`**. It terminates because
-   there is only one walk and it was cut.
+8. The arguments were evaluated eagerly at each call site, in that caller's
+   env, and became the callee's key. `inner`'s walk starts from its key, where
+   `y` is already the `JsonWriter`. The chain is flattened at every call, so
+   nothing ever walks back.
 
-9. **Depth cap, node budget, union fan-out cap, chain fan-out cap** (plus
-   the ancestor guard from the previous file and the wall-clock check —
-   if you listed those too, that's fine, the file names four as the
-   "cheap layers" table's rows). The **node budget** is the one checked
-   once globally per request — every other limit (depth, fan-out) is
-   evaluated locally, at the specific expression or call site it bounds.
-   The distinction matters because only a single global counter gives you
-   a *hard* latency guarantee independent of the input's shape — a
-   per-branch limit alone can't prevent many cheap branches from adding up
-   to an expensive request.
+9. When a parameter's fingerprint in the key is `Unknown`. It starts the
+   parameter from its annotation. It can't make a traced value worse because it
+   never fires when the key holds a value. It is counted in `Stats`, because an
+   annotation is a claim, not a proof.
 
-10. Before local-assignment tracking, the context-independence check is a
-    syntactic name scan: "does any parameter name appear directly in a
-    callee or receiver position?" Once local bindings are tracked, a
-    parameter can reach a callee position **indirectly**, through a local
-    variable: `def run(w): x = w; x.write(1)` — `w` never appears as a
-    callee itself, but `x` does, and `x` was bound from `w`. A scan that
-    only looks at parameter *names* at call sites would wrongly call `run`
-    context-independent and memoise one subtree for every writer it's ever
-    called with, silently producing the same (wrong) leaf regardless of
-    which writer a given path actually passed in.
+10. Both: `JsonWriter` and `CsvWriter`. Conditions are never evaluated, so every
+    arm is possible; each arm starts from the state before the `if`, and the
+    arms are joined after it. In the second case, the first `w.write()` sees only
+    `JsonWriter` and the second only `CsvWriter`: on one path, a later assignment
+    replaces an earlier one. Ignoring branches is not the same as ignoring
+    assignment order.

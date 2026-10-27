@@ -1,74 +1,64 @@
-# 00.02 — `OriginId` and `ValueId`: staying `Copy` while staying precise
+# 00.02 — Origins: which object, specifically
 
-Two small `u32` newtypes carry almost the entire weight of "which instance,
-specifically" from [the previous file](01-abstractvalue.md). This file is
-about why two integers are enough, and what breaks if you skip them.
+Two small `u32` newtypes carry almost all of "which object" from
+[the previous file](01-abstractvalue.md). This file is about why two integers
+are enough, and what breaks without them.
 
-**Reading:** [`plan/03-call-tree/04-value-domain.md`](../../../plan/03-call-tree/04-value-domain.md)
-§"`OriginId`" and §"`ValueId`".
+**Reading:** [`plan/03-call-tree/04-values.md`](../../../plan/03-call-tree/04-values.md)
+§ "`OriginId`" and § "`ValueId`".
 
 ---
 
-## The problem `OriginId` solves
+## The problem
 
 ```python
 a = Pipeline(JsonHandler())
 b = Pipeline(CsvHandler())
-a.run(1)   # must resolve self.handler.process → JsonHandler.process
-b.run(2)   # must resolve self.handler.process → CsvHandler.process
+a.run(1)   # self.handler.process → JsonHandler.process
+b.run(2)   # self.handler.process → CsvHandler.process
 ```
 
-Without something distinguishing `a`'s `Pipeline` from `b`'s, both are just
-`AbstractValue::Instance { class: Pipeline }` — identical values, and your
-attribute store (`02-classes/03-attribute-state-after-init.md`) would have
-nowhere to keep their `handler`s apart. Whichever was written last would
-silently win for both.
+Without something telling `a`'s `Pipeline` from `b`'s, both are
+`Instance { class: Pipeline }`: identical values. Attribute state is keyed by
+object, so the two `handler`s would land in one slot, and the second write would
+win for both.
+
+## `OriginId`: one per object, inside one walk
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct OriginId(u32);   // indexes an arena of OriginKey
+pub struct OriginId(u32);   // index into the walk's origin interner
 
-pub struct OriginKey<'db> {
-    file:  File,
-    range: TextRange,              // which `Foo(...)` expression
-    class: Definition<'db>,        // which class it built
-    args:  EvaluatedArgs<'db>,     // with which argument values
+enum OriginKey {
+    Entry(Path),                          // an object the caller passed in, named by its path
+    Beyond { at: Path, attr: Name },      // an input object deeper than max_path: no state
+    New { site: SiteId, t: u8, combo: u8, made: Made },   // an object built in this walk
 }
+enum Made { Instance, Obj(u16) }
 ```
 
-**`OriginId` identifies one construction** — which `Foo()` expression,
-building which class, from which argument values. Two `Pipeline(...)`
-expressions get two different `OriginId`s even though they construct the
-same class, and that's what lets `a` and `b` carry independent `handler`s.
-This is the property you must prove with a fixture before you trust
-anything downstream — see [`02-classes/04-two-instances-and-origin-isolation.md`](../02-classes/04-two-instances-and-origin-isolation.md),
-which plan/03-call-tree/06 calls out as "make it the first test you write."
+Three kinds, by where the object came from:
 
-The rule for the key: **it holds every input `__init__`'s result depends
-on.** That's why the arguments are in it:
+| kind | example | named by |
+|---|---|---|
+| `Entry(path)` | inside `run(self)`, `self` is `Entry(Param(0))`, and `self.handler` is `Entry(Param(0).handler)` | where it sits in the call's inputs |
+| `New { site, .. }` | `Pipeline(JsonHandler())` in this body | the call site that built it |
+| `Beyond` | an input object more than `max_path` steps deep | the deepest path that fits, plus one step |
 
-```python
-def make(h):
-    return Pipeline(h)        # ONE expression...
+Two `Pipeline(...)` expressions are two sites, so `a` and `b` get two `New`
+origins, and their `handler`s never collide. `t` and `combo` exist because one
+site can build several objects: `(A if c else B)()` builds an `A` and a `B`, and
+a call split by argument type ([`01-summaries/04`](../01-summaries/04-one-call.md))
+builds one per combination.
 
-make(JsonHandler()).run()     # ...reached with h = JsonHandler
-make(XmlHandler()).run()      # ...and with h = XmlHandler
-```
+**Origins are walk-local.** The same `Pipeline` object is `New { site }` in the
+function that built it, and `Entry(Param(0))` inside `run`, which received it.
+No origin is ever stored in a summary. The next folder shows how identity
+crosses a call anyway.
 
-Key on the expression alone (or the expression plus the call path — both
-calls come from the same caller) and the second call gets the first
-call's origin, whose cached `__init__` stored `JsonHandler`. With `args` in
-the key the two get different origins. The call path itself is *not* in the
-key: it only changes `__init__`'s result through the arguments, which are
-already there. Full reasoning in
-[`plan/03-call-tree/04` § `OriginKey`](../../../plan/03-call-tree/04-value-domain.md#-originkey--exactly-what-goes-in-and-nothing-else).
+## `OPAQUE`: everything ty hands you
 
-A sentinel value, `OriginId::OPAQUE`, is reserved for instances that came
-from `ty` rather than from a construction your interpreter actually walked
-(`lift()`'s `Type::NominalInstance` arm, in
-[`03-env-and-scope.md`](03-env-and-scope.md)). It never equals a real
-origin — but every opaque instance has **the same** `OPAQUE`, so they are
-indistinguishable from each other:
+One reserved origin for every instance that came from ty rather than from the
+walk: a module global, a stdlib return, a value ty typed.
 
 ```python
 a = get_logger()        # Instance{Logger,   OPAQUE}
@@ -77,92 +67,70 @@ a.handler = FileHandler()
 b.handler.write()       # if (OPAQUE, "handler") were stored, b would see a's write
 ```
 
-So opaque instances get **no attribute state at all**: `bind_attribute`
-drops writes to them and `member()` skips the store for them, the same as
-for an `Unknown` receiver.
+They all share one origin, so **an `OPAQUE` instance holds no state**: writes to
+it are dropped, and reads go straight to the class and ty.
 
-## The problem `ValueId` solves
+Objects a caller passes in are not `OPAQUE`. They are `Entry`, named by path, so
+writes to them are tracked and reported back to the caller
+([`03-classes/05`](../03-classes/05-writes-anywhere-and-deep-writes.md)).
 
-`BoundMethod` needs to carry its receiver — `self.handler.process` needs to
-remember *which* `JsonHandler` `process` is bound to. The obvious way to
-write that is:
+## `ValueId`: interning, to stay `Copy`
 
-```rust
-BoundMethod { func: Definition<'db>, receiver: Box<AbstractValue<'db>> }
-```
-
-This compiles and is wrong for exactly the reason [the previous
-file](01-abstractvalue.md#sizing-the-rule-that-keeps-everything-else-fast)
-flagged: `Box` is a heap allocation, so `AbstractValue` stops being `Copy`,
-and every environment clone now walks pointers instead of copying words.
+`BoundMethod` needs its receiver — `self.handler.process` must remember which
+handler `process` is bound to. A `Box<AbstractValue>` would make the enum
+non-`Copy`, so every env clone would chase pointers. Intern instead:
 
 ```rust
 BoundMethod { func: Definition<'db>, receiver: ValueId }
 
 pub struct ValueArena<'db> {
     values: Vec<AbstractValue<'db>>,
-    dedup: FxHashMap<AbstractValue<'db>, ValueId>,
+    dedup:  FxHashMap<AbstractValue<'db>, ValueId>,
 }
 ```
 
-**Intern instead.** `ValueId` is a `u32` index into one arena, allocated per
-request. Looking up `dedup` before inserting means two bound methods with
-the same receiver — common, since receivers repeat constantly across a
-method-heavy codebase — share one arena slot.
+One arena per walk. Receivers repeat constantly, so the dedup pays.
 
-## Why both are newtypes, not raw `u32`
+## Why newtypes, not `u32`
 
-```rust
-fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> { ... }
-//                                              ^^^^^^^^^^^^
-// signature takes `OriginId`, not `u32` — the compiler stops you
-// from accidentally passing a ValueId where an OriginId belongs
-```
+They index different tables and mean different things. A raw `u32` would let
+the compiler accept a `ValueId` where an `OriginId` belongs. The newtype turns
+that bug into a compile error.
 
-They index *different* arenas and mean different things — one identifies
-"which instance", the other "which already-seen value". A raw `u32` would
-let the compiler accept either in either slot; the newtype wrapper turns
-that class of bug into a compile error instead of a debugging session two
-weeks later when `self.handler` resolves to the wrong handler on an
-unrelated path.
+---
 
 ## Exercise
 
-Using `python/shapes.py`'s `uses_all_five` (previous file) plus this
-addition:
-
 ```python
 def two_things():
-    """ID: 00000000-0005-0000-0000-000000000000"""
     x = Thing()
     y = Thing()
     return x.method, y.method
+
+def alias():
+    x = Thing()
+    y = x
+    return y
 ```
 
-1. Do `x` and `y` get the same `OriginId` or different ones? Why?
-2. `x.method` and `y.method` — same `ValueId` or different? (Hint: `ValueId`
-   interns *values*, and `x` and `y` are different values even though they're
-   the same class.)
-3. Now suppose the function instead read `x = Thing(); y = x` (an alias, not
-   a second construction). What `OriginId` does `y` get, and what does that
-   imply about aliasing in this design?
+1. In `two_things`, do `x` and `y` get the same origin? What kind?
+2. `x.method` and `y.method`: same `ValueId` or different?
+3. In `alias`, what origin does `y` have? What does that imply for
+   `x.attr = v; y.attr`?
+4. Inside `def use(p): p.go()`, called as `use(Thing())`, what is `p`'s origin?
+   Is it the same origin number as the `Thing()` in the caller?
 
 <details><summary>Answers</summary>
 
-1. **Different.** Each `Thing()` is a separate expression with its own
-   range, so the two `OriginKey`s differ even though class and (empty)
-   arguments match — that's the entire point of `OriginId`.
-2. **Different.** `ValueId` dedupes identical `AbstractValue`s, and
-   `Instance { class: Thing, origin: A }` ≠ `Instance { class: Thing, origin: B }`
-   because the origins differ — so the arena gives them separate slots, and
-   `x.method` and `y.method` end up as distinct `BoundMethod`s.
-3. `y` gets the **same** `OriginId` as `x` — `y = x` is a plain name binding
-   (`02-classes/03-attribute-state-after-init.md`'s machinery, and
-   [`01-functions/05-returns-and-value-flow.md`](../01-functions/05-returns-and-value-flow.md)),
-   not a construction, so no fresh origin is minted. This is correct: `x`
-   and `y` really are the same object in the Python semantics, and
-   `x.attr = v; y.attr` should see `v`. Aliasing falls out for free because
-   origin identity is tied to *construction*, not to *name*.
+1. Different. Two `Thing()` sites, two `New` origins.
+2. Different. `Instance { Thing, origin A }` and `Instance { Thing, origin B }`
+   are different values, so the arena gives them separate slots.
+3. The same as `x`'s. `y = x` binds a name; it doesn't build anything. So
+   `x.attr = v; y.attr` sees `v`, as in Python. Aliasing falls out of tying
+   identity to construction, not to names.
+4. `Entry(Param(0))`, in `use`'s walk. It is not the caller's origin number:
+   origins are walk-local. The caller's `New` origin and the callee's `Entry`
+   origin name the same Python object from two sides of the call.
 
 </details>
 

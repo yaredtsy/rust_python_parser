@@ -1,6 +1,6 @@
 """Attribute writes OUTSIDE `__init__`, and from OUTSIDE the class
-entirely -- the generalisation plan/03-call-tree/10 promotes to the
-default.
+entirely. Both are ordinary writes; one reaches the caller as an effect
+(plan/03-call-tree/07, 09).
 
 ID: c5000000-0000-0000-0000-000000000000
 """

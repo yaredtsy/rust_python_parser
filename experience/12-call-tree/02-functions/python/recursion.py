@@ -1,6 +1,6 @@
-"""Direct and mutual recursion -- the ancestor guard's job (00-values/05).
-Return values ride on the same cut (05-returns-and-value-flow.md): a cut
-call's value is Unknown.
+"""Recursion: each body walked once per context, the recursive call recorded
+as a Recursive leaf, and values found by the group's fixpoint.
+For 02-functions/08-recursion.md.
 
 ID: f8000000-0000-0000-0000-000000000000
 """
@@ -12,7 +12,7 @@ def f():
 
 
 def use_direct():
-    """ID: f8000000-0002-0000-0000-000000000000"""
+    """use_direct > f > f [Recursive]. ID: f8000000-0002-0000-0000-000000000000"""
     f()
 
 
@@ -30,26 +30,95 @@ def h():
 
 
 def use_mutual():
-    """ID: f8000000-0005-0000-0000-000000000000"""
+    """use_mutual > g > h > g [Recursive]. ID: f8000000-0005-0000-0000-000000000000"""
     g()
 
 
-class Node:
+def on_node_found(node):
     """ID: f8000000-0006-0000-0000-000000000000"""
-
-    def __init__(self, children):
-        """ID: f8000000-0007-0000-0000-000000000000"""
-        self.children = children
+    return None
 
 
 def walk(node, visit):
-    """Recursion WITH a callback along for the ride -- `visit` is not what
-    recurses; `walk` is. The ancestor guard must stop `walk` calling
-    itself without also refusing to resolve `visit` at the depth where
-    it's first seen. See 06-callbacks-and-higher-order.md.
+    """Recursion with a callback along for the ride: `visit` doesn't recurse,
+    `walk` does. `child` comes out of a container, so it is Unknown.
 
     ID: f8000000-0008-0000-0000-000000000000
     """
     visit(node)
     for child in node.children:
         walk(child, visit)
+
+
+def use_walk(root):
+    """use_walk > walk > [on_node_found, walk [Recursive]].
+
+    ID: f8000000-0009-0000-0000-000000000000
+    """
+    walk(root, on_node_found)
+
+
+class Handle:
+    """ID: f8000000-000a-0000-0000-000000000000"""
+
+    def close(self):
+        """ID: f8000000-000b-0000-0000-000000000000"""
+        return None
+
+
+def walk_handle(node):
+    """The recursive call's value, used in the same body: r.close() resolves
+    in the fixpoint. walk_handle > Handle.close, Finished.
+
+    ID: f8000000-000c-0000-0000-000000000000
+    """
+    r = walk_handle(node.first())
+    r.close()
+    return Handle()
+
+
+def use_walk_handle(tree):
+    """ID: f8000000-000d-0000-0000-000000000000"""
+    walk_handle(tree)
+
+
+def a(n):
+    """ID: f8000000-000e-0000-0000-000000000000"""
+    if n:
+        return b(n)
+    return Handle()
+
+
+def b(n):
+    """ID: f8000000-000f-0000-0000-000000000000"""
+    return c(n)
+
+
+def c(n):
+    """ID: f8000000-0010-0000-0000-000000000000"""
+    return a(n - 1)
+
+
+def two_hops():
+    """Handle travels a -> c -> b: two hops around the cycle.
+    two_hops > b > ... and Handle.close.
+
+    ID: f8000000-0011-0000-0000-000000000000
+    """
+    b(2).close()
+
+
+def rec(n):
+    """Returns nothing: its only return waits on itself.
+
+    ID: f8000000-0012-0000-0000-000000000000
+    """
+    return rec(n - 1)
+
+
+def uses_rec():
+    """uses_rec > rec > rec [Recursive]; `.go()` has no target.
+
+    ID: f8000000-0013-0000-0000-000000000000
+    """
+    rec(3).go()

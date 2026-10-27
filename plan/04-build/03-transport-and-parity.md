@@ -194,7 +194,7 @@ Same corpus, same machine, both drivers, cold and warm:
 
 "Warm" means the salsa db has already seen the project — the case that matters
 in an editor, and where the win should be largest. If warm `resolve_calls` isn't
-dramatically better, the memoisation work in M8 is where to look.
+dramatically better, check `reuse_hits` in `Stats` first, then the profiling in M8.
 
 ---
 
