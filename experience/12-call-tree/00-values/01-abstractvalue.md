@@ -33,17 +33,35 @@ b = CsvWriter()
 exactly as precise as you need *here*. Now:
 
 ```python
+def build(writer_cls):
+    return writer_cls()
+
+a = build(JsonWriter)
+b = build(CsvWriter)
+```
+
+`ty` gives `build` **one** return type, the same for every call — it
+doesn't re-check the body with *this* call's arguments, so `a` and `b` get
+the same answer (with `writer_cls` unannotated, that's `Unknown`). The
+interpreter binds `writer_cls` per call (`bind_parameters`), so `a` is a
+`JsonWriter` instance and `b` a `CsvWriter` one. Two values your Jedi
+driver tells apart collapse into one `ty::Type`. That collapse is the whole
+gap this exercise exists to close.
+
+The gap comes from **argument values**, not from picking a branch. Write
+`build` with an `if` instead and we're no better than ty:
+
+```python
 def build(kind):
     return JsonWriter() if kind == "json" else CsvWriter()
 
-a = build("json")
-b = build("csv")
+a = build("json")   # ty:  JsonWriter | CsvWriter
+b = build("csv")    # us:  Values[JsonWriter, CsvWriter] — the same two, for both
 ```
 
-`ty`'s answer for `a` and `b` is the **same** `Type::Union(JsonWriter | CsvWriter)`
-in both cases — it has no way to remember which branch *this* call took. Two
-values that your Jedi driver tells apart collapse into one `ty::Type`. That
-collapse is the whole gap this exercise exists to close.
+We don't evaluate `kind == "json"`, so both calls get both arms, same as ty
+— see [§ Not flow-sensitive](#-not-flow-sensitive--for-now-an-ifelse-is-a-union-never-a-choice)
+below. That's the intended scope, not a gap to fix.
 
 ## The enum
 
@@ -129,7 +147,8 @@ noticing that's a scope change, not a bug fix.
 `AbstractValue`/`Values` *prevents* adding real condition evaluation later
 — a literal-valued condition (`if True:`, `if kind == "json":` where `kind`
 is itself a traced literal) is exactly the kind of thing this design could
-narrow, the same way `ty` narrows within one flow-insensitive scope. But
+narrow, the way `ty` narrows on `isinstance` and literal checks inside one
+function. But
 that is a **deliberate, separate extension**, not today's baseline, and
 it's exactly the line `plan/03-call-tree/01` draws on purpose:
 
@@ -169,6 +188,8 @@ Collapsing them trades a one-line `match` for a debugging session.
 ## Sizing: the rule that keeps everything else fast
 
 ```rust
+// Same conditions ty uses for its own 16-byte assert on `Type`.
+#[cfg(all(not(debug_assertions), target_pointer_width = "64"))]
 #[test]
 fn value_is_small() {
     assert!(std::mem::size_of::<AbstractValue>() <= 16);
@@ -176,11 +197,21 @@ fn value_is_small() {
 ```
 
 `AbstractValue` gets copied, cloned into environments, and passed by value
-millions of times on a real project. Every variant above is a salsa handle
-(`u32`-ish) or a pair of them — **never** a `String` or a `Vec` directly.
-The moment one variant owns a heap allocation, every `Env` clone pays for it.
-This is why `Instance` carries an `OriginId` (a `u32` newtype) rather than,
-say, the constructing arguments themselves — see the next file.
+millions of times on a real project. Every variant above holds salsa
+handles (`u32`-ish) or small enums of them — **never** a `String` or a `Vec`
+directly. The moment one variant owns a heap allocation, every `Env` clone
+pays for it. This is why `Instance` carries an `OriginId` (a `u32` newtype)
+rather than, say, the constructing arguments themselves — the arguments
+live once in the origin arena's key instead (see the next file).
+
+⚠ **16 is a goal, not a given.** `Ty(Type)` holds a whole ty `Type`, which
+is exactly 16 bytes on its own (ty asserts it, `types.rs:11192`). The enum
+only stays at 16 if rustc tucks its own tag into `Type`'s spare tag values —
+likely, not promised. If the test fails, store the `Type` in a per-request
+arena and keep a `u32` `TyId` in the variant
+([`plan/03-call-tree/04` § Sizing](../../../plan/03-call-tree/04-value-domain.md#sizing)).
+Run it with `cargo test --release value_is_small`; ty's assert is off in
+debug builds, so a debug run can fail for reasons that aren't yours.
 
 ---
 

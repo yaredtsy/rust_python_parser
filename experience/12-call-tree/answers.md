@@ -76,8 +76,9 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
 6. This is a test of **`OriginId` isolation**
    (`00-values/02-origin-and-identity.md`, exercised directly in
    `02-classes/04`). The specific bug: if `OriginId` allocation were keyed
-   on the *class* being constructed (or on anything other than "which
-   `Foo()` expression, on which path") rather than per construction site,
+   on the *class* being constructed (or on anything less than "which
+   `Foo()` expression, building which class, with which argument values")
+   rather than per construction,
    `Pipeline(JsonHandler())` and `Pipeline(CsvHandler())` would collide
    onto the same origin, `attrs` would have one entry instead of two under
    that shared key, and whichever `__init__` ran second would silently

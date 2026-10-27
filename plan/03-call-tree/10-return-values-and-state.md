@@ -160,11 +160,13 @@ fn construct_instance(
     env: &Env<'db>,
     model: &SemanticModel<'db>,
 ) -> AbstractValue<'db> {
-    // `origin_arena` interns by (File, TextRange, PathHash) — same call site,
-    // same path, same id, every time. `is_new` tells us whether THIS call is
-    // the one that must run `__init__`, or whether some earlier call already
-    // did and `self.origin_attrs` already has the answer.
-    let (origin, is_new) = self.origin_arena.intern(call, env.path_key());
+    // The ONLY place an OriginKey is built. Every input `__init__`'s result
+    // depends on is in it — site, class, argument values — and nothing else
+    // (no path: see 04 § OriginKey for why, and for the two fixtures that
+    // pin it). `is_new` tells us whether THIS call must run `__init__`, or
+    // whether an earlier call already did and `self.origin_attrs` has it.
+    let key = OriginKey { file: self.file, range: call.range(), class, args: args.clone() };
+    let (origin, is_new) = self.origin_arena.intern(key);
 
     if is_new {
         if let Some(init) = self.lookup_init(class) {
@@ -293,8 +295,9 @@ The in-flight memo gets both right, and it's one mechanism doing two jobs
 > interpreter query is logic, and the most load-bearing kind.
 
 **3. Multiple returns union.** `if x: return A() else: return B()` → both.
-Consistent with the no-branch-analysis rule. Fan-out cap applies —
-`MAX_UNION_FANOUT` from [`04`](04-value-domain.md).
+Consistent with the no-branch-analysis rule. The fan-out cap applies through
+`cap_fanout` ([`04`](04-value-domain.md#-the-union-cap-cap_fanout)), which
+drops non-project values before deciding the union is too wide.
 
 **4. `async def` / `await`.** Treat `await f()` as transparent: unwrap
 `ast::Expr::Await` and evaluate the inner call directly. Modelling coroutine
@@ -338,19 +341,11 @@ p.handler = JsonHandler()      # mutation from outside the class
 p.run()                        # → JsonHandler.process
 ```
 
-```rust
-fn bind_attribute(&mut self, attr: &ast::ExprAttribute, v: Values<'db>, env: Env<'db>)
-    -> Env<'db>
-{
-    // Evaluate the receiver; if it's an instance we know, write to its slot.
-    for recv in self.eval(&attr.value, &env, model) {
-        if let AbstractValue::Instance { origin, .. } = recv {
-            return env.bind_attr(origin, &attr.attr.id, v);
-        }
-    }
-    env    // unknown receiver → drop the write
-}
-```
+This is [`06`'s `bind_attribute`](06-attributes-and-self.md#write-bind_attribute-one-function-for-every-depth),
+unchanged — it already evaluates any receiver expression, not just `self`.
+(An earlier draft had a second, simpler copy here that wrote only to the
+*first* Instance receiver and had no weak update. It is retired; `06`'s is
+the only one.)
 
 `self.x = v` is then just the case where the receiver happens to be the first
 parameter. One code path, both behaviours.
@@ -358,6 +353,9 @@ parameter. One code path, both behaviours.
 **Dropping writes to unknown receivers is deliberate.** There is no sound way to
 model "some object of unknown identity was mutated" without invalidating
 everything, and unsound over-approximation here would corrupt unrelated paths.
+Opaque instances (`OriginId::OPAQUE`, from ty rather than a construction we
+saw) count as unknown identity here: they all share one origin, so a write to
+one would appear on all of them ([`04`](04-value-domain.md#-opaque-instances-have-no-attribute-slots)).
 
 ---
 
@@ -426,6 +424,11 @@ a = Pipeline(); b = Pipeline()
 a.handler = JsonHandler(); b.handler = CsvHandler()
 a.run(); b.run()                             # 11. ★ two instances, no cross-talk
 
+def mk(h): return Pipeline(h)
+mk(JsonHandler()).run(); mk(CsvHandler()).run()   # 13. one site, two args → two origins
+x = get_logger(); y = get_db()
+x.handler = FileHandler(); y.handler.write()      # 14. opaque write dropped, no cross-talk
+
 # the tree-shape invariant
 w = make(); w.write(1)
 # 12. `make` appears ONCE as a child (from the call-site walk),
@@ -446,7 +449,7 @@ Slot into M6 after attributes:
 |---|---|---|
 | M6.6 | local assignment tracking | fixtures 7, 8 |
 | M6.7 | return-value flow | fixtures 1–6, 12 |
-| M6.8 | generalised object state | fixtures 9, 10, 11 |
+| M6.8 | generalised object state | fixtures 9, 10, 11, 13, 14 |
 
 Do **not** build return flow before local assignment tracking — without
 somewhere to land, returns are unobservable and you'll be debugging two things

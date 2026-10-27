@@ -46,7 +46,8 @@ fn eval_call_result(&mut self, call: &ast::ExprCall, env: &Env<'db>, model) -> V
     for callee in callees {
         match callee.as_callable(self.db) {
             Some(Callable::Class(c)) => {                     // (a) constructor
-                out.push(AbstractValue::Instance { class: c, origin: self.fresh_origin(call, env.path_key()) });
+                // the ONE constructor entry point — the tree walk calls it too (plan/03-call-tree/10)
+                out.push(self.construct_instance(c, &args, call, env, model));
             }
             Some(Callable::Function(f)) if self.is_project_code(f) => {  // (b) ★ interpret its returns
                 let callee_env = self.bind_parameters(f, &args, callee.receiver(), env);

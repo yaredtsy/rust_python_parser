@@ -113,14 +113,24 @@ tree incomplete" from a mystery into a number.
 
 From [`04`](04-value-domain.md) and [`06`](06-attributes-and-self.md):
 
+Both are fields of `Limits` (below), not constants, so they can be changed per
+request:
+
 ```rust
-const MAX_UNION_FANOUT: usize = 4;   // union arms explored per expression
-const MAX_CHAIN_FANOUT: usize = 8;   // values carried through an attr chain
+limits.max_union_fanout   // Option<usize>: union arms explored per expression; None = no cap
+limits.max_chain_fanout   // usize: values carried through an attr chain
 ```
 
 A union of 40 types at one node multiplies everything below it by 40. Cap and
 count. If the counter fires often on real projects, the cap is too low —
 instrument before tuning.
+
+The union cap is enforced in exactly one function, `cap_fanout`
+([`04`](04-value-domain.md#-the-union-cap-cap_fanout)). When a union is over
+the cap, it first drops values that can't produce a tree node (stdlib,
+site-packages, `Ty(..)`), and only returns `Unknown` if the project values
+alone are still over the cap. So `A | B | <four stdlib types>` with a cap of
+4 keeps `A` and `B` instead of losing everything.
 
 ## Layer 5 — memoise context-independent subtrees ★★ the big win
 
@@ -226,14 +236,30 @@ not prevent blowup. Don't rely on it. It is a *presentation* rule.
 pub struct Limits {
     pub max_depth:          usize = 24,
     pub max_nodes:          u32   = 100_000,
-    pub max_union_fanout:   usize = 4,
+    pub max_union_fanout:   Option<usize> = Some(4),   // None = no union cap
     pub max_chain_fanout:   usize = 8,
     pub deadline:           Duration = Duration::from_secs(10),
     pub memoise_independent: bool = true,
 }
 ```
 
-All overridable via `initialize`'s `config` dict.
+All overridable via `initialize`'s `config` dict, and from the dev CLI with
+`--limits` ([`04-build/00`](../04-build/00-dev-cli.md)):
+
+```jsonc
+{ "max_union_fanout": 8 }      // change the cap
+{ "max_union_fanout": null }   // turn it off
+```
+
+```bash
+pylspt-dev calls f.py --limits max_union_fanout=8
+pylspt-dev calls f.py --limits max_union_fanout=off
+```
+
+Turning the cap off is for measuring, not for shipping: run a corpus with
+`off`, compare node counts and latency against `Some(4)`, and that tells you
+what the cap costs in precision. `union_fanout_hits` and `union_pruned` in
+`stats` say how often it fired.
 
 **Instrument every limit.** A counter per limit, returned in `stats`. When
 someone reports "the tree is missing things", the answer should be a number

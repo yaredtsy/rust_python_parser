@@ -19,7 +19,7 @@ and all six layers.
 pub struct Limits {
     pub max_depth:         usize = 24,
     pub max_nodes:         u32   = 100_000,
-    pub max_union_fanout:  usize = 4,
+    pub max_union_fanout:  Option<usize> = Some(4),   // None = no union cap
     pub max_chain_fanout:  usize = 8,
     pub deadline:          Duration = Duration::from_secs(10),
 }
@@ -30,7 +30,15 @@ pub struct Limits {
 | ancestor guard | recursion (previous file) | every `resolve_call` |
 | depth cap (`max_depth`) | how deep a path can go | every `resolve_call`, before recursing |
 | node budget (`max_nodes`) | **total work for the whole request** | one global counter, ticked at the top of every `resolve_call` — no exceptions |
-| fan-out caps | how wide a union or attribute chain can explode | `lift`'s `Union` arm (`03-env-and-scope.md`), `member`'s chain walk (`02-classes/07`) |
+| fan-out caps | how wide a union or attribute chain can explode | `cap_fanout` for unions (`03-env-and-scope.md`), `member`'s chain walk (`02-classes/07`) |
+
+**Changing the union cap.** It's a request setting, not a constant:
+`{"max_union_fanout": 8}` in `initialize`'s config, or
+`pylspt-dev calls f.py --limits max_union_fanout=8`. Use `null` / `=off` to
+turn it off — useful for measuring how much precision the cap costs on a
+real project, not for shipping. When it does fire, `cap_fanout` prunes
+non-project values first, so it only throws away a union whose *project*
+values alone exceed the cap.
 
 ```rust
 struct Budget { remaining: u32, hit_limit: bool }

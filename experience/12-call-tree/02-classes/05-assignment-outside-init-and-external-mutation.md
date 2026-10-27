@@ -58,15 +58,24 @@ p.run()
 Same generalisation, one more step: **any receiver**, not just `self`.
 
 ```rust
-fn bind_attribute(&mut self, attr: &ast::ExprAttribute, v: Values<'db>, env: Env<'db>) -> Env<'db> {
-    for recv in self.eval(&attr.value, &env, model) {
-        if let AbstractValue::Instance { origin, .. } = recv {
-            return env.bind_attr(origin, &attr.attr.id, v);
-        }
+fn bind_attribute(&mut self, attr: &ast::ExprAttribute, v: Values<'db>, mut env: Env<'db>) -> Env<'db> {
+    let recvs: Vec<_> = self.eval(&attr.value, &env, model).into_iter()
+        .filter_map(|r| match r {
+            // OPAQUE is shared by every instance ty gave us — never write to it
+            AbstractValue::Instance { origin, .. } if origin != OriginId::OPAQUE => Some(origin),
+            _ => None,
+        })
+        .collect();
+    let strong = recvs.len() == 1;      // one candidate → replace; several → old ∪ new
+    for origin in recvs {
+        env = env.bind_attr(origin, &attr.attr.id, v.clone(), strong);
     }
-    env    // unknown receiver → drop the write
+    env    // no traced Instance receiver → drop the write
 }
 ```
+
+This is plan/03-call-tree/06's `bind_attribute`, the only one. Rule 2 under
+(c) below explains the `strong` flag.
 
 `self.x = v` is now just the special case where `attr.value` happens to
 evaluate to the receiver bound as `self` inside a method. `p.handler =

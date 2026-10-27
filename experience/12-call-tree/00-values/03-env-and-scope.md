@@ -115,7 +115,8 @@ fn lift(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Values
 
         Type::NominalInstance(i) => smallvec![AbstractValue::Instance {
             class: i.class(db, env).class_literal(db),
-            origin: OriginId::OPAQUE,   // ty gave us this; we didn't construct it
+            origin: OriginId::OPAQUE,   // ty gave us this; we didn't construct it.
+                                        // Shared by ALL opaque instances → never holds attrs.
         }],
 
         Type::Dynamic(_) | Type::Never => smallvec![AbstractValue::Unknown],
@@ -131,9 +132,14 @@ subtree later. The moment you flatten it back into one `Type::Union`, you've
 quietly rebuilt `ty_ide::outgoing_calls` and lost the entire point
 (`plan/03-call-tree/02`, `plan/03-call-tree/04`).
 
-Cap it: `if u.elements(db).len() > MAX_UNION_FANOUT { return smallvec![Unknown] }`.
+`lift` doesn't cap the union itself. Its caller passes the result through
+`cap_fanout`, the one place the cap lives: if there are more values than
+`limits.max_union_fanout`, it first drops the ones that can't produce a tree
+node (stdlib, site-packages, `Ty(..)`), and only gives up with `Unknown` if
+the project values alone are still too many. So `A | B | C | D | E | F` with
+only `A` and `B` from the project keeps `A` and `B`.
 [`06-scaling-budget-and-memoization.md`](06-scaling-budget-and-memoization.md)
-covers why, and what number to start with.
+covers why, what number to start with, and how to change or turn off the cap.
 
 ## Exercise
 

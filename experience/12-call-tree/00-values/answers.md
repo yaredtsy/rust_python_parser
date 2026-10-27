@@ -16,8 +16,10 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    each one can independently produce its own subtree in the output tree.
    Treating them the same — i.e. collapsing `Values` back into one
    `Type::Union` — silently rebuilds `ty_ide::outgoing_calls`'s behaviour:
-   every path through a union-typed callee gets the *same* answer,
-   regardless of which branch actually produced it on this path.
+   two `Pipeline` instances with different handlers (different origins)
+   merge into one `Pipeline` type, so `self.handler` no longer knows which
+   handler it holds. (It is *not* about which `if` branch ran — we don't
+   evaluate conditions, so `Values` holds every arm too.)
 
 3. `Box<AbstractValue>` is a heap allocation, which makes `AbstractValue`
    lose `Copy`. Since `AbstractValue` gets copied into environments and
@@ -27,14 +29,17 @@ Don't read this until you've written your own answers to [`exam.md`](exam.md).
    `AbstractValue` `Copy` and, as a bonus, dedupes identical receivers that
    repeat across a method-heavy codebase.
 
-4. **Different** `OriginId`s. `OriginId` identifies a *construction site on
-   a path* — "which `Foo()` expression, reached by which sequence of
-   calls" — not just a line number. Two different callers reaching the same
-   line produce two different paths, hence two different origins, even
-   though the source text of the construction is identical. This is exactly
-   what keeps `a = Pipeline(JsonHandler())` in one caller and
-   `b = Pipeline(CsvHandler())` in another from cross-contaminating each
-   other's `self.handler`.
+4. **Different** `OriginId`s. `OriginKey` is (file, range, class, argument
+   values). File, range and class match, but `h` is a `JsonHandler`
+   instance in one call and a `CsvHandler` instance in the other, so the
+   keys differ. That's what stops the second call from reading the first
+   call's cached `__init__` result (`self.h = JsonHandler`). Note the call
+   path would *not* have separated them — both calls come from the same
+   caller — which is why the key uses the arguments, not the path.
+   With equal argument values the two **share** an origin, and that's
+   correct: `__init__` would compute the same attrs both times. Writes made
+   *after* construction live in each path's own `Env.attrs`, so sharing the
+   baseline doesn't leak them.
 
 5.
    ```rust

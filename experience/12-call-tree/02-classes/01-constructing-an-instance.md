@@ -40,8 +40,9 @@ resolve_call(Pipeline(JsonHandler()), env, frame)
      qname, docstring id, is_ancestor checks — same as any function target
      child = frame.add_child("Pipeline", "ClassSchema/<id>")
   4. lookup_init(Pipeline) → finds `__init__`
-  5. instance = AbstractValue::instance_of(Pipeline, &args)
-                 — a FRESH OriginId minted HERE, at this construction site
+  5. instance = construct_instance(Pipeline, &args, call, env)
+                 — interns OriginKey{file, range, Pipeline, args}; a new key
+                   gets a FRESH OriginId and runs __init__'s self.X scan once
   6. init_env = bind_parameters(
          __init__, args, receiver = Some(instance)   // ★ `self` ← the NEW instance
      )

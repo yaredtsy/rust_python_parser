@@ -26,23 +26,60 @@ silently win for both.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct OriginId(u32);   // indexes an arena of (File, TextRange, PathHash)
+pub struct OriginId(u32);   // indexes an arena of OriginKey
+
+pub struct OriginKey<'db> {
+    file:  File,
+    range: TextRange,              // which `Foo(...)` expression
+    class: ClassLiteral<'db>,      // which class it built
+    args:  EvaluatedArgs<'db>,     // with which argument values
+}
 ```
 
-**`OriginId` identifies a construction site on a path** — which `Foo()`
-expression, reached by which sequence of calls. Two `Pipeline(...)` calls
-get two different `OriginId`s even though they construct the same class, and
-that's what lets `a` and `b` carry independent `handler`s. This is the
-property you must prove with a fixture before you trust anything downstream
-— see [`02-classes/04-two-instances-and-origin-isolation.md`](../02-classes/04-two-instances-and-origin-isolation.md),
+**`OriginId` identifies one construction** — which `Foo()` expression,
+building which class, from which argument values. Two `Pipeline(...)`
+expressions get two different `OriginId`s even though they construct the
+same class, and that's what lets `a` and `b` carry independent `handler`s.
+This is the property you must prove with a fixture before you trust
+anything downstream — see [`02-classes/04-two-instances-and-origin-isolation.md`](../02-classes/04-two-instances-and-origin-isolation.md),
 which plan/03-call-tree/06 calls out as "make it the first test you write."
 
+The rule for the key: **it holds every input `__init__`'s result depends
+on.** That's why the arguments are in it:
+
+```python
+def make(h):
+    return Pipeline(h)        # ONE expression...
+
+make(JsonHandler()).run()     # ...reached with h = JsonHandler
+make(XmlHandler()).run()      # ...and with h = XmlHandler
+```
+
+Key on the expression alone (or the expression plus the call path — both
+calls come from the same caller) and the second call gets the first
+call's origin, whose cached `__init__` stored `JsonHandler`. With `args` in
+the key the two get different origins. The call path itself is *not* in the
+key: it only changes `__init__`'s result through the arguments, which are
+already there. Full reasoning in
+[`plan/03-call-tree/04` § `OriginKey`](../../../plan/03-call-tree/04-value-domain.md#-originkey--exactly-what-goes-in-and-nothing-else).
+
 A sentinel value, `OriginId::OPAQUE`, is reserved for instances that came
-from `ty` rather than from a construction site your interpreter actually
-walked (`lift()`'s `Type::NominalInstance` arm, in
-[`03-env-and-scope.md`](03-env-and-scope.md)). It must never compare equal
-to a real site — otherwise two unrelated opaque instances would appear to
-share state.
+from `ty` rather than from a construction your interpreter actually walked
+(`lift()`'s `Type::NominalInstance` arm, in
+[`03-env-and-scope.md`](03-env-and-scope.md)). It never equals a real
+origin — but every opaque instance has **the same** `OPAQUE`, so they are
+indistinguishable from each other:
+
+```python
+a = get_logger()        # Instance{Logger,   OPAQUE}
+b = get_db()            # Instance{Database, OPAQUE}
+a.handler = FileHandler()
+b.handler.write()       # if (OPAQUE, "handler") were stored, b would see a's write
+```
+
+So opaque instances get **no attribute state at all**: `bind_attribute`
+drops writes to them and `member()` skips the store for them, the same as
+for an `Unknown` receiver.
 
 ## The problem `ValueId` solves
 
@@ -112,8 +149,9 @@ def two_things():
 
 <details><summary>Answers</summary>
 
-1. **Different.** Each `Thing()` call is a separate construction site reached
-   on this path — that's the entire point of `OriginId`.
+1. **Different.** Each `Thing()` is a separate expression with its own
+   range, so the two `OriginKey`s differ even though class and (empty)
+   arguments match — that's the entire point of `OriginId`.
 2. **Different.** `ValueId` dedupes identical `AbstractValue`s, and
    `Instance { class: Thing, origin: A }` ≠ `Instance { class: Thing, origin: B }`
    because the origins differ — so the arena gives them separate slots, and

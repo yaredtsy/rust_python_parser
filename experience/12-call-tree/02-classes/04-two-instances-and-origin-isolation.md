@@ -54,8 +54,8 @@ b.run(2)
 ```
 
 If `OriginId` allocation were broken — say, if it were keyed on the
-*class* being constructed rather than the *construction site on this
-path* — `Oa` and `Ob` would collide, `attrs` would have only **one** entry
+*class* being constructed rather than the *construction* (expression,
+class, argument values) — `Oa` and `Ob` would collide, `attrs` would have only **one** entry
 under key `(O, "handler")`, and whichever assignment ran *second*
 (`CsvHandler()`, in program order) would silently win for **both** `a.run`
 and `b.run`.
@@ -98,8 +98,9 @@ read/write plumbing around it.
 2. It matters in the opposite direction from what intuition might suggest:
    `OriginId` uniqueness is **not** about which frame you're in (both
    constructions here are in the *same* frame, `two_instances`) — it's
-   about *construction site on a path*, and `Pipeline(JsonHandler())` and
-   `Pipeline(CsvHandler())` are two textually distinct `Pipeline(...)`
+   about *which construction* (expression, class, argument values), and
+   `Pipeline(JsonHandler())` and `Pipeline(CsvHandler())` are two textually
+   distinct `Pipeline(...)`
    expressions, so each gets its own fresh origin regardless of being in
    the same frame. (Contrast with calling the *same* `Pipeline(...)`
    expression twice in a loop — that's a harder case this design

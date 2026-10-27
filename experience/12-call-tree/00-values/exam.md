@@ -12,10 +12,11 @@ Closed book. Write your answers, then check [`answers.md`](answers.md).
 3. Why is `AbstractValue::BoundMethod`'s receiver a `ValueId` rather than a
    `Box<AbstractValue<'db>>`?
 
-4. Two calls, `Pipeline(JsonHandler())` and `Pipeline(CsvHandler())`, same
-   line of code, same frame, executed on two different paths through the
-   program (e.g. two different callers). Do they get the same `OriginId`?
-   Justify your answer from the definition, not from intuition.
+4. `def make(h): return Pipeline(h)` — one line of code — is reached
+   twice from the same caller: `make(JsonHandler())` then
+   `make(CsvHandler())`. Do the two `Pipeline(h)` constructions get the same
+   `OriginId`? What if both calls had passed equal argument values instead?
+   Justify your answer from `OriginKey`'s definition, not from intuition.
 
 5. Write the env-first-then-ty-then-annotation resolution order as a
    three-line chain, in the style of `03-env-and-scope.md`'s two-line rule.

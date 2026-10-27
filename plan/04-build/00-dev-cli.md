@@ -71,7 +71,7 @@ comparable to the golden responses from
     --entry <name>      for `calls`: start from this function (default: module level)
     --trace             human-readable interpreter walk to stderr
     --stats             timing + counters to stderr
-    --limits k=v,...    override depth/nodes/deadline from 03-call-tree/08
+    --limits k=v,...    override any 03-call-tree/08 Limits field (e.g. max_union_fanout=8, or =off)
     --repeat <n>        run n times, assert identical output (determinism check)
 ```
 

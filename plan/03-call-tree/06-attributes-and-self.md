@@ -102,10 +102,14 @@ fn member(self, cx: &Cx<'db>, name: &str) -> Values<'db> {
             //    per origin by `construct_instance()` — 04, 10 §2). A later write
             //    shadows the constructor's value for the same name; neither
             //    layer is consulted if the other already answered.
-            if let Some(v) = cx.env.attrs.get(&(origin, name.into()))
-                .or_else(|| cx.origin_attrs.get(&(origin, name.into())))
-            {
-                return v.clone();
+            //    Skipped for OPAQUE: that one origin is shared by every
+            //    instance ty handed us, so it never holds state (04).
+            if origin != OriginId::OPAQUE {
+                if let Some(v) = cx.env.attrs.get(&(origin, name.into()))
+                    .or_else(|| cx.origin_attrs.get(&(origin, name.into())))
+                {
+                    return v.clone();
+                }
             }
 
             // 2. class body: methods, class vars — walk the MRO
@@ -188,15 +192,23 @@ Expr::Attribute(attr) => {
 fn bind_attribute(&mut self, attr: &ast::ExprAttribute, v: Values<'db>, mut env: Env<'db>) -> Env<'db> {
     // `a.b.c = v` : the receiver is `a.b`, evaluated by the chain rule above.
     let recvs: Vec<_> = self.eval(&attr.value, &env, model).into_iter()
-        .filter_map(|r| match r { AbstractValue::Instance { origin, .. } => Some(origin), _ => None })
+        .filter_map(|r| match r {
+            // OPAQUE is one origin shared by every instance ty gave us, so a
+            // write keyed on it would show up on unrelated objects (04).
+            AbstractValue::Instance { origin, .. } if origin != OriginId::OPAQUE => Some(origin),
+            _ => None,
+        })
         .collect();
     let strong = recvs.len() == 1;                       // exactly one candidate -> replace
     for origin in recvs {
         env = env.bind_attr(origin, &attr.attr.id, v.clone(), strong);   // else union with old
     }
-    env    // no Instance in the receiver values -> write dropped (deliberate, 10 §3b)
+    env    // no traced Instance in the receiver values -> write dropped (deliberate, 10 §3b)
 }
 ```
+
+This is the **only** `bind_attribute`. [`10` §3b](10-return-values-and-state.md#b-any-receiver-not-just-self)
+uses this one; it doesn't define its own.
 
 Only the LAST name is written. Everything before it is a read. `a.b.c = X()`
 writes `(origin_of(a.b), "c")`, and a later `a.b.c.f()` reads it back through
@@ -408,10 +420,23 @@ pkg.sub.mod.f()
 # 6. @property returning a handler
 # 7. classmethod constructor:  Pipeline.create(JsonHandler()).run(x)
 # 8. attribute on a module:  config.HANDLER.process(x)
+
+# 9. opaque instances never share state
+a = get_logger(); b = get_db()        # both opaque (ty-typed, not constructed by us)
+a.handler = FileHandler()
+b.handler.write()                     # must NOT resolve to FileHandler.write
+
+# 10. one constructor expression, different args (04's OriginKey, case B)
+def make(h): return Pipeline(h)
+make(JsonHandler()).run(1)            # → JsonHandler.process
+make(CsvHandler()).run(2)             # → CsvHandler.process, not JsonHandler
 ```
 
 Fixture 2 is the one that proves `OriginId` is doing its job. If `a` and `b`
 share state, your origin allocation is wrong. Make it the first test you write.
+Fixtures 9 and 10 are the same bug from the other two directions: too few
+distinct origins (all opaque instances share one) and a key missing an input
+(the arguments).
 
 ---
 
