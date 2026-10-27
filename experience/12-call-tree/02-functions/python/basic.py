@@ -1,5 +1,5 @@
 """The base case: evaluate the callee, evaluate the args, bind, walk the
-body. One call, one binding, one frame.
+body. One call, one binding, one context.
 
 ID: f1000000-0000-0000-0000-000000000000
 """
@@ -46,10 +46,10 @@ def read_csv():
 
 
 def entry():
-    """Two DIFFERENT frames calling the same `emit` -- the fixture that
+    """Two DIFFERENT functions calling the same `emit` -- the fixture that
     actually proves context sensitivity (plan/03-call-tree/02's
     illustration). Compare the tree this produces against `main`'s
-    single-frame shape above: same callee, different question.
+    single-function shape above: same callee, different question.
 
     ID: f1000000-0009-0000-0000-000000000000
     """

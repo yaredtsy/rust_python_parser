@@ -51,7 +51,7 @@ arguments, there is no sound way to say which parameter gets which value —
 Using `python/varargs.py`:
 
 1. `call_normally()` calls `takes_splat(Handler(), 1, 2, extra=True)`.
-   Write the locals map `bind_parameters` produces.
+   Write the parameter values `bind_parameters` produces.
 2. `call_with_call_site_splat(items)` calls `takes_splat(*items)`. Does `a`
    (the one parameter with no star) bind to `Unknown` too, even though in
    principle `items[0]` might be knowable? What does the rule above say,

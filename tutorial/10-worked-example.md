@@ -150,11 +150,11 @@ One `emit` node, `call_count = 1`, with both `write` methods under it.
 > `(parent frame, qualified name)`. Same parent + same name = one node. Different
 > parents = different nodes.
 >
-> One consequence to design for: `emit`'s body is walked **twice** — once with
-> `writer → JsonWriter`, once with `writer → CsvWriter` — both times into the
-> *same* frame. So your walk must be able to add children to a frame that
-> already has some.
-> ([`plan/03-call-tree/09`](../plan/03-call-tree/09-path-identity.md#the-merge-rule))
+> In pylspt, `emit` has two contexts here — `writer → JsonWriter` and
+> `writer → CsvWriter` — each walked once. The rendered tree has two `emit`
+> nodes under `main`, one per call site, and v-noc merges them into this one
+> node when it saves the tree.
+> ([`plan/03-call-tree/14`](../plan/03-call-tree/14-output.md#call_count-and-v-nocs-merge))
 
 ### The Jedi summary
 
@@ -455,8 +455,9 @@ Questions to answer:
 3. How many children does `run` have in the tree?
 4. Which chapter of the plan covers this case?
 
-Answer to 4: [`plan/03-call-tree/10`](../plan/03-call-tree/10-return-values-and-state.md).
-This is the return-value flow case, and it is the reason that chapter exists.
+Answer to 4: [`plan/03-call-tree/09`](../plan/03-call-tree/09-summaries.md) and
+[`10`](../plan/03-call-tree/10-one-call.md). This is the return-value flow case:
+`make`'s summary returns both writers, and `run` gets them through it.
 
 ---
 

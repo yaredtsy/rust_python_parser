@@ -1,5 +1,6 @@
-"""`super().__init__()` writes into the SAME instance's attribute store --
-the child class reads what the base class's constructor wrote.
+"""`super().__init__()` is a call on the SAME receiver, so the base
+constructor's effects land on the child's object -- the child class reads
+what the base class's constructor wrote.
 
 ID: c6000000-0000-0000-0000-000000000000
 """

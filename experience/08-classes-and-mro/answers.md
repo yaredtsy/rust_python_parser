@@ -247,7 +247,7 @@ receiver to pass. For `dispatch`, the receiver is whatever `self.handler` holds
 on this path, which depends on which of `build_loud` / `build_quiet` ran, which
 is frame- and object-state, and ty has no representation for it.
 
-So from `plan/03-call-tree/06`'s workload the wrapper removes the **lookup**
+So from `plan/03-call-tree/07`'s workload the wrapper removes the **lookup**
 half — all of `member.rs`'s MRO walk, descriptor protocol and property
 handling. It leaves the **identity** half untouched: the environment, per-object
 state, and the rule for what `self.x` means in a frame. That half was always

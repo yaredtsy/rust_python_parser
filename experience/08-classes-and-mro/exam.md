@@ -92,7 +92,7 @@ difficulty in one sentence. (What changed between "a parameter" and "an
 attribute"?)
 
 **15.** Write the three sentences describing what resolving `dispatch`
-per-path would require. Then read `plan/03-call-tree/06` and note anything you
+per-path would require. Then read `plan/03-call-tree/07` and note anything you
 missed.
 
 **16.** `static_member_type_for_attribute(model, &ExprAttribute)` takes syntax.
@@ -101,7 +101,7 @@ that the wrong receiver for your call tree?
 
 **16b.** `vnoc::member(db, env, ty, name)` takes a type instead. Does that solve
 `dispatch`? Say precisely what it does and does not remove from
-`plan/03-call-tree/06`'s workload.
+`plan/03-call-tree/07`'s workload.
 
 ---
 

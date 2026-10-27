@@ -157,7 +157,7 @@ chose; give me the member". That is exactly backwards from what an interpreter
 needs, and it is the crux of `plan/01-crates/04`'s Option A/B/C decision.
 
 **You are not solving that here.** You are confirming it is real, so that when
-you read `plan/03-call-tree/06` it lands as a memory rather than a claim.
+you read `plan/03-call-tree/07` it lands as a memory rather than a claim.
 
 ---
 
@@ -250,8 +250,9 @@ you ask. Now answer these:
    ty's public API?
 4. What extra input would you need at the moment you resolve `writer.write`?
 
-Question 4's answer is the whole of `plan/03-call-tree/05`: an **environment**
-mapping parameters to the values bound at this call site. Write your answer down
+Question 4's answer is `plan/03-call-tree/05` and `/08`: an **environment**
+mapping parameters to the values bound at this call site, built from the call's
+key. Write your answer down
 in your own words before you read that chapter — it will be a much better
 chapter afterwards.
 
@@ -302,7 +303,7 @@ the plan's recommendation.
   apart, and this is where you first feel that need.
 - **Treating `Unknown` as an error.** It is normal. Fall back and count.
 - **Assuming a union of two is small.** Unions grow multiplicatively along call
-  chains; that is why `plan/03-call-tree/08` has fan-out caps.
+  chains; that is why `plan/03-call-tree/04` has fan-out caps.
 - **Calling `inferred_type` on a node from another file's model.** It panics —
   the doc comment says so explicitly.
 - **Concluding "ty is not good enough".** ty answers its question extremely

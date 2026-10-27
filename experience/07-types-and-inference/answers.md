@@ -94,7 +94,7 @@ If both calls were in one function, the tree would show one `emit` node with
 `call_count: 1`, and its `write` child would have to be *something* — which
 raises the question of what an interpreter should do when one frame really does
 see two different writers. (That is a design question, not a bug, and
-`plan/03-call-tree/09` addresses it.)
+`plan/03-call-tree/14` addresses it.)
 
 **8.** The cache would grow without bound and hit almost never. Every distinct
 call-site environment creates a new key, environments rarely repeat, and salsa
@@ -146,7 +146,7 @@ stored in `self.a` and the second in `self.b`, then `self.a.get()` and
 `Type` has no notion of "the same object as that one", so it cannot express the
 distinction. That is why the plan recommends **Option C alongside Option A** —
 your own `AbstractValue` domain carrying an object identity that ty's `Type`
-does not have. `plan/03-call-tree/04` (value domain) and `/06` (attributes and
+does not have. `plan/03-call-tree/04` (values) and `/07` (attributes and
 `self`) are the chapters.
 
 ---
@@ -175,8 +175,8 @@ systems that drift.
 The consequence for you: **Option B is enough for everything except supplying
 your own receiver.** So the decision point is not "which option is better in
 general" but "when do I first need a chosen receiver" — which is
-`plan/03-call-tree/06`, attributes and `self`. Deciding at that moment (rather
-than at the start, or at M6.4 when it blocks you) is the informed version of the
+`plan/03-call-tree/07`, attributes and `self`. Deciding at that moment (rather
+than at the start, or in the middle of the call tree when it blocks you) is the informed version of the
 plan's advice.
 
 **14.**
@@ -188,7 +188,7 @@ plan's advice.
 | `obj.method()` where *you* chose `obj` | **no** — needs a private member lookup, or you reimplement MRO attribute lookup yourself (Option C) |
 
 Row 3 is the one that decides the project's shape, and it is precisely the
-`self.handler.run()` case from `plan/03-call-tree/06`.
+`self.handler.run()` case from `plan/03-call-tree/07`.
 
 ---
 

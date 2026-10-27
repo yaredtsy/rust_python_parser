@@ -153,8 +153,9 @@ Tracking the entry point would be harmful because salsa memoises on the
 *arguments*. If one argument is a call-site environment — a map of parameter
 names to abstract values — then almost every call has a distinct key. You get a
 cache that stores everything, hits nothing, and never releases memory: strictly
-worse than no cache. `plan/03-call-tree/08` is where this is dealt with
-properly, using your own memo table with a key you control.
+worse than no cache. `plan/03-call-tree/08` and `/13` are where this is dealt
+with properly: one summary per context, in the solver's own table, with a key
+you control.
 
 **17.** Wrong thing to store: any `'db`-bearing value — `Type<'db>`,
 `Definition<'db>`, `ProgramFile<'db>`, a `ParsedModuleRef`. They are valid for

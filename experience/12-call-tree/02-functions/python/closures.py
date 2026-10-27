@@ -14,7 +14,7 @@ class Handler:
 
 def outer():
     """`inner` is DEFINED here but not called here -- its calls belong to
-    `inner`'s own frame once `inner` IS called, never to `outer`'s frame.
+    `inner`'s own context once `inner` IS called, never to `outer`'s.
 
     ID: f4000000-0003-0000-0000-000000000000
     """

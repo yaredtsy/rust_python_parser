@@ -147,7 +147,7 @@ which you tried, you got nothing, or you got the definition of `self`.
 What it suggests: name resolution is lexical and cheap (walk the scope chain);
 attribute resolution requires knowing the **type** of the receiver and then
 walking its MRO. Two different machines. Exercise 08 is the second one, and
-`plan/03-call-tree/06` is where it becomes the hard part of the port.
+`plan/03-call-tree/07` is where it becomes the hard part of the port.
 
 ---
 

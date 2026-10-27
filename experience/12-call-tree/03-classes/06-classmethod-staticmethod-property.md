@@ -45,9 +45,10 @@ correctly.
 `Class(Service)`, not `Instance{Service, ...}`. Inside `create`'s body,
 `cls(handler)` then resolves through the ordinary `Callable::Class` path
 from [`01-constructing-an-instance.md`](01-constructing-an-instance.md),
-because `cls` is just a local bound to a `Class` value, and `eval_callee`
-doesn't care whether that value arrived via a literal class name or via a
-classmethod's first parameter.
+because `cls` is just a local bound to a `Class` value, and the call doesn't
+care whether that value arrived via a literal class name or via a
+classmethod's first parameter. (In `create`'s key, `cls` is `Fp::Class(Service)`,
+so a subclass calling `create` gets its own context.)
 
 ## `@property` — a reachability question, not a binding question
 
@@ -87,7 +88,7 @@ such a chain.
 
 Using `python/receiver_rules.py`:
 
-1. Write `bind_parameters`'s locals map for `static_call()`'s call to
+1. Write `bind_parameters`'s parameter values for `static_call()`'s call to
    `Service.static(1)`.
 2. Write it for `classmethod_call()`'s call to `Service.create(Handler())`.
    What's `cls` bound to inside `create`'s body, and what does `cls(handler)`
@@ -108,7 +109,8 @@ Using `python/receiver_rules.py`:
    `Callable::Class(Service)` — minting a `New` origin at that site, exactly
    as if the source had written `Service(handler)` directly.
 3. When `s.active_handler` is evaluated: `member()` finds the property and
-   calls the getter there. Its summary returns `Ref(Param(0).handler)`, which
+   calls the getter there (walked the first time this key is seen, reused
+   after that). Its summary returns `Ref(Param(0).handler)`, which
    resolves to whatever `s.handler` holds — the `Handler` — as the value of
    `s.active_handler`, *before* `.handle(3)` is applied to it. `.handle(3)` then runs as an
    ordinary method call on that instance, same as any other.

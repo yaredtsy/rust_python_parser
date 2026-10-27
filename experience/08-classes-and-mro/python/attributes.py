@@ -38,7 +38,7 @@ class Service:
 
     def dispatch(self, payload):
         """`self.handler.handle` -- which one? Depends on the constructor
-        call on this path. This is the plan/03-call-tree/06 shape.
+        call on this path. This is the plan/03-call-tree/07 shape.
 
         ID: 1c1c1c1c-7777-7777-7777-777777777777
         """

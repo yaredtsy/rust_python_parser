@@ -42,9 +42,10 @@ b = build(CsvWriter)
 
 `ty` gives `build` **one** return type, the same for every call — it
 doesn't re-check the body with *this* call's arguments, so `a` and `b` get
-the same answer (with `writer_cls` unannotated, that's `Unknown`). The
-interpreter binds `writer_cls` per call (`bind_parameters`), so `a` is a
-`JsonWriter` instance and `b` a `CsvWriter` one. Two values your Jedi
+the same answer (with `writer_cls` unannotated, that's `Unknown`). pylspt
+binds `writer_cls` per call, and each call becomes its own context
+(`build {writer_cls: Class(JsonWriter)}`, `build {writer_cls: Class(CsvWriter)}`),
+so `a` is a `JsonWriter` instance and `b` a `CsvWriter` one. Two values your Jedi
 driver tells apart collapse into one `ty::Type`. That collapse is the whole
 gap this exercise exists to close.
 
@@ -93,9 +94,11 @@ these (`plan/03-call-tree/04` § "`lift`").
 What it costs: a specialisation like `Box[Foo]` on a value ty handed you
 becomes plain `Box` — a known gap, pinned by a fixture in `plan/03-call-tree/04`.
 
-Five "real" shapes, one escape hatch, one admission of defeat. `shapes.py`
-in this folder's `python/` is exactly these five, one function each — do the
-exercise below before reading further.
+Five everyday shapes (function, class, instance, bound method, module), one
+for nested functions (`Closure`), one escape hatch (`Ty`), one for recursion
+(`Pending`), and one admission of defeat (`Unknown`). `shapes.py` in this
+folder's `python/` is exactly the five everyday ones, one function each — do
+the exercise below before reading further.
 
 ## Exercise
 
@@ -179,6 +182,21 @@ it's exactly the line `plan/03-call-tree/01` draws on purpose:
 > modelling comparisons, which requires modelling integers, and you are
 > writing a symbolic executor.
 
+**Ignoring conditions is not ignoring order.** On one path, a later
+assignment still replaces an earlier one:
+
+```python
+w = JsonWriter()
+w.write(1)        # JsonWriter.write only
+w = CsvWriter()
+w.write(2)        # CsvWriter.write only
+```
+
+Each arm of a branch starts from the state before the branch, and the arms are
+joined after it. Combining every value ever assigned to a name would be a
+different, much blunter policy, and this design doesn't do it
+(`plan/03-call-tree/03` § "Precision policy").
+
 So: **if you hit an `if`/`else` (or any other branch) while building this,
 union the arms and move on.** Don't special-case a literal condition to
 "help" — that's the one shortcut this design explicitly defers.
@@ -227,7 +245,7 @@ rather than, say, the constructing arguments themselves (see the next file).
 ⚠ **16 is a goal, not a given.** `Ty(Type)` holds a whole ty `Type`, which
 is exactly 16 bytes on its own (ty asserts it, `types.rs:11192`). The enum
 only stays at 16 if rustc tucks its own tag into `Type`'s spare tag values —
-likely, not promised. If the test fails, store the `Type` in a per-request
+likely, not promised. If the test fails, store the `Type` in a per-walk
 arena and keep a `u32` `TyId` in the variant
 ([`plan/03-call-tree/04` § Sizing](../../../plan/03-call-tree/04-values.md#sizing)).
 Run it with `cargo test --release value_is_small`; ty's assert is off in
@@ -256,13 +274,13 @@ debug builds, so a debug run can fail for reasons that aren't yours.
    both `a` and `b` are reachable outcomes as far as this design is
    concerned, so both must be kept, enumerably, for whatever consumes this
    expression's value to build a correct subtree for each.
-2. A parameter bound to `Unknown` because the *caller's* own value couldn't
-   be determined (`00-values/04`'s `run_unresolved` passing `opaque` into
-   `needs_the_annotation`) — nobody ever asked `ty` what that parameter's
-   type is in this case; the value was `Unknown` before `ty` entered the
-   picture at all. `Ty(Type::Dynamic)` would be wrong there specifically
-   because it claims `ty` *was* asked and came back uninformative, which
-   isn't what happened.
+2. An unannotated parameter whose key holds nothing for it: `opaque` in
+   `00-values/04`'s `run_unresolved`, when `run_unresolved` is an entry. The
+   key says `Unknown`, there is no annotation to fall back to, and nobody
+   asks ty what a parameter "is". `Ty(Type::Dynamic)` would be wrong there
+   because it claims ty *was* asked and came back uninformative, which isn't
+   what happened. (`needs_the_annotation`'s `h` is not an example: its key
+   says `Unknown` too, but the walk starts it from its annotation.)
 3. `Class(C)` represents the class object **itself** — what you get by
    naming `C` without calling it, and what you call to produce instances.
    `Instance{class: C, ..}` represents **one object of that class**,

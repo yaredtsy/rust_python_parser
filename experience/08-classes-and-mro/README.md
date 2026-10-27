@@ -203,7 +203,7 @@ linearisation never was.
 
 ### The `member` component shrinks to a call
 
-`plan/03-call-tree/06` budgets a `member.rs` that reimplements attribute lookup
+`plan/03-call-tree/07` once budgeted a `member.rs` that reimplements attribute lookup
 against a receiver you choose: MRO walk, instance vs class attributes,
 descriptors, properties, `__getattr__`, metaclasses. That is a second copy of
 Python's semantics, and it will disagree with ty wherever ty is right.
@@ -264,7 +264,7 @@ python/
 ├── hierarchy.py .... diamond, Protocol, ABC, Generic, specialised base,
 │                     nested class, and a class with no bases
 └── attributes.py ... `self.handler.handle()` — the shape from
-                      plan/03-call-tree/06, with two construction paths
+                      plan/03-call-tree/07, with two construction paths
 ```
 
 ---
@@ -388,17 +388,17 @@ must be `LoudHandler.handle`.
 Now call the wrapper with `LoudHandler`'s type as the receiver and watch it
 answer exactly that. **The wrapper does not solve `dispatch`** — knowing *which*
 receiver to pass is still the interpreter's job, and that is the environment,
-the frame and the object identity from `plan/03-call-tree/06` and `/10`. What
+the keys and the object identity from `plan/03-call-tree/07`, `/08` and `/09`. What
 the wrapper removes is having to reimplement `.handle`'s lookup once you know.
 
 You saw this shape in exercise 07 with a parameter. Now you have seen it with an
 **attribute**, which is worse: the value was stored on an object in one frame and
 read in another, so even a per-call environment is not enough — you need object
-identity and per-object state. That is `plan/03-call-tree/06` and `/10`, and it
+identity and per-object state. That is `plan/03-call-tree/07` and `/09`, and it
 is the single strongest argument for the plan's Option A + C recommendation.
 
 **Do not build it.** Write down, in three sentences, what would be needed. Then
-read `plan/03-call-tree/06` and compare.
+read `plan/03-call-tree/07` and compare.
 
 ---
 

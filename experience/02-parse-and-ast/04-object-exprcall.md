@@ -216,7 +216,7 @@ and you want the answer to be "deliberately" rather than "huh".
 ## What you can do with `Arguments`
 
 **[verified]** from `nodes.rs:3568-3603`. This is more useful than it looks —
-you will need it in `plan/03-call-tree/05` for argument binding.
+you will need it in `plan/03-call-tree/06` for argument binding.
 
 | method | returns |
 |---|---|
@@ -328,7 +328,7 @@ error. Then explain in one sentence why `ExprCall` is stored this way.
 **F.** Use `find_argument_value` to answer, for `nested_args`
 (`wrap(build(), key=build())`): what expression was passed for the parameter
 named `key`? And for position 0? You now have argument binding's core primitive
-— which is `plan/03-call-tree/05`'s subject, arriving three exercises early.
+— which is `plan/03-call-tree/06`'s subject, arriving three exercises early.
 
 ---
 
@@ -431,6 +431,6 @@ check whether v-noc downstream cares.
 
 **10.** `find_argument_value(name, position)` **[verified]**. It matters because
 that is precisely the question **argument binding** asks in
-`plan/03-call-tree/05`: to build an environment you must know which expression
+`plan/03-call-tree/06`: to build a call's key you must know which expression
 was supplied for each parameter, and callers may write it either way. Ruff has
 already implemented the lookup, so the interpreter does not have to.

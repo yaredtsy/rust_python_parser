@@ -87,6 +87,6 @@ you took in exercise 03. Is call resolution dominated by parsing, by inference,
 or by the traversal?
 
 **17.** Write the function signature for *your* recursive call-tree entry point
-— the one `plan/03-call-tree/03` will make you implement. Compare it to
+— the one `plan/03-call-tree/` will make you implement. Compare it to
 `outgoing_calls`' signature and list every parameter that differs. That diff is
 the project.

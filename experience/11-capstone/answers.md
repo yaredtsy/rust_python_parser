@@ -121,7 +121,7 @@ tail. Or establish from the goldens that order is unobservable and skip C3.
 
 A parameter environment is not enough: the value crossed frames **through an
 object**, stored in `__init__` and read in `dispatch`. You need object identity
-plus per-object attribute state. *(ex 08, and `plan/03-call-tree/06`, `/10`)*
+plus per-object attribute state. *(ex 08, and `plan/03-call-tree/07`, `/09`)*
 
 ---
 

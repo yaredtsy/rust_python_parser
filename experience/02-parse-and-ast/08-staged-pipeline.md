@@ -492,11 +492,10 @@ fn eval(&mut self, expr: &Expr, env: &Env<'db>, frame: &mut Frame<'db>) -> Abstr
 }
 ```
 
-`plan/03-call-tree/03`'s `walk_body` currently reads
-`for call in collect_calls_in_scope(func) { self.resolve_call(...) }`. That is
-the line this chapter removes: a pre-collected list cannot carry the environment
-the call was reached in, and the order it imposes is source order rather than
-the order the interpreter actually gets there.
+`plan/03-call-tree/05` builds exactly this: there is no
+`collect_calls_in_scope`, because a pre-collected list cannot carry the
+environment the call was reached in, and the order it imposes is source order
+rather than the order the interpreter actually gets there.
 
 ### Object 5's `Skip` rules become statement semantics
 
@@ -506,7 +505,7 @@ Every rule the scanner expressed as a traversal signal is a rule about what
 | scanner rule | the same rule in `eval` |
 |---|---|
 | `StmtFunctionDef => Skip` | a `def` statement evaluates its **decorators and defaults now**, binds a function value, and leaves the body unevaluated |
-| the body is walked later, by a fresh visitor | the body is evaluated when something **calls** that value — in a child frame, with a child env |
+| the body is walked later, by a fresh visitor | the body is evaluated when something **calls** that value — in its own walk, under its own context |
 | `ExprLambda => Skip` | a `lambda` evaluates to a closure. Its body runs when the closure is called, in the closure's env |
 | empty `visit_decorator` (parso's enclosing-scope rule) | a decorator expression is evaluated in the **enclosing** env, at the `def` statement — which is where it lexically is |
 | default args belong to the function | a default expression is evaluated in the **enclosing** env, once, when the `def` runs — so its calls land in the enclosing scope, **not** in the function. ⚠ This is a divergence from parso, which nests defaults inside the funcdef |
@@ -530,8 +529,8 @@ docstring — the same scan, from whichever handle you are holding:
 | a `DefNode` from stage 1 | `node.id` — already extracted |
 
 **The source is the lookup.** Quirk 4's "no ID → no node, and do not descend"
-is then one `let Some(id) = … else { continue }`, exactly as
-`plan/03-call-tree/03` step (d) has it.
+is then one `let Some(id) = … else { continue }` when the tree is rendered
+(`plan/03-call-tree/14` § "The tree is a view").
 
 ---
 
@@ -888,8 +887,8 @@ divergence has a fixture.
 - [ ] `id_index` is a plain function over the per-file query, and its value is a
       `Vec`
 - [ ] the `parse_file` call-node decision is recorded, with v-noc checked
-- [ ] `plan/03-call-tree/03`'s `collect_calls_in_scope` line is replaced by
-      `eval` reaching `Expr::Call`
+- [ ] you can say why `plan/03-call-tree/05` has no call list: `eval`
+      reaching `Expr::Call` is how calls are found
 
 ---
 

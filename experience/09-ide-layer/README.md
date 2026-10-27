@@ -182,7 +182,7 @@ And the pieces you will not:
 - the grouping (yours is by qname with `call_count`)
 - the entry-point shape (yours is recursive and environment-carrying)
 
-Write both lists down. When you start `plan/03-call-tree/03`, this is the
+Write both lists down. When you start `plan/03-call-tree/`, this is the
 inventory of what already exists.
 
 ### Step 6 — the rest of `ty_ide`, quickly

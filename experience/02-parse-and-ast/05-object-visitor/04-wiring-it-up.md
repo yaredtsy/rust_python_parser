@@ -396,7 +396,7 @@ call's end"; `call.range()` is that exact span, already computed.
 They existed for Jedi, which resolves by cursor position: every call in a chain
 starts at the same offset, so it needed an extra number to say which one you
 meant. With one node per `ExprCall` the `position` is unique, so the range *is*
-the handle — the interpreter looks a call up by it (`plan/03-call-tree/03`).
+the handle — the call tree names a call site by its range (`SiteId`, `plan/03-call-tree/09`).
 
 Dropping them is a wire-format change, so the two costs, stated plainly:
 

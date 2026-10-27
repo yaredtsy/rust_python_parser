@@ -71,8 +71,8 @@ guard says "`leaf` is not on the path from the root to here, so descend" — a
 function may appear many times in the tree, just never inside itself.
 
 Different trees: `diamond`. Global-visited gives `left → leaf` and `right →`
-(nothing, already seen). Ancestor-guard gives both. `plan/03-call-tree/08` and
-`/09` are the chapters.
+(nothing, already seen). Ancestor-guard gives both. `plan/03-call-tree/12` and
+`/14` are the chapters.
 
 ---
 
@@ -147,20 +147,19 @@ probably re-parsing outside the db — check that you go through `parsed_module`
 
 The reason to measure: `plan/04-build/02`'s M8 asks for p50/p95/p99 against a
 baseline, and knowing *which layer* the time is in decides whether the answer is
-memoisation (`plan/03-call-tree/08` layer 5) or parallelism.
+summary reuse (`plan/03-call-tree/03`, `/13`) or parallelism.
 
 **17.** Something like:
 
 ```rust
-fn resolve_calls<'db>(
-    db: &'db dyn Db,
-    file: ProgramFile<'db>,
-    offset: TextSize,
-    env: &Env<'db>,              // ← the environment. does not exist in ty's version
-    frame: &Frame,               // ← the ancestor chain, for quirk 5 and identity
-    budget: &mut Budget,         // ← depth/node/deadline caps
-    tracer: &mut impl Tracer,    // ← the --trace output
-) -> Vec<CallFrameStack>;        // ← recursive, not one level
+// a call is a context: the function plus fingerprints of its arguments
+fn key<'db>(s: &mut Solver<'db>, func: Definition<'db>, bound: &Bound<'db>, before: &Env<'db>) -> ContextId;
+
+// one summary per context: walked once, then reused
+fn get<'db>(s: &mut Solver<'db>, ctx: ContextId) -> Got<'db>;   // Ready(summary), or Pending in a cycle
+
+// the per-path tree, rendered from the summaries afterwards
+fn render(g: &Graph, entry: ContextId, limits: &Limits, tracer: &mut impl Tracer) -> Vec<FrameJson>;
 ```
 
 versus
@@ -169,6 +168,9 @@ versus
 fn outgoing_calls(db: &dyn Db, file: ProgramFile<'_>, offset: TextSize) -> Vec<OutgoingCall>;
 ```
 
-Four extra parameters and a recursive return type. `env` is the project;
-`frame` and `budget` are the scaffolding that makes the recursion terminate;
-`tracer` is what makes it debuggable. `plan/03-call-tree/03` builds exactly this.
+The diff: `outgoing_calls` takes a position and returns one level. The call
+tree takes a **context** (the arguments' values, which ty has no parameter
+for), answers with a summary relative to those inputs, and renders the
+per-path tree as a separate step. The solver holds the limits; the tracer makes
+it debuggable. `plan/03-call-tree/03` is the design, `/08`, `/13` and `/14` the
+three signatures.

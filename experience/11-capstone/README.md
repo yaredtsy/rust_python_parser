@@ -204,17 +204,20 @@ M7  ██                          transport
 M8  ████                        performance
 ```
 
-Read `plan/03-call-tree/` now, in order, all ten chapters. It will read
-differently than it would have two weeks ago:
+Read `plan/03-call-tree/` now, in order, all fifteen chapters, or do exercise
+12 first, which walks it by hand. It will read differently than it would have
+two weeks ago:
 
 - **`01-what-jedi-actually-does`** — the mechanism you are replacing
 - **`02-why-ty-alone-cannot`** — you proved this yourself in exercise 09
-- **`03-the-abstract-interpreter`** — the architecture
-- **`04-value-domain`** — you felt the need for this in exercise 07 (two `Cache()`
+- **`03-design`** — summaries per context, the three rules, the precision policy
+- **`04-values`** — you felt the need for this in exercise 07 (two `Cache()`
   instances, one type)
-- **`05-binding-arguments`** — you named this requirement in exercise 07, step 4
-- **`06-attributes-and-self`** — you hit this wall in exercise 08, step 5
-- **`07`–`10`** — callbacks, termination, path identity, value flow
+- **`05-the-walk`, `06-binding-arguments`** — you named this requirement in
+  exercise 07, step 4
+- **`07-attributes-and-self`** — you hit this wall in exercise 08, step 5
+- **`08`–`15`** — keys, summaries, one call, closures, recursion, the solver,
+  output, and the build order
 
 Before you start M5, do one thing from `plan/04-build/02`: **M0, the golden
 files.** Run the Python driver over a real corpus and record every request and

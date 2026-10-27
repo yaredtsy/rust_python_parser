@@ -57,7 +57,7 @@ receiver arrives at the call:
   `self` anyway, by coincidence of position, not by any receiver-binding
   code path at all.
 
-Both reach the same locals map by genuinely different routes. Getting the
+Both reach the same parameter values by genuinely different routes. Getting the
 *unbound* case right is actually a good check that your receiver-binding
 code isn't accidentally doing something special for `self` by *name* —
 it should only ever be about *position*, which the `Cls.method(obj, ...)`
@@ -67,7 +67,7 @@ form exercises without any receiver value ever being passed in explicitly.
 
 Using `python/self_binding.py`:
 
-1. Write `bind_parameters`'s resulting locals map for `call_bound()`.
+1. Write `bind_parameters`'s resulting parameter values for `call_bound()`.
 2. Write it for `call_unbound()`. Confirm it's identical to (1) even though
    `receiver` was `None` on this call.
 3. Suppose `bind_parameters` had a bug where it bound positionals against
