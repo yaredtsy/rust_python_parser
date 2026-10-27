@@ -161,7 +161,7 @@ line-by-line, because the Rust version has no Jedi underneath to fall back on:
 > ty replaces Jedi's *type* answers but not its *value* answers. Anywhere the
 > current behaviour depends on Jedi's lazy in-context inference rather than on
 > your explicit binding code, you must build the equivalent yourself or lose it.
-> → [`10-return-values-and-state.md`](10-return-values-and-state.md)
+> → [`05-the-walk.md`](05-the-walk.md), [`10-one-call.md`](10-one-call.md)
 
 ### The line to hold
 
@@ -170,7 +170,7 @@ Add **value flow** (returns, assignments, object state). Do **not** add
 
 Value flow is what makes the tree accurate on real code — factories, builders,
 dependency injection, constructor-injected handlers. It is bounded: each value
-is computed once per environment and memoised.
+is computed once per context and reused ([`03`](03-design.md#why-summaries)).
 
 Path conditions are what make it explode. `if`/`else` contributing both branches
 is a union of size 2; deciding *which* branch runs requires evaluating
@@ -190,10 +190,10 @@ Write these as fixtures now; they are your parity suite for
 |---|---|---|
 | 1 | `read_json()` calls `emit(JsonWriter())`, `read_csv()` calls `emit(CsvWriter())`, `main` calls both | two `emit` nodes under **different parents**, one leaf each. ★ the cross-scope form — do not use two calls from one frame |
 | 2 | 3-deep parameter pass-through (`outer→middle→inner`) | correct leaf at depth 3 |
-| 3 | direct recursion `f` calls `f` | one `f` node, no infinite loop |
-| 4 | mutual recursion `f→g→f` | terminates, `f` not nested in `f` |
+| 3 | direct recursion `f` calls `f` | one `f` node, no infinite loop. pylspt adds a `Recursive` leaf under it ([`14`](14-output.md#the-tree-is-a-view)) |
+| 4 | mutual recursion `f→g→f` | terminates, `f` not entered under `f`. pylspt shows the inner `f` as a `Recursive` leaf |
 | 5 | callee without `ID:` docstring | absent from tree, *and* not descended into |
-| 6 | two calls to same fn from one frame | one child, `call_count == 1` |
+| 6 | two calls to same fn from one frame | one child, `call_count == 1` in the saved tree. pylspt sends two nodes, and v-noc merges them ([`14`](14-output.md#call_count-and-v-nocs-merge)) |
 | 7 | call to `len()` | absent (builtin) |
 | 8 | call into `site-packages` | absent (non-project) |
 | 9 | `Foo()` constructor | `ClassSchema/` id, children from `__init__` |

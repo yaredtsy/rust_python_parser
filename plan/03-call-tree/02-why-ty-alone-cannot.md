@@ -61,9 +61,10 @@ let mut groups: FxHashMap<CalleeKey, (CallHierarchyItem, Vec<TextRange>)>
 // "Use a stable group key so multiple call sites to the same callee fold into
 //  one outgoing entry."
 ```
-Correct for an LSP panel. Wrong for you — though note your `add_child` *also*
-dedupes by qname, so this one is closer to your semantics than it first appears.
-The difference is that yours dedupes per *frame*, theirs per *query*.
+Correct for an LSP panel. Wrong for you — though note the saved tree *also*
+merges by qname (v-noc's merge, [`14`](14-output.md#call_count-and-v-nocs-merge)),
+so this one is closer to your semantics than it first appears. The difference is
+that the saved tree merges per *parent node*, theirs per *query*.
 
 ### 5. It has no notion of `ID:`, `call_index`, `call_col_pos`, or your schema
 Cosmetic, but it means the output types need translating anyway.
@@ -73,8 +74,8 @@ Cosmetic, but it means the output types need translating anyway.
 ## The illustration
 
 ⚠ **Pick the example carefully.** Two calls from the *same* frame is the wrong
-demonstration, because `add_child` merges them by qname
-([`09`](09-path-identity.md#the-merge-rule)) and the merged output happens to
+demonstration, because the saved tree merges them by qname
+([`14`](14-output.md#call_count-and-v-nocs-merge)) and the merged output happens to
 look like ty's union anyway:
 
 ```python
@@ -144,26 +145,22 @@ always."*
 
 ## What you should take from it anyway
 
-A lot. Don't dismiss the module — **steal its skeleton**:
+pylspt does not find calls with a visitor: evaluation reaches them, in
+Python's order, and each call's value flows on
+([`05`](05-the-walk.md#evaluation-drives-the-walk)). But the module is still
+worth reading closely:
 
 | Take | Why |
 |---|---|
-| `OutgoingCallsFinder`'s visitor structure | it already implements your "stop at nested callables" rule, correctly, including the subtle bits |
-| `walk_callable_signature` / `walk_class_signature` | handles decorators, defaults, annotations, type-params, base-class exprs — call sites in places you'd forget |
-| `CalleeLeaf::resolve` | maps a call expression to the identifier leaf you resolve — your `get_name_of_position` equivalent, done properly |
-| `CallHierarchyItem::from_definition` | `Definition` → name/kind/range extraction |
-| The not-`#[salsa::tracked]` decision | documented in the header comment; follow it |
+| `OutgoingCallsFinder`'s "stop at nested callables" rule | the same rule the walk follows: a nested `def` binds a value, its body belongs to its own context |
+| `walk_callable_signature` / `walk_class_signature` | the checklist of call positions outside plain statements: decorators, defaults, annotations, type params, base classes. The walk must evaluate every one ([`05`](05-the-walk.md#evaluation-drives-the-walk)) |
+| `CalleeLeaf::resolve` | maps a call expression to the identifier leaf: your `get_name_of_position` equivalent, done properly, and the span to show |
+| `CallHierarchyItem::from_definition` | `Definition` → name, kind, range |
 | `incoming_calls.rs` (1308 lines) | if you ever want reverse edges |
 
-**Concretely:** copy `OutgoingCallsFinder` into your crate, keep the traversal
-verbatim, and replace only `record_callee` — where it calls
-`goto_target.definitions(...)`, you instead consult your environment first and
-fall back to `definitions(...)` when the environment has nothing. That is a
-~40-line change to an 800-line file you get for free, and it inherits every edge
-case the ty team already fixed.
-
-That substitution is the entire architecture of the next chapter.
+The question it can't answer, "which callee on this path, given these
+arguments", is what the rest of this folder builds.
 
 ---
 
-→ Next: [`03-the-abstract-interpreter.md`](03-the-abstract-interpreter.md)
+→ Next: [`03-design.md`](03-design.md)

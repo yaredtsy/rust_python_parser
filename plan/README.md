@@ -65,14 +65,19 @@ plan/
 ├── 03-call-tree/ .................................. ★ THE HARD PART ★
 │   ├── 01-what-jedi-actually-does.md .............. read the mechanism you're replacing
 │   ├── 02-why-ty-alone-cannot.md .................. why outgoing_calls is not your answer
-│   ├── 03-the-abstract-interpreter.md ............. the architecture
-│   ├── 04-value-domain.md ......................... what an "abstract value" is
-│   ├── 05-binding-arguments.md .................... call site → parameter environment
-│   ├── 06-attributes-and-self.md .................. self.handler.run(), the object model
-│   ├── 07-callbacks-and-higher-order.md ........... functions as values
-│   ├── 08-termination-and-cycles.md ............... why this halts
-│   ├── 09-path-identity.md ........................ your "unique path per function" invariant
-│   └── 10-return-values-and-state.md .............. value flow: returns, assignments, mutation
+│   ├── 03-design.md ............................... ★ the design: summaries per context, 3 rules, policy
+│   ├── 04-values.md ............................... AbstractValue, origins, lift, the union cap
+│   ├── 05-the-walk.md ............................. Env, statements, fork/join, eval
+│   ├── 06-binding-arguments.md .................... call site → parameter values
+│   ├── 07-attributes-and-self.md .................. member, writes, chains, vnoc::member
+│   ├── 08-keys.md ................................. Context, fingerprints, materialize
+│   ├── 09-summaries.md ............................ FunctionResult, SVal, effects
+│   ├── 10-one-call.md ............................. snapshot, resolve, apply, constructors
+│   ├── 11-closures-and-callbacks.md ............... functions as values
+│   ├── 12-recursion.md ............................ pending values, groups, the fixpoint
+│   ├── 13-solver-and-limits.md .................... Solver, cuts, Limits, Stats
+│   ├── 14-output.md ............................... the graph, stable IDs, the rendered tree
+│   └── 15-checks-and-build-order.md ............... known limits, checks, S1–S11, growth path
 │
 ├── 04-build/ ...................................... shipping it
 │   ├── 00-dev-cli.md .............................. ★ file in, JSON out. build this first
