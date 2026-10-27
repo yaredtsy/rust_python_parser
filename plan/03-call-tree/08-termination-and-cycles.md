@@ -199,10 +199,11 @@ Two cautions:
   skip the memo when it intersects the current ancestor chain, or don't memoise
   subtrees that contain recursion. The second is simpler and nearly as
   effective.
-- `call_count` is computed only when the tree is saved
-  ([`09`](09-path-identity.md#-where-the-rule-applies-on-output-never-during-analysis)).
+- `call_count` is computed only when v-noc saves the tree
+  ([`09`](09-path-identity.md#-where-the-rule-applies-in-the-db-never-in-the-analyser)).
   A grafted subtree is just more unmerged nodes, so it merges and counts
-  like a walked one — nothing to adjust at graft time.
+  like a walked one — nothing to adjust at graft time. It *is* written out
+  in full, so its nodes count against `max_nodes`.
 
 **Build this at Milestone 6, not Milestone 4.** Get correctness first, measure,
 then add. But design `Frame` so grafting is possible from the start —
@@ -229,10 +230,10 @@ nodes turn out to be expensive.
 
 This is *not* a termination mechanism — it dedupes siblings within one frame,
 so `f(); f()` yields one child. It reduces breadth but not depth, and it does
-not prevent blowup. Don't rely on it. It is a *presentation* rule — which is
-why `pylspt` applies it only on output (`merge_for_output`, `09`), never
-while walking. The node budget therefore counts every walked call, merged
-or not.
+not prevent blowup. Don't rely on it. It is a *presentation* rule, which
+is why `pylspt` never applies it: v-noc does, when saving (`09`). The node
+budget therefore counts every walked call — and every node of a grafted
+subtree, since the response writes grafts out in full.
 
 ---
 

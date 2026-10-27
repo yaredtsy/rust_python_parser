@@ -72,6 +72,8 @@ comparable to the golden responses from
     --trace             human-readable interpreter walk to stderr
     --stats             timing + counters to stderr
     --limits k=v,...    override any 03-call-tree/08 Limits field (e.g. max_union_fanout=8, or =off)
+    --merged            for `calls`: apply the backend-side merge (03-call-tree/09) before printing,
+                        to compare with the Jedi driver's output by eye
     --repeat <n>        run n times, assert identical output (determinism check)
 ```
 

@@ -1,7 +1,8 @@
 # 00.05 — `Frame`, `PathKey`, and the ancestor guard
 
 The vocabulary `01-functions/` and `02-classes/` both lean on constantly:
-what a node in the output tree actually *is*, and the one rule that keeps
+what a node actually *is* — in the analysis tree, and in the tree saved to
+the backend DB, which are not the same thing — and the one rule that keeps
 recursive Python from becoming an infinite Rust loop.
 
 **Reading:** [`plan/03-call-tree/09-path-identity.md`](../../../plan/03-call-tree/09-path-identity.md)
@@ -12,8 +13,8 @@ in full — this file is a compressed on-ramp to it, not a replacement.
 ## Graph vs tree, in one picture
 
 ```
-        graph (ty_ide, pyan)              tree (your driver)
-        ────────────────────              ──────────────────
+        graph (ty_ide, pyan)              analysis tree (your driver)
+        ────────────────────              ───────────────────────────
       main                               main
       ├──► emit ──► write                ├── emit
       │       ▲                          │   └── JsonWriter.write
@@ -26,24 +27,36 @@ in full — this file is a compressed on-ramp to it, not a replacement.
                                          first two are DIFFERENT write
 ```
 
+That's the tree **while analysing**: one node per call. When it's saved
+to the backend DB, the two `emit`s under `main` merge into one (next section) —
+but `log`'s `JsonWriter.write` stays a separate node, because it's under
+a different parent. The path information survives the merge.
+
 A call graph answers *"what exists?"* — one node per function, full stop.
 Your tool answers *"what happens, on this path?"* — one node per function
 **per path that reaches it**. `plan/03-call-tree/02`'s whole argument against
 `ty_ide::outgoing_calls` is this distinction; everything from here on is
 mechanism for keeping it.
 
-## What identifies a node: `(parent frame, target_qname)`
+## What identifies a *saved* node: `(parent frame, target_qname)`
 
-★ **Confirmed by the author, no ambiguity:** two calls to the same function
-*from the same frame* produce **one** node. The same function called from
-**different** frames produces **different** nodes.
+★ **Confirmed by the author, no ambiguity:** in the tree saved to the backend DB,
+two calls to the same function *from the same frame* are **one** node. The
+same function called from **different** frames is **different** nodes.
+
+★ **And where it applies:** *only* in the backend DB. `pylspt` never merges —
+every call gets its own node, `pylspt` sends that tree as is, and v-noc
+applies the rule when it saves it (§ "Merging happens in the backend DB" below).
+"DB" in this file always means v-noc's **backend** graph database, never
+the salsa db `pylspt` analyses with.
 
 ```python
 def main():
     emit(JsonWriter(), a)      # both from main →
-    emit(CsvWriter(),  b)      # ONE emit node, two leaves inside it
+    emit(CsvWriter(),  b)      # two nodes while analysing; ONE when saved
 ```
 ```
+saved tree
 root
 └── emit  (call_count=1)
     ├── JsonWriter.write
@@ -70,18 +83,20 @@ main
         └── CsvWriter.write      ← ONLY this one
 ```
 
-Two `emit` nodes, one per frame — not because there were two call *sites*
-(there's one, textually, inside `emit` itself), but because `emit` is
-reached from two different parents.
+Two `emit` nodes in the saved tree, one per frame — not because there
+were two call *sites*, but because `emit` is reached from two different
+parents. The merge only ever joins siblings, so it can't join these.
 
-## `Frame` — the node, in memory
+## `Frame` — the node, in memory (one per walked call)
 
 ```rust
 struct Frame<'db> {
     qname: String,
     target_id: String,
+    call_site: TextRange,        // where it was called — for output ordering
     parent: Option<FrameId>,     // index, not Rc<RefCell<>> — see below
-    children: Vec<FrameId>,
+    children: Vec<FrameId>,      // one per walked call; never merged here
+    // no call_count: it doesn't exist until the tree is saved
 }
 
 impl Frame<'_> {
@@ -99,16 +114,22 @@ impl Frame<'_> {
 Use an **arena** (`Vec<Frame>` + `FrameId(u32)`), not `Rc<RefCell<Frame>>`.
 Parent links become plain indices, the borrow checker has nothing to fight
 you about, and the whole tree frees in one `Vec` drop instead of a cascade
-of reference-count decrements. The **wire** type — what actually gets
-serialized — drops `parent` entirely (it would make `Serialize` recurse
-forever) and is a separate, simpler struct:
+of reference-count decrements. The **wire** type — what `pylspt` sends —
+drops `parent` entirely (it would make `Serialize` recurse forever) and is
+a separate, simpler struct. It's one per analysis node, **not merged**:
+`call_count` is always 0 here, and v-noc's merge fills it in.
 
 ```rust
 #[derive(Serialize)]
-struct FrameJson { target_qname: String, target_id: String, call_count: u32, children: Vec<FrameJson> }
+struct FrameJson {
+    target_qname: String, target_id: String,
+    call_count: u32,               // 0 from pylspt; the backend merge fills it
+    call_site: Option<Span>,       // new: where this call was made
+    children: Vec<FrameJson>,
+}
 ```
 
-## Merging happens on output, not during the walk — read this twice
+## Merging happens in the backend DB, not in the analyser — read this twice
 
 The Jedi driver merges *while walking*:
 
@@ -123,10 +144,10 @@ def add_child(self, child):
 ```
 
 That's the rule for **what gets saved** — "same frame, same qname → one
-node" — and the saved tree must match it exactly. But `pylspt` applies it
-only when the finished tree is turned into the JSON for the DB
-(`merge_for_output`, `plan/03-call-tree/09`). While walking, every call
-gets its own node:
+node" — and the saved tree must match it exactly. But `pylspt` never
+applies it. Every call gets its own node, `pylspt` sends that unmerged
+tree, and v-noc merges it when saving (`plan/03-call-tree/09`). While
+walking:
 
 ```rust
 let child = frame.add_child(qname, id, call.range());   // ALWAYS a new node
@@ -137,7 +158,7 @@ self.walk_function(func, &callee_env, Mode::tree(child));
 ```
 emit(JsonWriter()); emit(CsvWriter())     # both from main
 
-analysis tree                    saved tree
+sent by pylspt                   saved by v-noc
 main                             main
 ├── emit                         └── emit  (call_count=1)
 │   └── JsonWriter.write             ├── JsonWriter.write
@@ -148,14 +169,17 @@ main                             main
 Two things to hold onto:
 
 1. **`call_count` starts at 0 and counts *additional* calls.** One call → 0.
-   Three calls → 2. It's computed by the merge: a group of `k` sibling
-   nodes with the same qname becomes one node with `call_count = k - 1`,
-   and their children are merged the same way, recursively. That gives
-   the same numbers the Jedi driver's in-walk merge gives.
-2. **Why not merge while walking.** The analysis keeps each call's run
-   separate until output, so nothing in the walk — values, closures,
-   `is_ancestor`, reuse — ever sees a node that mixes two calls. Merging
-   is a presentation rule for the DB and the UI.
+   Three calls → 2. The backend merge computes it: a group of `k` sibling nodes
+   with the same qname becomes one node with
+   `call_count = (sum of their counts) + k - 1`, and their children are
+   merged the same way, recursively. For `pylspt`'s input every count is
+   0, so it's `k - 1` — the same numbers the Jedi driver's in-walk merge
+   gives. The sum is there so the same merge also works on the Jedi
+   driver's already-merged output during rollout, leaving it unchanged.
+2. **Why not merge in the analyser.** The analysis keeps each call's run
+   separate, so nothing in the walk — values, closures, `is_ancestor`,
+   reuse — ever sees a node that mixes two calls. Merging is a
+   presentation rule for the backend DB and the UI, so it lives there.
 
 ## `PathKey` — the ancestor chain made explicit
 
@@ -177,8 +201,9 @@ problem below is a studied one, with a studied fix
 ([`06-scaling-budget-and-memoization.md`](06-scaling-budget-and-memoization.md)'s
 "summary memoisation" is the textbook answer to it).
 
-`PathKey` is **not** frame identity — frame identity is the `(parent,
-qname)` rule above, which is simpler. `PathKey` exists for three narrower
+`PathKey` is **not** node identity — saved-node identity is the `(parent,
+qname)` rule above, which is simpler, and analysis nodes need no identity
+beyond their `FrameId`. `PathKey` exists for three narrower
 jobs: the ancestor guard, the depth cap, and memo keys where a *suffix* of
 the path (not the whole thing) is the right cache key.
 
@@ -239,7 +264,8 @@ def walk(node, visit):
    `visit` separately? Why or why not?
 3. Two sibling calls, `f(); f()` from one frame (not mutual — the SAME `f`,
    twice, no recursion into itself involved) — how many children does the
-   parent frame have, and what's `call_count`?
+   parent have in the analysis tree, how many in the saved tree, and what's
+   `call_count`?
 
 <details><summary>Answers</summary>
 
@@ -253,8 +279,10 @@ def walk(node, visit):
    value each time `walk`'s body runs, and nothing about it is self-similar.
    This is `plan/03-call-tree/07`'s point: callbacks fall out of the
    ordinary machinery, with no special cycle-handling of their own.
-3. **One** child in the saved tree (`merge_for_output` merges by qname),
-   `call_count == 1` (two nodes in the analysis tree → `2 - 1`).
+3. **Two** children in the analysis tree — one per call, each with its own
+   run. **One** in the saved tree (v-noc's merge joins same-qname
+   siblings), with `call_count == 1` (`2 - 1`). `call_count` only exists on
+   the saved node.
 
 </details>
 

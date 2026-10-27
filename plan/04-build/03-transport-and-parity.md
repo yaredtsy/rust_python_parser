@@ -129,6 +129,12 @@ corpus/*.py ──┬──► python driver ──► responses_py/*.json ─�
               └──► rust driver   ──► responses_rs/*.json ──┴──► diff
 ```
 
+`pylspt` sends the call tree **unmerged** — v-noc merges it when saving
+(`03-call-tree/09` § "Where the rule applies"). So the differ compares the
+Jedi response with `merge_for_output(rust response)`, using `pylspt`'s copy
+of the merge spec. The Jedi tree is already merged, and the merge leaves it
+unchanged.
+
 Normalise before comparing:
 - **UUIDs.** IDs are random. Either pre-inject IDs into the corpus so both
   drivers read the same ones (**preferred** — keeps the comparison honest), or
@@ -193,6 +199,10 @@ dramatically better, the memoisation work in M8 is where to look.
 
 ## Rollout
 
+0. **First, land the backend-side merge in v-noc**, and run it on the Jedi
+   driver's output too — on already-merged input it changes nothing, so
+   that's a safe change on its own. Without it, pointing the flag at
+   `pylspt` would store one node per call.
 1. Ship behind a v-noc config flag: `python_driver = "jedi" | "pylspt"`.
 2. Run both in shadow mode if you can afford it — serve Jedi's answer, log the
    diff.

@@ -79,7 +79,7 @@ principle applies to any place precision quietly degrades.
 
 This reduces *breadth* within a single frame, but it is a **presentation**
 rule, not a termination mechanism — don't rely on it to bound anything.
-`pylspt` applies it only when saving (`00-values/05`), so the analysis tree
+`pylspt` never applies it — v-noc does, when saving (`00-values/05`) — so the tree `pylspt` sends
 has 50 `emit` nodes for 50 calls and the node budget counts all of them.
 The saved tree has one, which is why its size hides the real cost.
 

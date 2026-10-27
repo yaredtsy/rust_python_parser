@@ -178,7 +178,7 @@ decorators and defaults.
 `make` before `emit` for `emit(make())`; a source-order finder may have
 added `emit` first. If the golden files show source order, record each
 child's call-site position in `add_child` and sort children by it
-in `merge_for_output` ([`09` § Determinism](09-path-identity.md#determinism-)).
+in the backend-side merge ([`09` § Determinism](09-path-identity.md#determinism-)).
 Don't change the evaluation order to get the output order.
 
 `Env::join` unions per name: a name any arm wrote gets the union of every
@@ -503,7 +503,7 @@ objects buys nothing here.
 **4. Two calls, two nodes, two runs.** `emit(JsonWriter()); emit(CsvWriter())`
 from one frame are two analysis nodes and two runs with different
 `ReturnKey`s; they become one `emit` (`call_count = 1`) only when saved
-([`09`](09-path-identity.md#-where-the-rule-applies-on-output-never-during-analysis)).
+([`09`](09-path-identity.md#-where-the-rule-applies-in-the-db-never-in-the-analyser)).
 `09`'s identical-walk shortcut grafts the earlier subtree and reads its
 stored value, keyed on the full `ReturnKey` (attrs included), not just the
 arguments.

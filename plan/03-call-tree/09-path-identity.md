@@ -19,8 +19,8 @@ Size O(functions). Answers *"what exists?"*
 that reaches it**. Size potentially exponential. Answers *"what happens?"*
 
 ```
-        graph                          tree
-        ─────                          ────
+        graph                          analysis tree
+        ─────                          ─────────────
       main                            main
       ├──► emit ──► write             ├── emit
       │       ▲                       │   └── JsonWriter.write
@@ -34,6 +34,11 @@ that reaches it**. Size potentially exponential. Answers *"what happens?"*
 ```
 
 Same source, different question, different answer.
+
+That tree is the **analysis** tree: one node per call. When saved, the two
+`emit`s under `main` merge into one (§ The merge rule), but `log`'s
+`JsonWriter.write` stays separate because its parent differs — the path
+information survives the merge.
 
 ---
 
@@ -80,7 +85,7 @@ standard "summary-based" answer to it.
 
 In the Jedi driver this is `add_child` **[verified, call_resolver.py:37-45]**,
 which merges *while walking*. `pylspt` produces the same saved tree with
-`merge_for_output` instead, after the walk ([§ Where the rule applies](#-where-the-rule-applies-on-output-never-during-analysis)):
+`merge_for_output` instead, after the walk ([§ Where the rule applies](#-where-the-rule-applies-in-the-db-never-in-the-analyser)):
 
 ```python
 def add_child(self, child):
@@ -134,13 +139,19 @@ So `f(); f()` from one frame → **one** saved child with `call_count == 1`.
 So "one unique path per function" means *one node per (path, function)*, not
 *one node per call site*. Two call sites on the same path are the same path.
 
-### ★ Where the rule applies: on output, never during analysis
+### ★ Where the rule applies: in the backend DB, never in the analyser
 
-The merge is a rule about **what is saved to the graph DB** (and what the
-UI shows). The analyser never merges. While walking, every call that is
-walked gets its **own** node — one per run — and the `(parent, qname)`
-merge runs once, when the finished tree is turned into the JSON the DB
-stores.
+The merge is a rule about **what the backend graph DB stores** (and what the UI
+shows). `pylspt` never merges. While walking, every call that is walked
+gets its **own** node — one per run — and `pylspt` sends that unmerged
+tree. v-noc applies the `(parent, qname)` merge when it saves the tree.
+(Decided by the author, 2026-10-27: *separate them on analysis, merge
+them in the DB*.)
+
+> **"DB" here means v-noc's backend graph database** — where v-noc stores
+> the call tree it receives. It is **not** the salsa db `pylspt` uses for
+> incremental analysis (`01-crates/02`). Nothing in salsa merges or stores
+> call-tree nodes.
 
 ```python
 a = make_handler(JsonWriter())
@@ -150,7 +161,7 @@ b.handle(2)
 ```
 
 ```
-analysis tree (in memory)              saved to the DB (merged)
+sent by pylspt (unmerged)              saved to the backend DB (merged by v-noc)
 ─────────────────────────              ────────────────────────
 main                                   main
 ├── make_handler   ← run 1             ├── make_handler (call_count=1)
@@ -161,9 +172,11 @@ main                                   main
     └── CsvWriter.write
 ```
 
-The saved tree is exactly what the Jedi driver produces today. The analysis
-tree keeps the two runs apart until then, so nothing in the walk (values,
-`is_ancestor`, reuse) ever sees a node that mixes two runs.
+The saved tree is exactly what the Jedi driver produces today. The
+analysis tree keeps the two runs apart, so nothing in the walk (values,
+`is_ancestor`, reuse) ever sees a node that mixes two runs, and the backend
+side gets each call's node with its call site — enough to show *which*
+call produced which leaf, if the UI ever wants to.
 
 **1. `add_child` always appends.** It never returns an existing child.
 Each node records its `target_qname`, `target_id` and the call-site
@@ -175,10 +188,17 @@ let callee_env = self.bind_parameters(func, &args, receiver, enclosing, env);
 self.walk_function(func, &callee_env, Mode::tree(child));
 ```
 
-**2. The output merge reproduces `add_child`'s numbers exactly.** Group
+**2. The backend merge reproduces `add_child`'s numbers exactly.** Group
 siblings by `target_qname`, keeping first-seen order; a group of `k` nodes
-becomes one node with `call_count = k - 1`; its children are the
-concatenation of the group's children, merged the same way, recursively.
+becomes one node with `call_count = (sum of their call_counts) + k - 1`;
+its children are the concatenation of the group's children, merged the
+same way, recursively.
+
+The sum makes one rule work for **both drivers** during rollout
+(`04-build/03`): `pylspt`'s nodes all arrive with `call_count = 0`, so the
+sum is 0 and the result is `k - 1`; the Jedi driver's tree arrives already
+merged — no two siblings share a qname — so every group has `k = 1` and
+the node keeps its count. Merging Jedi's output again changes nothing.
 
 That matches the Jedi driver's in-walk merge, where the second walk goes
 *into* the existing node: there, each repeat bumps `call_count` by one and
@@ -188,12 +208,18 @@ same child order (first walk's children first, new ones appended). Write
 the fixture both ways — this is a parity property, not a guess.
 
 ```rust
-fn merge_for_output(nodes: &[FrameId], arena: &FrameArena) -> Vec<FrameJson> {
+/// THE SPEC for v-noc's backend-side merge. `pylspt` keeps this copy only for
+/// the parity differ and `pylspt-dev calls --merged`; it never runs on the
+/// response path.
+fn merge_for_output(nodes: &[FrameJson]) -> Vec<FrameJson> {
     // group by target_qname in first-seen order
-    // each group → FrameJson { call_count: group.len() - 1,
+    // each group → FrameJson { call_count: Σ call_count + group.len() - 1,
     //                          children: merge_for_output(concat of their children) }
 }
 ```
+
+**[check]** — whoever writes the v-noc side: run both copies over the
+parity corpus and diff. Two implementations of one rule drift.
 
 **3. `is_ancestor` is unchanged.** It walks the parent chain by qname, and
 the chain has the same qnames whether or not siblings are merged.
@@ -203,13 +229,15 @@ the chain has the same qnames whether or not siblings are merged.
 - the depth cap (`depth`)
 - memo keys where a suffix of the path matters
 
-**5. Size: the analysis tree is the work; the saved tree is small.**
+**5. Size: the response is the work; the saved tree is small.**
 
-The analysis tree has one node per walk, so it's as big as the work done —
-and work is already bounded by the node budget
-([`08`](08-termination-and-cycles.md), which ticks once per walk). The
-saved tree is bounded by the number of *distinct qnames* per frame, as
-before.
+The response now carries the analysis tree, one node per walk, so it's as
+big as the work done. That's bounded by the node budget
+([`08`](08-termination-and-cycles.md)), which ticks once per walk — and
+**once per node of a grafted subtree** too: a graft is shared in memory but
+written out in full, so it has to count against `max_nodes` or the payload
+isn't bounded. The saved tree is bounded by the number of *distinct qnames*
+per frame, as before.
 
 Calling `emit` 50 times from one frame still walks `emit`'s body 50 times.
 Two fixes, both of which **reuse** a subtree rather than skipping the call
@@ -236,11 +264,11 @@ walk, keyed on the arguments alone. In a merge-while-walking design that
 missed the count bumps of the repeat's children; here it would drop the
 node entirely. Grafting fixes both.)
 
-**Is the saved tree the only one that leaves `pylspt`?** Yes, for now: the
-wire format is the merged `call_frame_stack`, for parity with the Jedi
-driver (`04-build/03`). If v-noc's DB or UI ever wants the unmerged runs —
-to show *which* call produced which leaf — send the analysis tree and move
-`merge_for_output` to v-noc. That's a contract change, not a refactor.
+**This changes the wire contract.** The Jedi driver sends a merged
+`call_frame_stack`; `pylspt` sends an unmerged one with the same fields
+(every `call_count` is 0) plus `call_site` on each node. v-noc has to merge
+on save *before* the flag in `04-build/03`'s rollout can point at
+`pylspt` — without it, the backend DB would store a node per call.
 
 ### Why the example in this plan uses two *callers*
 
@@ -280,6 +308,13 @@ Also note `_merge_frame_stack` creates the matched node without copying
 `call_count` (`service.py:64-68`), so counts from sub-resolvers are **lost** at
 the merge boundary. Preserve the behaviour, add a `// PARITY:` comment.
 
+With merging moved to the backend DB, this second merge moves with it: `pylspt`
+puts every call site's tree under one root, unmerged, and the v-noc side
+applies both rules — `target_id` at the root's top level (dropping counts,
+as today), then `(parent, qname)` below. **[check]** whether the v-noc
+side wants to keep that quirk or use one rule everywhere; that's a
+behaviour change for the UI, so it's the author's call, not the port's.
+
 ---
 
 ## Serialisation
@@ -292,14 +327,14 @@ infinitely. In Rust, keep the parent link out of the serialised type entirely:
 // ONE PER WALKED CALL — never merged (§ Where the rule applies).
 struct Frame<'db> { parent: Option<FrameId>, call_site: TextRange, /* ... */ }
 
-// Wire: no parent, derives Serialize. Built ONLY by `merge_for_output`,
-// which is where `(parent, qname)` merging and `call_count` happen.
-// `_merge_frame_stack`'s `target_id` merge (above) runs after it.
+// Wire: no parent, derives Serialize. One per analysis node — NOT merged.
+// v-noc merges on save (§ Where the rule applies); `call_count` is 0 here.
 #[derive(Serialize)]
 struct FrameJson {
     target_qname: String,
     target_id: String,
-    call_count: u32,
+    call_count: u32,               // 0 from pylspt; the backend merge fills it
+    call_site: Option<Span>,       // NEW, additive: where this call was made
     children: Vec<FrameJson>,
 }
 ```
@@ -323,8 +358,8 @@ risk from:
 - **Child order.** Evaluation-driven walking ([`10` §1](10-return-values-and-state.md#-evaluation-drives-the-walk--there-is-no-call-list))
   adds children in Python's evaluation order: `make` before `emit` for
   `emit(make())`. If the golden files order children by source position
-  instead, sort each merged group by its first node's `call_site` in
-  `merge_for_output` — never by changing the evaluation order.
+  instead, the backend merge sorts each group by its first node's `call_site` —
+  never change the evaluation order to get it.
   **[check]** against the golden files.
 - `visited_qnames` is a Python `set` **[verified, call_resolver.py:133]** but is
   only used for membership, not iteration — safe.

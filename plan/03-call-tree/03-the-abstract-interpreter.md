@@ -129,7 +129,7 @@ impl<'db> Interp<'db> {
 
             match target.kind() {
                 Callable::Function(func) | Callable::Closure { func, .. } => {
-                    // Always a NEW node — the (parent, qname) merge happens on output (09).
+                    // Always a NEW node — the (parent, qname) merge happens in the backend DB (09).
                     let child = frame.add_child(qname, format!("FunctionSchema/{id}"), call.range());
                     // ★★★ THE CONTEXT ★★★  — this is `as_context(arguments)`
                     let callee_env = self.bind_parameters(
