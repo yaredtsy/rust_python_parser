@@ -15,6 +15,7 @@ use crate::sem::{Definition, Sem, SemanticModel};
 pub struct Walk<'a, 'db> {
     pub sem: &'a Sem<'db>,
     pub frame: Frame<'db>,
+    pub path: Vec<String>,
 }
 
 /// The body being walked now.
@@ -40,6 +41,7 @@ impl<'a, 'db> Walk<'a, 'db> {
         Walk {
             sem,
             frame: Frame::new(sem, func),
+            path: vec![],
         }
     }
 

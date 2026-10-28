@@ -102,3 +102,8 @@ fn p01_04_imports() {
 fn p01_05_follow() {
     check("01-functions/python/follow.py");
 }
+
+#[test]
+fn p01_06_recursion() {
+    check("01-functions/python/recursion.py");
+}

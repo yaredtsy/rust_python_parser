@@ -2,6 +2,7 @@
 use ruff_python_ast::{ExprCall, ExprRef};
 use ruff_text_size::{Ranged, TextRange};
 
+use crate::interp::Mark;
 use crate::interp::env::Env;
 use crate::interp::tree::Node;
 use crate::interp::value::{AbstractValue, Values};
@@ -26,17 +27,27 @@ impl<'a, 'db> Walk<'a, 'db> {
     }
     /// Inline mode: walk the callee's body now, as a child of this call.
     fn call_function(&mut self, def: Definition<'db>, site: TextRange) {
+        let qname = self.sem.qname(def);
+        if self.path.contains(&qname) {
+            let mut node = Node::call(qname, site);
+            node.marks.push(Mark::Recursive);
+            self.frame.children.push(node);
+            return;
+        }
+
         let parsed = self.sem.parsed(def);
         let Some(node) = self.sem.function_node(def, &parsed) else {
             return;
         };
 
+        self.path.push(qname.clone());
         let caller = std::mem::replace(&mut self.frame, Frame::new(self.sem, def));
         self.walk_stmts(&node.body, Env::default());
         let callee = std::mem::replace(&mut self.frame, caller);
+        self.path.pop();
 
         self.frame.children.push(Node {
-            qname: self.sem.qname(def),
+            qname,
             site: Some(site),
             marks: Vec::new(),
             children: callee.children,

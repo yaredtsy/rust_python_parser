@@ -42,6 +42,8 @@ pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options)
     let parsed = sem.parsed(def);
     let node = sem.function_node(def, &parsed)?;
     let mut walk = Walk::new(&sem, def);
+    let qname = sem.qname(def);
+    walk.path.push(qname.clone());
     walk.walk_stmts(&node.body, Env::default());
 
     let mut root = Node::root(sem.qname(def));
