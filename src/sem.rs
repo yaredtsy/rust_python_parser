@@ -1,10 +1,11 @@
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
-use ruff_python_ast::{ExprRef, Stmt, StmtFunctionDef};
+use ruff_python_ast::{Alias, ExprRef, Stmt, StmtFunctionDef};
 
 use ty_project::glob::IncludeResult;
 use ty_project::{Db as _, ProjectDatabase};
 use ty_python_core::ProgramFile;
+use ty_python_semantic::types::vnoc;
 use ty_python_semantic::{Db as _, HasDefinition, HasType};
 
 pub use ruff_python_ast::name::Name;
@@ -19,8 +20,9 @@ pub struct Sem<'db> {
 pub enum Shape<'db> {
     Function(Definition<'db>), // a `def`, as ty sees it
     Union(Vec<Type<'db>>),     // keep the alternatives
-    Unknown,                   // Any, Unknown, Never: nothing to go on
-    Other,                     // keep as `Ty`
+    Module,
+    Unknown, // Any, Unknown, Never: nothing to go on
+    Other,   // keep as `Ty`
 }
 impl<'db> Sem<'db> {
     pub fn new(db: &'db ProjectDatabase) -> Self {
@@ -33,10 +35,18 @@ impl<'db> Sem<'db> {
     pub fn type_of(&self, model: &SemanticModel<'db>, expr: ExprRef<'_>) -> Type<'db> {
         expr.inferred_type(model).unwrap_or(Type::unknown())
     }
+    pub fn member(&self, ty: Type<'db>, name: &str, file: ProgramFile<'db>) -> Option<Type<'db>> {
+        let env = ProgramEnvironment::from_file(file);
+        vnoc::member(self.db, &env, ty, name)
+    }
+    pub fn type_of_import(&self, model: &SemanticModel<'db>, alias: &Alias) -> Type<'db> {
+        alias.inferred_type(model).unwrap_or(Type::unknown())
+    }
     pub fn shape(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Shape<'db> {
         match ty {
             Type::Union(u) => Shape::Union(u.elements(self.db).to_vec()), // [check] accessor
             Type::Dynamic(_) | Type::Never => Shape::Unknown,
+            Type::ModuleLiteral(_) => Shape::Module,
             Type::FunctionLiteral(_) => {
                 let env = ProgramEnvironment::from_file(file);
                 match ty.definition(self.db, &env) {

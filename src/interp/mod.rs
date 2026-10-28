@@ -1,5 +1,8 @@
+mod env;
+
 #[cfg(test)]
 mod fixture;
+mod member;
 mod tree;
 mod value;
 mod walk;
@@ -8,7 +11,10 @@ pub use tree::{Mark, Node, to_text};
 use ruff_db::files::File;
 use ty_project::ProjectDatabase;
 
-use crate::{interp::walk::Walk, sem::Sem};
+use crate::{
+    interp::{env::Env, walk::Walk},
+    sem::Sem,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -35,7 +41,7 @@ pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options)
     let parsed = sem.parsed(def);
     let node = sem.function_node(def, &parsed)?;
     let mut walk = Walk::new(&sem, def);
-    walk.walk_stmts(&node.body);
+    walk.walk_stmts(&node.body, Env::default());
 
     let mut root = Node::root(sem.qname(def));
     root.children = walk.frame.children;

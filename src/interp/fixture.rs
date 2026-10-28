@@ -91,3 +91,9 @@ fn p01_02_one_call() {
 fn p01_03_locals() {
     check("01-functions/python/locals.py");
 }
+
+#[test]
+fn p01_04_imports() {
+    check("01-functions/python/imports.py");
+    check("01-functions/python/imports_partial.py");
+}
