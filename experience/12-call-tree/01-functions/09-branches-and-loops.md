@@ -262,8 +262,42 @@ Stmt::Match(s) => {
 ```
 
 `walk_stmt` now returns the env each arm produces, instead of updating one
-`env` in place. `pattern_names` collects the `name` of every `MatchAs`,
-`MatchStar` and the `rest` of every `MatchMapping` in a pattern.
+`env` in place.
+
+`pattern_names` is yours, not ruff's. It collects every name a `case` pattern
+binds: the `name` of a `MatchAs` (`case x:`, `case Point() as p:`) or a
+`MatchStar` (`case [*rest]:`), and the `rest` of a `MatchMapping`
+(`case {**others}:`), at any depth. Put it next to `direct_children` in
+`walk.rs`:
+
+```rust
+use ruff_python_ast::Pattern;
+use ruff_python_ast::visitor::walk_pattern;
+
+/// Every name a `case` pattern binds, at any depth:
+/// `case [Point(x=a), *rest] as whole:` binds `a`, `rest` and `whole`.
+fn pattern_names(pattern: &Pattern) -> Vec<&Name> {
+    struct Names<'a>(Vec<&'a Name>);
+    impl<'a> Visitor<'a> for Names<'a> {
+        fn visit_pattern(&mut self, p: &'a Pattern) {
+            match p {
+                Pattern::MatchAs(m) => if let Some(n) = &m.name { self.0.push(&n.id) },
+                Pattern::MatchStar(m) => if let Some(n) = &m.name { self.0.push(&n.id) },
+                Pattern::MatchMapping(m) => if let Some(n) = &m.rest { self.0.push(&n.id) },
+                _ => {}
+            }
+            walk_pattern(self, p);              // nested patterns
+        }
+        fn visit_expr(&mut self, _: &'a Expr) {}   // `case Color.RED:` binds nothing
+    }
+    let mut names = Names(Vec::new());
+    names.visit_pattern(pattern);
+    names.0
+}
+```
+
+An `or` pattern (`case [x] | (x, _):`) lists `x` twice. Binding it twice
+is harmless.
 
 </details>
 
