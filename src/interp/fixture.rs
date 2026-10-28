@@ -97,3 +97,8 @@ fn p01_04_imports() {
     check("01-functions/python/imports.py");
     check("01-functions/python/imports_partial.py");
 }
+
+#[test]
+fn p01_05_follow() {
+    check("01-functions/python/follow.py");
+}

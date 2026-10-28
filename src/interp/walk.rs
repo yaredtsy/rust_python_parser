@@ -162,25 +162,6 @@ impl<'a, 'db> Walk<'a, 'db> {
             } // `d[k]`, `a.b`: their calls
         }
     }
-
-    fn eval_call(&mut self, call: &ExprCall, env: &mut Env<'db>) -> Values<'db> {
-        let callees = self.eval(&call.func, env);
-        for arg in call.arguments.iter_source_order() {
-            self.eval(arg.value(), env);
-        }
-        for callee in &callees {
-            if let AbstractValue::Function(def) = *callee
-                && self.sem.is_project(def)
-            {
-                self.frame
-                    .children
-                    .push(Node::call(self.sem.qname(def), call.range()));
-            }
-        }
-
-        let ty = self.sem.type_of(&self.frame.model, ExprRef::from(call));
-        self.lift(ty)
-    }
 }
 
 fn direct_children(expr: &Expr) -> Vec<&Expr> {
