@@ -109,5 +109,5 @@ def two_candidates(c):
 #   Pipeline
 #   JsonHandler
 #   Pipeline.run
-#     CsvHandler.process
 #     JsonHandler.process
+#     CsvHandler.process

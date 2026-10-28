@@ -267,7 +267,8 @@ fn sites_union<'db>(s: &Solver<'db>, ctxs: &[ContextId]) -> Vec<(SiteId, SmallVe
     out
 }
 
-/// Targets grouped by function, in first-seen order.
+/// Targets grouped by function, ordered by where each function is defined
+/// (step 01.09): the same order inline mode uses.
 fn group_by_function<'db>(s: &Solver<'db>, targets: &[ContextId]) -> Vec<(Definition<'db>, Vec<ContextId>)> {
     let mut out: Vec<(Definition<'db>, Vec<ContextId>)> = Vec::new();
     for &t in targets {

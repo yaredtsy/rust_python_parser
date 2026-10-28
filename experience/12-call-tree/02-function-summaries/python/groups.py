@@ -116,8 +116,8 @@ def merge_entry():
 #       parse_expr [recursive]
 #     combine
 #       parse_expr [recursive]
-#   binop
 #   num
+#   binop
 # expect inline:
 # ping_entry
 #   ping

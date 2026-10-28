@@ -42,7 +42,7 @@ def combine(left, t):
 def main():
     f(1)()             # done
     b(2)()             # done
-    parse_expr(1)()    # binop, num
+    parse_expr(1)()    # num, binop
 
 def ping(n):
     r = pong(n)

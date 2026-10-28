@@ -145,7 +145,8 @@ In `either`, `p` is two objects, so `p.run` is two bound methods of the same
 function, and inline mode walks `run` twice. They are one call in the source,
 so they make **one** node. Its children are the merge of both walks' children:
 a child with the same site and name as one already there merges into it,
-recursively; a new one is added at the end.
+recursively; a new one is added, and the nodes of each site are kept in
+definition order (step 01.09).
 
 Summary mode's renderer does the same thing with a union of contexts (step
 02.03), so this keeps the two modes' trees equal. It could already happen in

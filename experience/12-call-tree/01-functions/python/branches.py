@@ -39,7 +39,7 @@ def skipped(cond):
     f = a
     if cond:
         f = b
-    f()  # the if body, then "skipped it": b, a
+    f()  # a, b: nodes at one site are ordered by where the function is defined
 
 
 def elif_chain(x):
@@ -84,8 +84,8 @@ def try_except():
 #   b
 # expect:
 # skipped
-#   b
 #   a
+#   b
 # expect:
 # elif_chain
 #   a

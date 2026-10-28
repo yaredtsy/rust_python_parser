@@ -25,7 +25,7 @@ def both_arms(cond):
 def skipped(cond):
     f = a
     if cond: f = b
-    f()                   # b, a
+    f()                   # a, b
 
 def loop(xs):
     f = a
@@ -112,10 +112,20 @@ Stmt::If(s) => {
 This is why step 03 never *removes* a name from the env: a missing name means
 "not assigned on this path", and the join relies on it.
 
-**Order.** The alternatives keep the order the arms are joined in: each arm in
-source order, then "skipped" for an `if` without `else`. That is why
-`skipped` shows `b` before `a`. Within one call site, nodes come out in the
-order of the callee's values.
+**Order.** Inside `Values`, alternatives keep the order the arms were joined
+in. That order is an accident of the walk, and it will differ between modes
+later (a summary joins in other places than an inline walk). So the tree must
+not depend on it: **within one call site, one node per function, ordered by
+where the function is defined** (its file, then its offset). `skipped` shows
+`a` before `b` because `a` is defined first, not because of the join.
+
+```rust
+// after collecting the nodes of one call site
+site_nodes.sort_by_key(|n| s.sem.def_position(n.func));   // (file path, offset)
+```
+
+`sem.def_position(def)` is the definition's file path and range start. Nodes
+of different call sites keep evaluation order: that one is not an accident.
 
 ### Decision 3: a loop body is walked once, joined with "didn't run"
 

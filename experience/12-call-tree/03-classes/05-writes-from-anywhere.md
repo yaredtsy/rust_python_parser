@@ -38,7 +38,7 @@ def two_candidates(c):
     b = Pipeline(CsvHandler())
     p = a if c else b
     p.handler = JsonHandler()       # a OR b got it
-    a.run()                         # CsvHandler.process, JsonHandler.process
+    a.run()                         # JsonHandler.process, CsvHandler.process
 ```
 
 ## Predict
