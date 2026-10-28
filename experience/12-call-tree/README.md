@@ -19,9 +19,10 @@ fixtures, worked traces, and the real Jedi driver as ground truth.
 > by the callee's **summary** for that context. The per-path tree is
 > **rendered** from the summaries at the end.
 
-Everything in this exercise is either what happens inside one walk (values,
-environments, binding, attributes), or how walks are tied together (keys,
-summaries, the solver, recursion, rendering).
+`00-values` shows every structure this needs, top to bottom, from the solver
+for one request down to a single value. The other folders use them: why
+summaries (`01`), every function-call shape (`02`), every method-call shape
+(`03`).
 
 ---
 
@@ -31,9 +32,10 @@ Four folders. Read them in order.
 
 ```
 12-call-tree/
-├── 00-values/ ....... what flows through one walk: AbstractValue, origins,
-│                      Env, lift, the annotation fallback
-│                      covers: plan/03-call-tree/03, 04, 05
+├── 00-values/ ....... every structure, top to bottom: Solver, Context and Fp,
+│                      Slot, FunctionResult, Walk, Env, origins, AbstractValue,
+│                      the four conversions, the output
+│                      covers: plan/03-call-tree/04, 05, 08, 09, 13, 14
 │
 ├── 01-summaries/ .... how walks are tied together: the key, the summary,
 │                      one call (resolve, then write), the solver, the graph
@@ -53,7 +55,7 @@ Four folders. Read them in order.
 
 | | folder | what it gives you |
 |---|---|---|
-| 1 | [`00-values/`](00-values/README.md) | the vocabulary of one walk |
+| 1 | [`00-values/`](00-values/README.md) | every structure, top to bottom, with one program traced through it |
 | 2 | [`01-summaries/`](01-summaries/README.md) | ★ the idea that makes the analysis scale |
 | 3 | [`02-functions/`](02-functions/README.md) | the function-call cases, one file per case |
 | 4 | [`03-classes/`](03-classes/README.md) | the method-call cases, one file per case |

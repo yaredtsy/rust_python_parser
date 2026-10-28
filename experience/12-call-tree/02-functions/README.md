@@ -5,8 +5,8 @@ returning a value, passed as a callback, curried, decorated, or recursive — yo
 can say which contexts it creates, what each summary holds, and what the
 rendered tree looks like.
 
-Everything here is built from [`00-values/`](../00-values/README.md) (one walk)
-and [`01-summaries/`](../01-summaries/README.md) (how walks are tied together).
+Everything here is built from [`00-values/`](../00-values/README.md) (the
+structures) and [`01-summaries/`](../01-summaries/README.md) (how they are used).
 No new machinery, except for recursion in file 8.
 
 ---

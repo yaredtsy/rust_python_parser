@@ -1,58 +1,54 @@
-# 00 — Values: answers
+# 00 — The structures: answers
 
 Don't read this until you've written your own answers to [`exam.md`](exam.md).
 
-1. `Function(f)`: a module-level `f`, named. `Closure`: a nested `def`, named,
-   inside the function that defined it. `Class(C)`: `C`, named. `Instance`:
-   `C()`, or a parameter holding an object. `BoundMethod`: `obj.method`, named.
-   `Module(m)`: `import m`, then `m`. `Ty(t)`: a literal, a stdlib return.
-   `Pending`: the value of a call into a recursion cycle that hasn't been
-   resolved yet. `Unknown`: a value nobody knows, e.g. a parameter the key holds
-   nothing for and that has no annotation.
+1. See the README picture. **Whole request:** `Solver`, its `fps`, `contexts`,
+   `slots`, `stack`, `heads`, and each slot's `state` and `result` (the
+   summary). **One walk only:** `Walk` and everything in it: `Env`, `origins`,
+   `values`, `activations`, `deferred`, and every `AbstractValue` and walk-local
+   id. (A walk in a recursion group lives in its slot until the group resolves.)
 
-2. `Type::Union` is ty's set, used as a whole. `Values` keeps the members
-   separate and enumerable, so each one can produce its own calls and its own
-   edges. Collapsing `Values` into a `Type::Union` rebuilds
-   `ty_ide::outgoing_calls`: two objects with different state merge into one
-   type, and `self.handler` no longer knows which handler it holds.
+2. `AbstractValue`, in a walk: yes, by an `OriginId` that means something only in
+   that walk. `Fp`, in a key: no, class and attributes only. `SVal`, in a
+   summary: yes, relative to the inputs, as `Ref(path)` or `Obj(j)`.
 
-3. Empty means no value reaches this point: every path to it raised, or it
-   waits on a cycle that hasn't produced anything. `[Unknown]` means a value
-   exists and nobody knows what it is.
+3. Small request-local indexes into the solver's interners. Interning turns
+   "have I seen this call shape before?" into a lookup: an equal context gets
+   the same id, and its slot already holds the summary. A context refers to
+   its fingerprints by `FpId`, so nested fingerprints are shared too.
 
-4. A `Box` makes the enum non-`Copy`, so every env clone that touches a bound
-   method would allocate or chase pointers. Interning the receiver in a
-   per-walk arena keeps the enum `Copy` and dedupes receivers, which repeat a
-   lot.
+4. (a) `Instance { Pipeline, [writer: Instance { JsonWriter, [] }] }`.
+   (b) `Data(int)`: literals widen to their class. (c) `Opaque(JsonWriter)`: an
+   instance ty handed over has no tracked attributes. (d) `Unknown`: irrelevant
+   parameters are left out of the key.
 
-5. `Entry(path)`: an object the caller passed in, named by its path from the
-   inputs. `New { site, .. }`: an object built in this walk, at that site (or
-   one a callee built, returned to this site). `Beyond`: an input object deeper
-   than `max_path`, which holds no state.
+5. `New → Running → Ready`. With recursion: `Running → Parked → Resolving →
+   Ready`. With a cost limit read during the walk: `Running → Cut`, and a `Cut`
+   slot goes back to `Running` the next time it is reached. Without recursion
+   or limits: `New`, `Running`, `Ready`.
 
-6. In `main`: `New { site of the constructor }`. In `run`: `Entry(Param(0))`.
-   Origins are walk-local. Each walk names objects by what it can see: `main`
-   saw it built, `run` saw it arrive as parameter 0.
+6. `returns: [Plain(Ty(None))]`, `effects: [Effect { target: Param(0), attr:
+   handler, value: [Ref(Param(1))], strong: true }]`, `objects: []`, `calls: []`,
+   Finished. The effect came from the exit env's `written` set: `(Entry(Param(0)),
+   handler) → Must`.
 
-7. Every instance ty hands you shares the one `OPAQUE` origin. If it held
-   state, a write to one would show up on all of them:
-   `a = get_logger(); b = get_db(); a.handler = FileHandler(); b.handler.write()`
-   would resolve to `FileHandler.write`. So writes to it are dropped, and reads
-   go to the class and ty.
+7. From `materialize` (when `get` finds a `New` or `Cut` slot) to `finish`. Then
+   it is dropped, and the slot keeps only the summary. The exception: a walk in a
+   recursion group is kept, `Parked` then `Resolving`, until the group's fixpoint
+   ends, because its deferred operations are replayed.
 
-8. The arguments were evaluated eagerly at each call site, in that caller's
-   env, and became the callee's key. `inner`'s walk starts from its key, where
-   `y` is already the `JsonWriter`. The chain is flattened at every call, so
-   nothing ever walks back.
+8. `locals` (what does `x` hold), `attrs` (what does this object's `.a` hold),
+   `written` (which attributes this walk wrote, `Must` or `May`), `scope` (may
+   this name be seen here), `enclosing` (for a closure, the run where it was
+   defined). No caller link because values from the caller arrive only through
+   the key; looking a name up through the caller would leak one function's
+   locals into another.
 
-9. When a parameter's fingerprint in the key is `Unknown`. It starts the
-   parameter from its annotation. It can't make a traced value worse because it
-   never fires when the key holds a value. It is counted in `Stats`, because an
-   annotation is a claim, not a proof.
+9. `Entry(path)`, `New { site, t, combo, made }`, `Beyond { at, attr }`. In
+   `run`: `Entry(Param(0).writer)`. In `read_json`: `New { site: JsonWriter(),
+   t: 0, combo: 0, made: Instance }`.
 
-10. Both: `JsonWriter` and `CsvWriter`. Conditions are never evaluated, so every
-    arm is possible; each arm starts from the state before the `if`, and the
-    arms are joined after it. In the second case, the first `w.write()` sees only
-    `JsonWriter` and the second only `CsvWriter`: on one path, a later assignment
-    replaces an earlier one. Ignoring branches is not the same as ignoring
-    assignment order.
+10. (1) fingerprint: part of `Instance { Pipeline, [writer: Instance { JsonWriter, [] }] }`,
+    no identity. (2) materialize: `Instance { JsonWriter, Entry(Param(0).writer) }`
+    in `run`. (3) finish: `Ref(Param(0).writer)` in `run`'s returns. (4) resolve:
+    `Instance { JsonWriter, o0 }` in `read_json`: the same object it started as.

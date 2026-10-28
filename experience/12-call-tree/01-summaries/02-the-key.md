@@ -91,7 +91,7 @@ objects.
 | `Instance { class, attrs }` | an object with origin `Entry(path)`, its attributes written into the env |
 | `Opaque(class)` | an object with origin `Entry(path)` and no attributes |
 | `Bound`, `Closure` | the method or closure, its receiver or captured values at `path + [Recv]` / `[Free(n)]` |
-| `Unknown` | the parameter's annotation, if it has one ([`00-values/04`](../00-values/04-annotation-fallback.md)). Else `Unknown` |
+| `Unknown` | the parameter's annotation, if it has one ([`00-values/05`](../00-values/05-the-walk.md#the-annotation-fallback)). Else `Unknown` |
 
 Parameter `i` is at `Path { root: Param(i) }`; `self.handler` is at
 `Param(0).handler`. Two parameters the key says are aliases share one origin.

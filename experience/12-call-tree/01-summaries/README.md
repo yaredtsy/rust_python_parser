@@ -4,8 +4,9 @@
 summary contains, how the caller uses it, when it is reused, and how the tree
 v-noc shows comes out of it all.
 
-The previous folder was one walk. This one is everything between walks. It is
-the idea that makes the analysis scale: a context-sensitive call tree is
+The previous folder showed every structure and what it holds. This one is why
+they are built that way, and what each step does with them. It is the idea that
+makes the analysis scale: a context-sensitive call tree is
 exponential in depth, but the number of distinct contexts is not.
 
 ---

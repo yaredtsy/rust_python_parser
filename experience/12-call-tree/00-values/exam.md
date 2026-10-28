@@ -1,37 +1,40 @@
-# 00 — Values: exam
+# 00 — The structures: exam
 
 Closed book. Write your answers, then check [`answers.md`](answers.md).
 
-1. List the `AbstractValue` variants. For each, give one Python expression (or
-   situation) that produces it.
+1. Draw the structure picture from the README, top to bottom, from `Solver` to
+   `AbstractValue`. Mark which structures live for the whole request and which
+   only during one walk.
 
-2. `Type::Union(A | B)` and `Values` both mean "more than one possibility". What
-   is the difference in how they're used, and what goes wrong if you treat them
-   the same?
+2. Name the three ways one value is written, where each lives, and whether each
+   can name a specific object.
 
-3. What is the difference between an empty `Values` and `[Unknown]`?
+3. What are `ContextId` and `FpId`, and why are contexts and fingerprints
+   interned rather than stored inline?
 
-4. Why is `BoundMethod`'s receiver a `ValueId` rather than a
-   `Box<AbstractValue>`?
+4. Give the `Fp` for each, with `fp_depth = 2`:
+   (a) a `Pipeline` whose `writer` is a `JsonWriter` with no attributes;
+   (b) the literal `3`; (c) a `JsonWriter` that came from a module global;
+   (d) a parameter the function never uses.
 
-5. Name the three kinds of origin. For each, say where the object came from.
+5. Draw the life of a slot: every state and what moves it to the next one. Which
+   states does a context with no recursion and no limits go through?
 
-6. One Python object is built in `main` and passed to `run(self)`. Give its
-   origin in `main`'s walk and in `run`'s walk. Why are they different?
+6. Write the summary of `def install(p, h): p.handler = h`. Which field of the
+   walk did its effect come from?
 
-7. Why can an `OPAQUE` instance never hold attribute state? Give the bug it
-   would cause.
+7. When does a `Walk` exist? What happens to it when its summary is finished,
+   and what is the one exception?
 
-8. `Env` has no link to the caller. Then how does `inner` in
-   `outer → middle → inner` know what `y` is?
+8. Name the five fields of `Env` and say what each answers. Why does `Env` have
+   no link to the caller?
 
-9. When does the annotation fallback fire, and why can it never make a traced
-   value worse?
+9. Name the three kinds of `OriginKey`. In `run`'s walk, what is the origin of
+   `self.writer`? In `read_json`'s walk, what is the origin of the same Python
+   object?
 
-10. `if c: w = JsonWriter() else: w = CsvWriter(); w.write()` — what does `w`
-    hold at `w.write()`, and why isn't `c` looked at? Then:
-    `w = JsonWriter(); w.write(); w = CsvWriter(); w.write()` — what does each
-    `w.write()` see?
+10. Follow `read_json`'s `JsonWriter` through `w = p.run(1)`: give its form after
+    each of the four conversions.
 
 ---
 

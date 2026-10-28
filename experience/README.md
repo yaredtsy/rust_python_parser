@@ -67,8 +67,9 @@ where it gives the wrong answer for your purposes. You will not build the
 replacement there — you'll just see the hole with your own eyes.
 
 Exercise **12** picks the design back up afterward: once you've seen the hole,
-it walks `plan/03-call-tree/`'s design by hand — what flows through one walk,
-how summaries per context tie walks together, then every shape a function call
+it walks `plan/03-call-tree/`'s design by hand — every structure, top to
+bottom, with one program traced through it; how summaries per context tie walks
+together; then every shape a function call
 or a method call can take, recursion included — using fixtures, worked traces,
 and the real Jedi driver as ground truth, the same way exercises
 00–02 taught the syntax layer. It stops short of handing you working Rust for
@@ -155,7 +156,7 @@ experience/
 │  ── THE HARD PART: the design you build next, taught the same way ──
 │
 └── 12-call-tree/ .......................... the call tree analysis, by hand
-      Four folders: values (one walk), summaries (keys, results, one call,
+      Four folders: values (every structure, top to bottom), summaries (keys, results, one call,
       the solver, the rendered tree), functions (every call shape, recursion),
       classes (self, attribute state, deep writes, MRO).
       No Rust to run yet -- predict against the real Jedi driver instead.

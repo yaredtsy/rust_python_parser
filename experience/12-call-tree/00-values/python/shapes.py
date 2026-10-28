@@ -1,6 +1,6 @@
 """The five shapes an AbstractValue must tell apart. Nothing here is hard to
 read -- the point is to practice naming which variant each expression becomes
-BEFORE you read 01-abstractvalue.md's answer.
+BEFORE you read 08-the-value.md's answer.
 
 ID: 00000000-0000-0000-0000-000000000000
 """
@@ -28,7 +28,7 @@ import json  # noqa: E402  (deliberately after defs -- a module object)
 def uses_all_five():
     """Five expressions, five different AbstractValue shapes. Write down which
     variant each one is -- Function / Class / Instance / BoundMethod / Module --
-    before you open 01-abstractvalue.md.
+    before you open 08-the-value.md's answers.
 
     ID: 00000000-0004-0000-0000-000000000000
     """

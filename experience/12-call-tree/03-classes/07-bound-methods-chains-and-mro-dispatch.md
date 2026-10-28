@@ -50,7 +50,7 @@ run(fetch, self.handler.on_done)
 
 `self.handler.on_done` is evaluated once, at the call site, to
 `BoundMethod { on_done, receiver }`. The receiver is interned as a `ValueId`
-([`00-values/02`](../00-values/02-origins.md)), because by the time `cb()` runs
+([`00-values/07`](../00-values/07-origins-and-ids.md)), because by the time `cb()` runs
 inside `run`, the expression is long gone. Across the call it becomes
 `Fp::Bound { recv }`, and a write the method makes on its receiver comes back as
 an effect at `Param(0).Recv` ([`02-functions/06`](../02-functions/06-callbacks-and-higher-order.md)).

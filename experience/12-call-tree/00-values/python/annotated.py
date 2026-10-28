@@ -1,4 +1,4 @@
-"""Fixtures for 04-annotation-fallback.md: where a parameter's annotation is
+"""Fixtures for 05-the-walk.md's annotation fallback: where a parameter's annotation is
 used (its key holds nothing for it), where it is not (a module global, which ty
 already answers), and a control case where nothing resolves.
 
