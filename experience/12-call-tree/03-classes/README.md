@@ -1,61 +1,66 @@
-# 03 — Classes: construction, `self`, state, and the MRO
+# 03 — Classes, inline mode
 
-**Goal:** given any method call — plain, static, class, property, inherited,
-chained, or two instances alive at once — you can say what the contexts,
-summaries and edges are, and prove to yourself that two objects of one class
-never mix their state.
+**Goal:** objects. Constructing them, calling their methods, and following
+what they hold: `self.handler = handler` in `__init__`, read back as
+`self.handler.process()` in another method, on the right object, on this path.
 
-Method calls are function calls with a receiver. The new pieces in this folder
-are about **state**: where an object's attributes live, how a write reaches the
-caller, and how deep it can go.
+Everything here is built in **inline mode** first, where it is simplest: every
+call is walked right there, one walk holds every object of the request, and a
+write in a callee is simply visible to the caller afterwards. Summary mode
+doesn't handle objects yet; these fixtures run in inline mode only until part
+04 brings summary mode to the same trees.
 
 ---
 
-## How this folder is organised
+## The steps
 
-| | file | the case | the one new idea |
+| | step | you build | the decision |
 |---|---|---|---|
-| 1 | [`01-constructing-an-instance.md`](01-constructing-an-instance.md) | `Foo()` | a new origin, then `__init__` as an ordinary call whose writes are effects on it |
-| 2 | [`02-self-and-method-binding.md`](02-self-and-method-binding.md) | `obj.m(x)` vs `Cls.m(obj, x)` | the receiver goes to the first parameter, by position |
-| 3 | [`03-attribute-state.md`](03-attribute-state.md) | `self.x = v`, read in another method | state lives in the env; the key carries it into the next call |
-| 4 | [`04-two-instances-and-origin-isolation.md`](04-two-instances-and-origin-isolation.md) | two instances, no cross-talk | ★ the fixture to write first |
-| 5 | [`05-writes-anywhere-and-deep-writes.md`](05-writes-anywhere-and-deep-writes.md) | writes in any method, from outside, at depth | ★ effects by path, and the `max_path` fallback |
-| 6 | [`06-classmethod-staticmethod-property.md`](06-classmethod-staticmethod-property.md) | `@staticmethod`, `@classmethod`, `@property` | three receiver rules, and a call without parentheses |
-| 7 | [`07-bound-methods-chains-and-mro-dispatch.md`](07-bound-methods-chains-and-mro-dispatch.md) | `a.b.c.f()`, `super()` | chain depth is recursion in `eval`; the MRO is one wrapper |
+| 1 | [`01-constructing.md`](01-constructing.md) | `Foo()` → a node, `__init__` walked, a new object | an object is named by where it was built: its origin |
+| 2 | [`02-methods-and-self.md`](02-methods-and-self.md) | `obj.method()` | ty finds the method; you bind your own receiver |
+| 3 | [`03-attribute-state.md`](03-attribute-state.md) | `self.h = h` … `self.h.process()` | state lives in the env, keyed by (origin, name), and flows back out of a call |
+| 4 | [`04-two-instances-and-opaque.md`](04-two-instances-and-opaque.md) | two objects alive at once; objects from ty | origins keep objects apart; an object nobody built here holds no state |
+| 5 | [`05-writes-from-anywhere.md`](05-writes-from-anywhere.md) | writes outside `__init__`, outside the class, on one path | one write rule for every receiver. Several candidates: a weak write |
+| 6 | [`06-static-class-property.md`](06-static-class-property.md) | `@staticmethod`, `@classmethod`, `@property` | the decorator decides the receiver. A property is a call |
+| 7 | [`07-chains-super-and-annotations.md`](07-chains-super-and-annotations.md) | `a.b.c.f()`, `super()`, `def f(h: Handler)` | one `member` per hop. `super()` is the same receiver. An annotation is a claim, and is counted |
 
-Then [`exam.md`](exam.md), and the whole-exercise [`../exam.md`](../exam.md).
+**Steps 1, 2 and 3 are the core.** 1 introduces identity, 2 the receiver
+rule, 3 state. The rest are those three applied to more shapes.
+
+---
+
+## What you add
+
+```
+AbstractValue += Class(def) | Instance { class, origin } | BoundMethod { func, receiver }
+Walk          += origins: OriginKey → OriginId,  values: ValueArena (receivers)
+Env           += attrs: (OriginId, Name) → Values
+Frame         += exits: [Env]            (state flows back out of a call)
+src/interp/member.rs:  member on instances and classes, bind_attribute
+```
+
+`00-values/07-origins-and-ids.md` and `08-the-value.md` show where these end
+up. In inline mode an origin is simpler than there: it only has to be unique
+within the one walk of the request.
 
 ---
 
 ## Read first
 
-- Everything in [`00-values/`](../00-values/README.md),
-  [`01-summaries/`](../01-summaries/README.md) and
-  [`02-functions/`](../02-functions/README.md)
-- [`plan/03-call-tree/07-attributes-and-self.md`](../../../plan/03-call-tree/07-attributes-and-self.md)
-  in full, and [`10-one-call.md`](../../../plan/03-call-tree/10-one-call.md) § "Constructors"
-- `experience/08-classes-and-mro/README.md`: the `vnoc::member` wrapper file 7
-  relies on is already built and tested in this repo
+- `plan/03-call-tree/07-attributes-and-self.md`: the plan's version of steps
+  2–7, written for summary mode. Read it for the rules, which are the same.
+- `experience/08-classes-and-mro/README.md`: the `vnoc::member` wrapper and its
+  test, already in this repository.
 
 ---
 
 ## Done when
 
-- [ ] you can trace `Pipeline(JsonHandler())` to the new object's attributes,
-      naming the summary of `__init__` and the effect that writes `handler`
-- [ ] you can state the receiver rule, and the bug from getting it backwards
-- [ ] you can write `member()`'s order from memory and say which step is the
-      precise answer
-- [ ] you can explain what the two-instance fixture catches that a
-      one-instance fixture can't
-- [ ] you can trace `rewire(svc)` writing three levels into `main`'s objects, and
-      say what changes past `max_path`
-- [ ] you can say why writes to an unknown receiver are dropped
-- [ ] you can explain why `a.b.c.f()` works at any depth with no depth-specific
-      code
-- [ ] you can name the real file that answers "what is `.name` on this type",
-      and what it does not answer
+- [ ] every test from steps 1–7 passes in inline mode
+- [ ] every part 01 and 02 test still passes in both modes
+- [ ] you can say, for each step, which fixture line breaks without its
+      decision
 
 ---
 
-→ Start: [`01-constructing-an-instance.md`](01-constructing-an-instance.md)
+→ Start: [`01-constructing.md`](01-constructing.md)

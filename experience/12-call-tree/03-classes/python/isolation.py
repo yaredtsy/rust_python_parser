@@ -1,47 +1,113 @@
-"""Fixture 2 from plan/03-call-tree/07: two instances alive at once must
-NOT cross-contaminate. plan/03-call-tree/07 calls this "the first test you
-write" -- treat it that way here too.
+"""Step 03.04: two instances, and objects from ty. Different origins never
+share state. An object ty hands the walk (a module global, a stdlib return)
+has no origin of its own, so it holds no state at all."""
 
-ID: c4000000-0000-0000-0000-000000000000
-"""
+
+def on_ok():
+    pass
 
 
 class JsonHandler:
-    """ID: c4000000-0001-0000-0000-000000000000"""
-
     def process(self, data):
-        """ID: c4000000-0002-0000-0000-000000000000"""
-        return None
+        pass
 
 
 class CsvHandler:
-    """ID: c4000000-0003-0000-0000-000000000000"""
-
     def process(self, data):
-        """ID: c4000000-0004-0000-0000-000000000000"""
-        return None
+        pass
+
+
+class FileHandler:
+    def write(self):
+        pass
 
 
 class Pipeline:
-    """ID: c4000000-0005-0000-0000-000000000000"""
-
     def __init__(self, handler):
-        """ID: c4000000-0006-0000-0000-000000000000"""
         self.handler = handler
 
     def run(self, data):
-        """ID: c4000000-0007-0000-0000-000000000000"""
         self.handler.process(data)
 
 
-def two_instances():
-    """`a` and `b` must NOT share state: `a.run` must reach
-    `JsonHandler.process`, `b.run` must reach `CsvHandler.process` -- if
-    your origin allocation is wrong, one will leak into the other.
+class Logger:
+    def emit(self):
+        self.handler.write()
 
-    ID: c4000000-0008-0000-0000-000000000000
-    """
+
+class Greeter:
+    def greet(self, cb):
+        cb()
+
+
+LOG_A = Logger()
+LOG_B = Logger()
+GREET = Greeter().greet
+
+
+def two_alive():
     a = Pipeline(JsonHandler())
     b = Pipeline(CsvHandler())
     a.run(1)
     b.run(2)
+
+
+def make(h):
+    return Pipeline(h)
+
+
+def one_site():
+    a = make(JsonHandler())
+    b = make(CsvHandler())
+    a.run(1)
+    b.run(2)
+
+
+def opaque():
+    LOG_A.handler = FileHandler()  # dropped: LOG_A holds no state
+    LOG_B.emit()  # must not find FileHandler.write
+
+
+def global_write():
+    LOG_A.handler = FileHandler()
+    LOG_A.emit()  # Python: FileHandler.write. Known limit: writes to globals are dropped
+
+
+def global_method():
+    GREET(on_ok)  # ty's bound method, given a receiver of its own
+
+
+# expect:
+# two_alive
+#   JsonHandler
+#   Pipeline
+#   CsvHandler
+#   Pipeline
+#   Pipeline.run
+#     JsonHandler.process
+#   Pipeline.run
+#     CsvHandler.process
+# expect:
+# one_site
+#   JsonHandler
+#   make
+#     Pipeline
+#   CsvHandler
+#   make
+#     Pipeline
+#   Pipeline.run
+#     JsonHandler.process
+#   Pipeline.run
+#     CsvHandler.process
+# expect:
+# opaque
+#   FileHandler
+#   Logger.emit
+# expect:
+# global_write
+#   FileHandler
+#   Logger.emit
+# expect:
+# global_method
+#   Greeter.greet
+#     on_ok
