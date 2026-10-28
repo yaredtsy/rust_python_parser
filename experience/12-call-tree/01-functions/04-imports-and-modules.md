@@ -155,7 +155,11 @@ first, so depth needs no special code. The same will hold for
 ### Yours
 
 - `Shape::Module`, and `sem.member(ty, name, file)` over `vnoc::member`.
-- `AbstractValue::Module`, the `Expr::Attribute` arm, `member`.
+- `AbstractValue::Module`, `eval_attribute` / `member`, **and the arm in
+  `eval` that sends `Expr::Attribute` to it.** Without that arm, attributes
+  fall through to `eval`'s last arm (ty's type for the whole expression), and
+  this step's fixture still passes, because ty knows `util` here. Step 07's
+  `with_module` is the first fixture that fails.
 - `sem.type_of_import(model, alias)`. `Stmt::Import` / `Stmt::ImportFrom` bind their names to it.
 - A `dedup(&mut Values)` helper: keeps the first of each value, in order.
 
@@ -257,7 +261,10 @@ impl<'a, 'db> Walk<'a, 'db> {
 }
 ```
 
-`eval` routes `Expr::Attribute(a) => self.eval_attribute(a, env)`.
+```rust
+// src/interp/walk.rs: in eval, before the `other =>` arm
+Expr::Attribute(a) => self.eval_attribute(a, env),
+```
 
 </details>
 

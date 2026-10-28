@@ -123,6 +123,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             }
             Expr::Call(call) => self.eval_call(call, env),
             Expr::Lambda(_) => smallvec![AbstractValue::Unknown],
+            Expr::Attribute(a) => self.eval_attribute(a, env),
             other => {
                 for child in direct_children(other) {
                     self.eval(child, env);

@@ -107,3 +107,8 @@ fn p01_05_follow() {
 fn p01_06_recursion() {
     check("01-functions/python/recursion.py");
 }
+
+#[test]
+fn p01_07_arguments() {
+    check("01-functions/python/arguments.py");
+}

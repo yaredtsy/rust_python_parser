@@ -1,5 +1,6 @@
 mod env;
 
+mod bind;
 mod call;
 #[cfg(test)]
 mod fixture;

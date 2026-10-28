@@ -282,6 +282,11 @@ If `run_kw` shows `on_err`, keywords are being matched by position. If
 `run_default()` shows nothing, the default is being read from the wrong place:
 print which model `default_value` uses.
 
+If `with_module` shows no `util.helper` child, `eval` is not sending
+`Expr::Attribute` to `eval_attribute` (step 04). `m.helper` then falls to
+ty's type for the whole expression, and ty sees `m` as an unknown parameter.
+This is the first fixture where only your own `member` knows the answer.
+
 ---
 
 ## Where you are
