@@ -112,3 +112,8 @@ fn p01_06_recursion() {
 fn p01_07_arguments() {
     check("01-functions/python/arguments.py");
 }
+
+#[test]
+fn p01_08_varargs() {
+    check("01-functions/python/varargs.py");
+}

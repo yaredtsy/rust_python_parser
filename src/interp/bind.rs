@@ -1,5 +1,7 @@
 // src/interp/bind.rs
-use ruff_python_ast::{ArgOrKeyword, Arguments, ExprRef, ParameterWithDefault, StmtFunctionDef};
+use ruff_python_ast::{
+    ArgOrKeyword, Arguments, Expr, ExprRef, ParameterWithDefault, StmtFunctionDef,
+};
 use smallvec::{SmallVec, smallvec};
 
 use crate::interp::env::Env;
@@ -11,6 +13,7 @@ use crate::sem::Name;
 pub struct EvaluatedArgs<'db> {
     pub positional: SmallVec<[Values<'db>; 4]>,
     pub keywords: SmallVec<[(Name, Values<'db>); 2]>,
+    pub has_splat: bool,
 }
 
 impl<'db> EvaluatedArgs<'db> {
@@ -28,6 +31,10 @@ impl<'a, 'db> Walk<'a, 'db> {
         let mut out = EvaluatedArgs::default();
         for arg in args.iter_source_order() {
             match arg {
+                ArgOrKeyword::Arg(Expr::Starred(st)) => {
+                    self.eval(&st.value, env);
+                    out.has_splat = true;
+                }
                 ArgOrKeyword::Arg(e) => {
                     let v = self.eval(e, env);
                     out.positional.push(v);
@@ -51,6 +58,15 @@ impl<'a, 'db> Walk<'a, 'db> {
         let mut env = Env::default();
         let mut positional = args.positional.iter();
         let params = &def.parameters;
+        let unknown = || smallvec![AbstractValue::Unknown];
+
+        if args.has_splat {
+            for p in params.iter() {
+                // [check] ruff's iterator over every parameter
+                env.bind(&p.name().id, unknown());
+            }
+            return env;
+        }
 
         for p in params.posonlyargs.iter().chain(&params.args) {
             let name = &p.parameter.name.id;
@@ -70,6 +86,12 @@ impl<'a, 'db> Walk<'a, 'db> {
                 .or_else(|| self.default_value(p))
                 .unwrap_or_else(|| smallvec![AbstractValue::Unknown]);
             env.bind(name, v);
+        }
+        if let Some(p) = &params.vararg {
+            env.bind(&p.name.id, unknown());
+        }
+        if let Some(p) = &params.kwarg {
+            env.bind(&p.name.id, unknown());
         }
         env
     }
