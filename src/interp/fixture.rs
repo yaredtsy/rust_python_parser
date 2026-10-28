@@ -50,10 +50,13 @@ pub fn check(fixture: &str) {
     let blocks = expectations(&source);
     assert!(!blocks.is_empty(), "{fixture}: no `# expect:` block");
     let mut failures = String::new();
+
     for e in blocks {
         let got = call_tree(&db, file, &e.entry, &Options::default())
             .map(|t| to_text(&t, module))
             .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
+        println!("--- {fixture}: \n{got} {}\n", e.tree);
+
         if got != e.tree {
             failures += &format!(
                 "--- {fixture}: {}\nexpected:\n{}got:\n{}\n",
@@ -77,4 +80,14 @@ fn reads_blocks() {
 #[test]
 fn p01_01_harness() {
     check("01-functions/python/harness.py");
+}
+
+#[test]
+fn p01_02_one_call() {
+    check("01-functions/python/one_call.py");
+}
+
+#[test]
+fn p01_03_locals() {
+    check("01-functions/python/locals.py");
 }

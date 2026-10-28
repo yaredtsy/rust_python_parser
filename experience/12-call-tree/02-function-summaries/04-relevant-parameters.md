@@ -196,7 +196,7 @@ impl<'a> Visitor<'a> for Taint<'_> {
         match e {
             Expr::Call(c) => {
                 self.sink(&c.func);
-                for arg in c.arguments.arguments_source_order() { self.sink(arg.value()) }
+                for arg in c.arguments.iter_source_order() { self.sink(arg.value()) }
             }
             Expr::Attribute(a) => self.sink(&a.value),
             Expr::Yield(_) | Expr::YieldFrom(_) | Expr::Await(_) => self.sink(e),

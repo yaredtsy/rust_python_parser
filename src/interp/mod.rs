@@ -33,7 +33,7 @@ pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options)
     let sem = Sem::new(db);
     let def = sem.entry(file, entry)?;
     let parsed = sem.parsed(def);
-    let node = sem.function_node(def, &parsed);
+    let node = sem.function_node(def, &parsed)?;
     let mut walk = Walk::new(&sem, def);
     walk.walk_stmts(&node.body);
 

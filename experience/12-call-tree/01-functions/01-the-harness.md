@@ -342,6 +342,7 @@ pub fn check(fixture: &str) {
         let got = call_tree(&db, file, &e.entry, &Options::default())
             .map(|t| to_text(&t, module))
             .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
+        println!("--- {fixture}: {}\n{got}", e.entry);   // shown with --show-output
         if got != e.tree {
             failures += &format!("--- {fixture}: {}\nexpected:\n{}got:\n{}\n", e.entry, e.tree, got);
         }
@@ -375,7 +376,16 @@ fn p01_01_harness() {
 cargo test interp::fixture
 ```
 
-Both tests pass. Now break one on purpose: add `#   helper` under `# main`
+Both tests pass, and print nothing else: cargo captures a test's output and
+only shows it when the test fails. To see the trees of passing tests too:
+
+```bash
+cargo test interp::fixture -- --show-output                    # after the run, grouped per test
+cargo test interp::fixture -- --nocapture --test-threads=1     # live, in order
+```
+
+`check` prints every tree it computes, so `--show-output` is the quickest way
+to look at what the walker found while a fixture is still being written. Now break one on purpose: add `#   helper` under `# main`
 in `harness.py` and run again.
 
 ```

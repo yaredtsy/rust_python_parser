@@ -15,7 +15,7 @@ def unused():
 
 def main():
     helper()
-    print(other())
+    print(f"{other()}")
     len("x")
     if True:
         helper()

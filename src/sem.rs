@@ -26,6 +26,9 @@ impl<'db> Sem<'db> {
     pub fn new(db: &'db ProjectDatabase) -> Self {
         Sem { db }
     }
+    pub fn model(&self, file: ProgramFile<'db>) -> SemanticModel<'db> {
+        SemanticModel::new(self.db, file)
+    }
     /// ty's type for an expression of `model`'s file. Unknown if ty has none.
     pub fn type_of(&self, model: &SemanticModel<'db>, expr: ExprRef<'_>) -> Type<'db> {
         expr.inferred_type(model).unwrap_or(Type::unknown())

@@ -181,7 +181,7 @@ impl<'a, 'db> Walk<'a, 'db> {
     /// In the caller's frame and env, left to right, each argument once.
     pub fn eval_arguments(&mut self, args: &Arguments, env: &mut Env<'db>) -> EvaluatedArgs<'db> {
         let mut out = EvaluatedArgs::default();
-        for arg in args.arguments_source_order() {
+        for arg in args.iter_source_order() {
             match arg {
                 ArgOrKeyword::Arg(e) => {
                     let v = self.eval(e, env);

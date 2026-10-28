@@ -51,7 +51,7 @@ resolves the call right there.
 ```rust
 fn eval_call(&mut self, call: &ExprCall) -> Values<'db> {
     let callees = self.eval(&call.func);              // ← the decision
-    for arg in call.arguments.arguments_source_order() {
+    for arg in call.arguments.iter_source_order() {
         self.eval(arg.value());
     }
     for callee in &callees {
@@ -204,7 +204,8 @@ and part 03).
 // src/sem.rs (added)
 use ruff_db::parsed::ParsedModuleRef;
 use ruff_python_ast::{Expr, ExprRef, StmtFunctionDef};
-use ty_project::IncludeResult;                      // [check] the path it is exported at
+use ty_project::Db as _;                            // for `db.project()`: a trait method
+use ty_project::glob::IncludeResult;
 use ty_python_core::ProgramFile;
 use ty_python_semantic::types::TypeDefinition;
 use ty_python_semantic::{HasType, ProgramEnvironment};
@@ -228,7 +229,7 @@ impl<'db> Sem<'db> {
 
     pub fn shape(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Shape<'db> {
         match ty {
-            Type::Union(u) => Shape::Union(u.elements(self.db).to_vec()),   // [check] accessor
+            Type::Union(u) => Shape::Union(u.elements(self.db).to_vec()),
             Type::Dynamic(_) | Type::Never => Shape::Unknown,
             Type::FunctionLiteral(_) => {
                 let env = ProgramEnvironment::from_file(file);
@@ -389,7 +390,7 @@ impl<'a, 'db> Walk<'a, 'db> {
 
     fn eval_call(&mut self, call: &ExprCall) -> Values<'db> {
         let callees = self.eval(&call.func);
-        for arg in call.arguments.arguments_source_order() {
+        for arg in call.arguments.iter_source_order() {
             self.eval(arg.value());
         }
         for callee in &callees {

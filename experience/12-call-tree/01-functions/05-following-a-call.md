@@ -164,7 +164,7 @@ use crate::sem::Definition;
 impl<'a, 'db> Walk<'a, 'db> {
     pub fn eval_call(&mut self, call: &ExprCall, env: &mut Env<'db>) -> Values<'db> {
         let callees = self.eval(&call.func, env);
-        for arg in call.arguments.arguments_source_order() {
+        for arg in call.arguments.iter_source_order() {
             self.eval(arg.value(), env);
         }
         for callee in &callees {

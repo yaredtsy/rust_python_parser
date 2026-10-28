@@ -127,7 +127,7 @@ impl<'a, 'db> Walk<'a, 'db> {
 
     fn eval_call(&mut self, call: &ExprCall) -> Values<'db> {
         let callees = self.eval(&call.func);
-        for arg in call.arguments.arguments_source_order() {
+        for arg in call.arguments.iter_source_order() {
             self.eval(arg.value());
         }
         for callee in &callees {
