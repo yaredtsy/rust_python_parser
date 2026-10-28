@@ -43,6 +43,11 @@ uuid = { version = "1.6.1", features = ["v4"] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = { version = "1.0.113" }
 anyhow = { version = "1.0.80" }
+smallvec = { version = "1.13.2", features = [
+    "union",
+    "const_generics",
+    "const_new",
+] }
 
 [dev-dependencies]
 # Only `#[cfg(test)]` modules parse directly (`parse_unchecked`) rather than

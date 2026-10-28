@@ -1,3 +1,5 @@
+use ruff_text_size::TextRange;
+
 use crate::positions::Position;
 
 /// One output node per def. There used to be a third `NodeKind::Call`

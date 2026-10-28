@@ -1,3 +1,5 @@
+use ruff_text_size::TextRange;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub qname: String,
@@ -14,10 +16,18 @@ pub enum Mark {
 }
 
 impl Node {
-    pub fn root(qname: Sting) -> self {
+    pub fn root(qname: String) -> Self {
         Node {
             qname,
             site: None,
+            marks: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+    pub fn call(qname: String, site: TextRange) -> Self {
+        Node {
+            qname,
+            site: Some(site),
             marks: Vec::new(),
             children: Vec::new(),
         }

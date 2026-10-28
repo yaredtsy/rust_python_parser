@@ -1129,6 +1129,7 @@ dependencies = [
  "salsa",
  "serde",
  "serde_json",
+ "smallvec",
  "thin-vec",
  "ty_module_resolver",
  "ty_project",
