@@ -172,6 +172,15 @@ information and still agree. That is what the expected-edge fixtures are for.
 No-reuse costs as much as the old exponential walk. Run it on the fixtures and
 on small projects in CI, not on large ones. CLI: `pylspt-dev calls f.py --no-reuse`.
 
+### Inline mode as an oracle (to decide)
+
+The tutorial (`experience/12-call-tree/`) builds an inline mode first: every
+call walked right there, as the Jedi driver does, with no keys and no
+summaries. It is exponential and has no limits, so it never serves requests.
+Kept test-only, it gives a second answer on every fixture, with the
+differences listed in `experience/12-call-tree/04-class-summaries/09`.
+**Decide** whether it stays (test-only) or is deleted, and record it here.
+
 ### Expected-edge fixtures
 
 Every fixture lists its expected edges, including the ones missing on purpose

@@ -53,8 +53,11 @@ pub(in crate::interp) enum AbstractValue<'db> {
     /// `receiver.method`, receiver already bound. Interned to stay `Copy`.
     BoundMethod { func: Definition<'db>, receiver: ValueId },
 
-    /// A module object, for `mod.func()`.
-    Module(Module<'db>),
+    /// A module object, for `mod.func()`. Keeps ty's module literal type, not
+    /// just the module: for a package, the type records the importing file,
+    /// which decides whether `pkg.sub` is an attribute. `vnoc::member` on it
+    /// answers that the way Python would.
+    Module(Type<'db>),
 
     /// ty's answer, for everything the walk doesn't model: literals, stdlib
     /// returns, comprehensions, arithmetic.
@@ -231,10 +234,7 @@ fn lift_at(&mut self, ty: Type<'db>, depth: u8) -> Values<'db> {
             None    => smallvec![Unknown],
         },
 
-        Type::ModuleLiteral(_) => match self.def_of(ty) {
-            Some(TypeDefinition::Module(m)) => smallvec![Module(m)],
-            _                               => smallvec![Ty(ty)],
-        },
+        Type::ModuleLiteral(_) => smallvec![Module(ty)],
 
         // A bound method ty already bound (`f = get_obj().method`). Without
         // this arm it is Ty(BoundMethod), not callable, and the call has no

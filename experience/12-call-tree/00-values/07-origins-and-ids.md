@@ -37,7 +37,7 @@ is for an object a callee returned: the `j`-th entry of its summary's `objects`.
 
 A missing attribute read on an `Entry` object gives another `Entry` object, one
 step deeper, so a write deep inside a caller's object can still be reported to
-the caller by path ([`03-classes/05`](../03-classes/05-writes-anywhere-and-deep-writes.md)).
+the caller by path ([`04-class-summaries/05`](../04-class-summaries/05-deep-writes.md)).
 
 ### `OPAQUE`
 
@@ -70,7 +70,7 @@ repeat a lot, so the dedup pays.
   for closures ([`06`](06-the-env.md#activations)).
 - `DeferId` indexes `Walk.deferred`: an operation waiting on recursion. A
   `Pending(DeferId)` value is its placeholder
-  ([`02-functions/08`](../02-functions/08-recursion.md)).
+  ([`02-function-summaries/05`](../02-function-summaries/05-recursion-pending-values.md) and [`06`](../02-function-summaries/06-recursion-groups.md)).
 
 ## Why they must never leave the walk
 

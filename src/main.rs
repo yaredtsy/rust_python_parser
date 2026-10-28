@@ -170,6 +170,8 @@
 //     Ok(())
 // }
 mod db;
+mod qname;
+mod sem;
 use db::{open, open_project};
 use ruff_db::parsed::parsed_module;
 use ruff_db::system::SystemPath;

@@ -26,7 +26,7 @@ pub enum Fp<'db> {
     Data(Type<'db>),                            // a data type: `int`, `str`, `list[int]` (literals widened)
     Function(Definition<'db>),
     Class(Definition<'db>),
-    Module(Module<'db>),
+    Module(Type<'db>),
     Bound    { func: Definition<'db>, recv: FpId },                   // a bound method
     Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]> },
     Back(u8),                                   // "the closure k levels up": a closure that captures itself

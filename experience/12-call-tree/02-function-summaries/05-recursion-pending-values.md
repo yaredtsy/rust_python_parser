@@ -283,7 +283,7 @@ impl<'db> Walk<'db> {
         -> IndexVec<DeferId, Values<'db>>
     {
         let mut now = last.clone();
-        self.round_calls.clear();                               // edges from Call ops: this round's only
+        self.clear_deferred_edges();                            // a Call op's edge: this round's targets only
         for id in self.deferred.indices() {
             let d = self.deferred[id].clone();
             let v = match d.op {
@@ -313,11 +313,15 @@ fn substitute<'db>(vals: &Values<'db>, now: &IndexVec<DeferId, Values<'db>>) -> 
 }
 ```
 
-`finish_round` is `finish` from step 02, with two changes: returns pass
-through `substitute` first, and the call edges are the walk's own edges plus
-`round_calls`, the edges the latest replay's `Call` operations recorded.
-`call_values` records into `round_calls` when called from `replay`, and into
-`frame.calls` otherwise.
+`finish_round` is `finish` from step 02, with returns passed through
+`substitute` first.
+
+**Where a deferred `Call`'s edge goes:** when the walk records a `Call`
+operation, it also pushes an empty `CallEdge { site, targets: [] }` into
+`frame.calls`, at that point. So the edge keeps its place in evaluation order,
+and the tree's children come out in source order. Each replay clears those
+edges' targets and fills them again (`call_values` takes the index of the
+edge to fill), so the edges in the final summary are the last round's.
 
 </details>
 

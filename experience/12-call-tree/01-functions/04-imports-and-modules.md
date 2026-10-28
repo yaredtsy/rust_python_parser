@@ -106,8 +106,8 @@ makes `pkg.sub` reachable. `import pkg` alone does not, unless
 file for exactly this reason, and its member lookup uses it. That is the
 difference between `deep` (edge) and `no_submodule` (no edge).
 
-> The plan writes `Module(Module<'db>)`. That drops the importing file, so a
-> lookup on it can't tell `deep` from `no_submodule`.
+**Rejected:** `Module(Module<'db>)`, the module alone. It drops the importing
+file, so a lookup on it can't tell `deep` from `no_submodule`.
 
 ### Decision 4: `x.name` is answered by what `x` holds
 

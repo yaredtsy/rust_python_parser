@@ -338,8 +338,10 @@ type and the walk is needed.
 
 | not modelled | result |
 |---|---|
-| tuple and list destructuring `a, b = f()` | targets are `Unknown` |
-| augmented assignment `x += f()` | `Unknown` |
+| tuple and list destructuring `a, b = f()` | each name in the target gets ty's type for it, lifted. Never `Unknown` (ty models unpacking), never the old value (stale), never removed (a missing name means "not assigned on this path" to `Env::join`) |
+| augmented assignment `x += f()` | `x` gets ty's type for it, as above |
+| a loop, `with` or `except` target | ty's type for it, as above |
+| an `import` inside a function | each bound name gets ty's type for the import |
 | `global` / `nonlocal` | `Unknown` |
 | walrus `:=` | bound, like a plain assignment |
 | loop-carried values | body walked once, joined with "didn't run" |
@@ -352,8 +354,14 @@ Do not build a fixed point over loops (v1.2 may, [`15`](15-checks-and-build-orde
 
 Small on purpose. It handles what carries path information and lifts the rest.
 
+`env` is `&mut`: an expression can change the state the rest of the statement
+sees. A walrus binds a name mid-expression, and a call applies its effects
+before the next argument is evaluated. Rust's evaluation order then gives
+Python's. The snippets elsewhere in this folder that pass `&env` to `eval`,
+`eval_call` or `member` mean the same `&mut Env`.
+
 ```rust
-fn eval(s: &mut Solver<'db>, w: &mut Walk<'db>, expr: &ast::Expr, env: &Env<'db>) -> Values<'db> {
+fn eval(s: &mut Solver<'db>, w: &mut Walk<'db>, expr: &ast::Expr, env: &mut Env<'db>) -> Values<'db> {
     match expr {
         ast::Expr::Name(n) => match w.lookup(env, &n.id) {
             Some(v) => v.clone(),

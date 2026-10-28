@@ -145,8 +145,8 @@ an expression, and in part 03 a call inside an expression can change an
 object that a later argument reads. So `eval` gets the env mutably, and
 Python's left-to-right order decides who sees what.
 
-> The plan writes `eval(…, env: &Env)`. That can't carry a walrus binding or a
-> call's effects to the next argument. Use `&mut Env`.
+**Rejected:** `eval(…, env: &Env)`. It can't carry a walrus binding or a
+call's effects to the next argument.
 
 ### Decision 4: every right-hand side is evaluated once
 
@@ -198,9 +198,6 @@ target ty should answer must be stored, not left out.
 ty's answer is always safe here: it is never wrong for this path, at worst
 less precise. **[check]** that ty records a type for a name in store context
 (`inferred_type` on the target `ExprName`). If it doesn't, bind `Unknown`.
-
-> The plan says unmodelled targets bind `Unknown`. ty's type is strictly
-> better, for the reason above.
 
 Attribute targets (`self.h = …`) evaluate their receiver for now. Part 03
 binds them.

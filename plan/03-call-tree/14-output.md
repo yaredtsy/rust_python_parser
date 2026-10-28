@@ -277,6 +277,11 @@ Same input, same output, ten runs in a row. At risk from:
   sites. All contexts of a function walk the same body, so their sites line up.
   **[check]** against the golden files: if they use source order, sort by
   `SiteId` here. Never change the walk order to get it.
+- **order within one site.** Several functions reached at one site are ordered
+  by where each is defined (file, then offset), never by the order of the
+  values that reached the site. That order depends on how branches were
+  joined, which differs between an inline walk and a summary.
+  **[check]** against the golden files.
 
 ---
 

@@ -47,7 +47,7 @@ Two things to notice:
 Then, after step 4, the caller writes the effects (phase 2). Step 4 must read
 `before`, not the state after the effects, or a callee that returns an old value
 while writing a new one (`old = box.replace(new)`) hands back the new one
-([`01-summaries/04`](../01-summaries/04-one-call.md)).
+([`04-class-summaries/04`](../04-class-summaries/04-resolve-then-write.md)).
 
 ---
 

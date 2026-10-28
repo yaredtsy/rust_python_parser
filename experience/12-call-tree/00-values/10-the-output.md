@@ -123,6 +123,7 @@ Every `call_count` is 0. v-noc merges siblings with the same qname when it saves
 ---
 
 You've seen every structure, top to bottom, and how a value crosses a call.
-Do the exam, then the next folder, which is about *why* it is built this way.
+Do the exam, then start building: the steps explain *why* each of these is
+built this way, at the moment you write it.
 
-→ [`exam.md`](exam.md), then [`../01-summaries/README.md`](../01-summaries/README.md)
+→ [`exam.md`](exam.md), then [`../01-functions/README.md`](../01-functions/README.md)

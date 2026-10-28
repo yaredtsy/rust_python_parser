@@ -32,7 +32,7 @@ pub struct Solver<'db> {
 | `fps` | every distinct fingerprint. A context refers to fingerprints by `FpId` | [`02`](02-the-context.md) |
 | `slots` | per context: its state, its summary when done, its walk while running | [`03`](03-the-slot.md) |
 | `stack` | the contexts whose walks are in progress right now. A walk that calls a new context pushes it; when that walk ends, it pops | [`03`](03-the-slot.md) |
-| `heads`, `fixpoint` | recursion groups and the one being resolved | [`02-functions/08`](../02-functions/08-recursion.md) |
+| `heads`, `fixpoint` | recursion groups and the one being resolved | [`02-function-summaries/05`](../02-function-summaries/05-recursion-pending-values.md) and [`06`](../02-function-summaries/06-recursion-groups.md) |
 | `sem` | ty: parsed modules, semantic index, types, `vnoc::member` | — |
 | `policy`, `limits` | `fp_depth`, `max_path`, `split_cap`, `max_rounds`, fan-out caps; `max_stack`, `max_contexts`, `contexts_per_func`, deadline; render limits | [`plan/03-call-tree/13`](../../../plan/03-call-tree/13-solver-and-limits.md#limits) |
 | `stats` | the counters returned with the answer | same |

@@ -24,7 +24,7 @@ pub enum Fp<'db> {
     Data(Type<'db>),                         // only types StableType can encode (14)
     Function(Definition<'db>),
     Class(Definition<'db>),
-    Module(Module<'db>),
+    Module(Type<'db>),                       // ty's module literal type, as in 04
     Bound    { func: Definition<'db>, recv: FpId },
     Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]> },
     Back(u8),                                // the closure k levels up in this fingerprint (below)

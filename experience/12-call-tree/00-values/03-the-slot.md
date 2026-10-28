@@ -38,7 +38,7 @@ pub enum Got<'db> {
 
 `result`, `state` and `cut` are what most contexts ever use. `current`, `walk`,
 `lowest` and `joins` only matter for recursion
-([`02-functions/08`](../02-functions/08-recursion.md)).
+([`02-function-summaries/05`](../02-function-summaries/05-recursion-pending-values.md) and [`06`](../02-function-summaries/06-recursion-groups.md)).
 
 ## The life of a slot
 
@@ -115,7 +115,7 @@ limit.
 2. Inside ctx#4's own walk: its recursive call has the same key, and ctx#4 is
    `Running`. When the walk ends, it read only itself, so it is the head of its
    own group, and resolves it right away
-   ([`02-functions/08`](../02-functions/08-recursion.md)).
+   ([`02-function-summaries/05`](../02-function-summaries/05-recursion-pending-values.md) and [`06`](../02-function-summaries/06-recursion-groups.md)).
 3. `get(ctx#4)` from inside `run`: the stack length is 3. `run` read a cut
    result, so ctx#3 ends `Cut`, and so do `read_json` and `main`, which read it
    in turn. In `read_csv`, `run` asks for ctx#8 at the same depth, so the same

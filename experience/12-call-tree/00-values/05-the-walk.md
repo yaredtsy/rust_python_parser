@@ -43,7 +43,7 @@ get(ctx) on a New slot
 
 The one exception: a walk that took part in recursion is kept in its slot
 (`Parked`, then `Resolving`) until its group is resolved, because its deferred
-operations are replayed ([`02-functions/08`](../02-functions/08-recursion.md)).
+operations are replayed ([`02-function-summaries/05`](../02-function-summaries/05-recursion-pending-values.md) and [`06`](../02-function-summaries/06-recursion-groups.md)).
 
 ## Starting: `materialize`
 

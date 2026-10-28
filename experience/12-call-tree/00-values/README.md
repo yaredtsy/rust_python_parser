@@ -4,8 +4,11 @@
 contains what, which ones live for the whole request and which only while one
 body is walked, and fill them in by hand for a small program.
 
-This folder is the anatomy. The next one, [`01-summaries/`](../01-summaries/README.md),
-is the behaviour: why it is built this way, and what each step does.
+This folder is the map: every structure as it is at the end of the
+tutorial, with one program traced through it. Skim it before you start
+building in [`01-functions/`](../01-functions/README.md), and come back to it
+whenever a step names a struct. The steps build these structures one field at
+a time, each when it is needed.
 
 ---
 

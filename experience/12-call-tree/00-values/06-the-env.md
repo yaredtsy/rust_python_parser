@@ -63,7 +63,7 @@ An activation is one run of one body inside the walk, with a slot holding its
 current env. The walk's own body is one. A `def` statement binds its name to
 `Closure { func, activation: <this run> }`, and a lookup of a free variable
 reads that activation's slot at call time, so later assignments are seen, as in
-Python. Closures are [`02-functions/04`](../02-functions/04-closures-and-nested-functions.md).
+Python. Closures are [`01-functions/11`](../01-functions/11-closures.md).
 
 ---
 

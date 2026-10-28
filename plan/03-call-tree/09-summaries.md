@@ -75,7 +75,7 @@ pub type SVals<'db> = SmallVec<[SVal<'db>; 2]>;
 pub enum PlainVal<'db> {
     Function(Definition<'db>),
     Class(Definition<'db>),
-    Module(Module<'db>),
+    Module(Type<'db>),
     Ty(Type<'db>),
     Unknown,
     Opaque(Definition<'db>),                  // an instance with no tracked identity: class only

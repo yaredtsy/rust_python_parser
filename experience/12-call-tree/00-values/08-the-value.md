@@ -18,7 +18,7 @@ pub(in crate::interp) enum AbstractValue<'db> {
     Class(Definition<'db>),                                      // a class object, named
     Instance { class: Definition<'db>, origin: OriginId },       // one object: class + which one
     BoundMethod { func: Definition<'db>, receiver: ValueId },    // `obj.method`, receiver interned
-    Module(Module<'db>),                                         // `import m`, then `m`
+    Module(Type<'db>),                                           // `import m`, then `m`: ty's module literal type
     Ty(Type<'db>),                                               // ty's answer: literals, stdlib returns
     Pending(DeferId),                                            // a value waiting on recursion
     Unknown,                                                     // a value nobody knows
