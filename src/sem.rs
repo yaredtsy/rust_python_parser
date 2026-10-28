@@ -1,6 +1,7 @@
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
 use ruff_python_ast::{Alias, ExprRef, Stmt, StmtFunctionDef};
+use ruff_text_size::{Ranged, TextSize};
 
 use ty_project::glob::IncludeResult;
 use ty_project::{Db as _, ProjectDatabase};
@@ -108,6 +109,17 @@ impl<'db> Sem<'db> {
             body = next?;
         }
         None
+    }
+
+    /// Where the definition lives: its file path, then the offset of its `def`.
+    /// A stable order for nodes that the walk can reach in any order.
+    pub fn def_position(&self, def: Definition<'db>) -> (String, TextSize) {
+        let path = def.file(self.db).path(self.db).to_string();
+        let parsed = self.parsed(def);
+        let start = self
+            .function_node(def, &parsed)
+            .map_or(TextSize::default(), |f| f.range().start());
+        (path, start)
     }
 
     pub fn qname(&self, def: Definition<'db>) -> String {

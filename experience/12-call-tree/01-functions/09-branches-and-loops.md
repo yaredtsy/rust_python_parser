@@ -81,11 +81,17 @@ along. That is wrong in both directions:
   tree loses `a`.
 
 Instead, every arm starts from the env **before** the branch, and the arms'
-results are joined:
+results are joined.
+
+**Keep step 03's shape.** `walk_stmt` takes `mut env`, each arm *changes*
+`env`, and the function returns `env` after the `match`. So a new arm assigns
+its result back to `env`; it doesn't end in a bare expression. Moving `env`
+out (`let mut cond = env;`) is fine, as long as the arm assigns it again
+before the arm ends.
 
 ```rust
 Stmt::If(s) => {
-    let mut cond = env;
+    let mut cond = env;                             // moved out here…
     self.eval(&s.test, &mut cond);                  // evaluated once, value ignored
     let mut arms = vec![self.walk_stmts(&s.body, cond.clone())];
     for clause in &s.elif_else_clauses {
@@ -97,9 +103,13 @@ Stmt::If(s) => {
     if !s.elif_else_clauses.iter().any(|c| c.test.is_none()) {
         arms.push(cond);                            // no `else`: skipping is an arm
     }
-    Env::join(arms)
+    env = Env::join(arms);                          // …and assigned again here
 }
 ```
+
+If an arm ends in `Env::join(arms);` or `self.walk_stmts(…);`, the result is
+thrown away, and the `env` returned after the `match` was moved: Rust rejects
+it as a use after move. That error means an arm forgot `env = `.
 
 `Env::join` unions per name:
 
@@ -119,13 +129,40 @@ not depend on it: **within one call site, one node per function, ordered by
 where the function is defined** (its file, then its offset). `skipped` shows
 `a` before `b` because `a` is defined first, not because of the join.
 
+In `eval_call`, sort the callee values by where their function is defined,
+before calling them. The nodes then come out in that order:
+
 ```rust
-// after collecting the nodes of one call site
-site_nodes.sort_by_key(|n| s.sem.def_position(n.func));   // (file path, offset)
+let mut callees = self.eval(&call.func, env);
+callees.sort_by_cached_key(|v| callee_def(*v).map(|d| self.sem.def_position(d)));
+// … then call each callee, as before
 ```
 
-`sem.def_position(def)` is the definition's file path and range start. Nodes
-of different call sites keep evaluation order: that one is not an accident.
+```rust
+// src/sem.rs
+/// Where a definition is: its file path, then the start of its `def`. A
+/// stable order for things the walk can reach in any order.
+pub fn def_position(&self, def: Definition<'db>) -> (String, TextSize) {
+    let path = def.file(self.db).path(self.db).to_string();
+    let parsed = self.parsed(def);
+    let start = self.function_node(def, &parsed).map_or(TextSize::default(), |f| f.range().start());
+    (path, start)
+}
+```
+
+`callee_def(v)` is the function a callee value would call: `Some(d)` for
+`Function(d)`, `None` for anything else. It grows as values do: a closure's
+function (step 11), a class and a bound method's function (part 03). Values
+without one sort first and make no node, so their order doesn't matter.
+
+Sort the **values**, not a list you filtered down to `Function`s: the later
+steps loop over every kind of callee value, and a filtered list would lose
+them. Nodes of different call sites keep evaluation order: that one is not an
+accident.
+
+Summary mode (step 02.03) can't sort callees, because its tree is drawn after
+the walk: its renderer sorts each site's functions by the same
+`def_position`.
 
 ### Decision 3: a loop body is walked once, joined with "didn't run"
 
@@ -137,7 +174,7 @@ Stmt::For(s) => {
     self.bind_from_ty(&s.target, &mut body_env);    // the loop variable: ty's element type
     let body = self.walk_stmts(&s.body, body_env);
     let after = Env::join(vec![before, body]);     // ran zero times, or ran
-    self.walk_stmts(&s.orelse, after)
+    env = self.walk_stmts(&s.orelse, after);
 }
 ```
 
@@ -172,7 +209,7 @@ Stmt::Try(s) => {
         arms.push(self.walk_stmts(&h.body, start.clone()));
     }
     let joined = Env::join(arms);
-    self.walk_stmts(&s.finalbody, joined)
+    env = self.walk_stmts(&s.finalbody, joined);
 }
 ```
 
@@ -193,7 +230,10 @@ yet, `b` if it had.
 ### Yours
 
 - `Env::join(Vec<Env>) -> Env`.
-- The `If`, `For`, `While`, `Try`, `With` and `Match` arms.
+- The `If`, `For`, `While`, `Try`, `With` and `Match` arms, each ending in
+  `env = …;`.
+- `pattern_names` (in the reference below): it is not part of ruff.
+- `sem.def_position` and the sort in `eval_call`.
 
 <details><summary>Reference: this step's code</summary>
 
@@ -231,7 +271,7 @@ Stmt::While(s) => {
     let before = env;
     let body = self.walk_stmts(&s.body, before.clone());
     let after = Env::join(vec![before, body]);
-    self.walk_stmts(&s.orelse, after)
+    env = self.walk_stmts(&s.orelse, after);
 }
 Stmt::With(s) => {
     for item in &s.items {
@@ -240,7 +280,7 @@ Stmt::With(s) => {
             self.bind_from_ty(target, &mut env);
         }
     }
-    self.walk_stmts(&s.body, env)
+    env = self.walk_stmts(&s.body, env);
 }
 Stmt::Match(s) => {
     self.eval(&s.subject, &mut env);
@@ -257,12 +297,32 @@ Stmt::Match(s) => {
         arms.push(self.walk_stmts(&case.body, arm));
     }
     arms.push(before);   // no case matched
-    Env::join(arms)
+    env = Env::join(arms);
 }
 ```
 
-`walk_stmt` now returns the env each arm produces, instead of updating one
-`env` in place.
+The whole of `walk_stmt` keeps step 03's shape. The simple arms change `env`
+in place, the compound ones assign it, and one `env` is returned at the end:
+
+```rust
+fn walk_stmt(&mut self, stmt: &Stmt, mut env: Env<'db>) -> Env<'db> {
+    match stmt {
+        Stmt::Expr(s) => { self.eval(&s.value, &mut env); }
+        Stmt::Assign(s) => { /* step 03 */ }
+        Stmt::If(s) => { /* … */ env = Env::join(arms); }
+        Stmt::For(s) => { /* … */ env = self.walk_stmts(&s.orelse, after); }
+        // While, Try, With, Match: the same, each ending in `env = …;`
+        // Import, ImportFrom: step 04
+        Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
+        other => { for e in simple_stmt_exprs(other) { self.eval(e, &mut env); } }
+    }
+    env
+}
+```
+
+Delete step 03's linear `If`, `For`, `While`, `With`, `Try` and `Match` arms
+when you add these. If both are left, the first one in the `match` wins and
+the other is dead code; Rust only warns about it.
 
 `pattern_names` is yours, not ruff's. It collects every name a `case` pattern
 binds: the `name` of a `MatchAs` (`case x:`, `case Point() as p:`) or a

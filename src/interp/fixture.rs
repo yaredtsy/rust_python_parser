@@ -117,3 +117,8 @@ fn p01_07_arguments() {
 fn p01_08_varargs() {
     check("01-functions/python/varargs.py");
 }
+
+#[test]
+fn p01_09_branches() {
+    check("01-functions/python/branches.py");
+}

@@ -121,6 +121,31 @@ Stmt::Raise(s) => {
 `None` when every arm is `None`: a branch where every arm returns doesn't fall
 through either.
 
+`walk_stmt` keeps its shape from step 09, with three mechanical changes:
+
+```rust
+fn walk_stmt(&mut self, stmt: &Stmt, mut env: Env<'db>) -> Option<Env<'db>> {   // 1. Option
+    match stmt {
+        Stmt::If(s) => {
+            // … arms are now Option<Env> …
+            env = Env::join(arms)?;                       // 2. `?`: every arm left → so does the `if`
+        }
+        Stmt::For(s) => {
+            // …
+            let after = Env::join(vec![Some(before), body])?;   // `before` is always an arm
+            env = self.walk_stmts(&s.orelse, after)?;
+        }
+        Stmt::Return(s) => { /* … */ return None; }
+        // … every `env = self.walk_stmts(…)` gets a `?`, the same way …
+    }
+    Some(env)                                             // 3. the end
+}
+```
+
+The `?` is the whole rule: if a block never falls through, neither does the
+statement that contains it, and the rest of the enclosing block isn't
+reached.
+
 **Why:** in `early`, the arm that sets `f = a` returns. If its env reached the
 join, `f()` would see `a`, an edge on a path that has already left the
 function.

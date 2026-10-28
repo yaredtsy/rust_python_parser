@@ -15,12 +15,17 @@ impl<'a, 'db> Walk<'a, 'db> {
         let callees = self.eval(&call.func, env);
         let args = self.eval_arguments(&call.arguments, env);
 
-        for callee in &callees {
-            if let AbstractValue::Function(def) = *callee
-                && self.sem.is_project(def)
-            {
-                self.call_function(def, call.range(), &args);
-            }
+        // One node per function, in definition order: the join order is an accident.
+        let mut defs: Vec<_> = callees
+            .iter()
+            .filter_map(|c| match *c {
+                AbstractValue::Function(def) if self.sem.is_project(def) => Some(def),
+                _ => None,
+            })
+            .collect();
+        defs.sort_by_key(|d| self.sem.def_position(*d));
+        for def in defs {
+            self.call_function(def, call.range(), &args);
         }
         let ty = self.sem.type_of(&self.frame.model, ExprRef::from(call));
         self.lift(ty)

@@ -134,6 +134,31 @@ since step 01.03), which is how a constructor's writes reach `read_json`.
 If every path of the callee raises, there are no exits, and the caller's state
 is left as it was.
 
+**Several callees at one site are alternatives, not a sequence.** In `either`,
+`p.run` is `run` on two objects, and Python makes one of those calls, not
+both. So each callee starts from the **same** state, the one before the call,
+and the caller continues with the join of what they left:
+
+```rust
+// eval_call, inline mode, once the arguments are evaluated
+let before = env.clone();                         // a pointer copy
+let mut after = Vec::new();
+for callee in &callees {
+    let mut e = before.clone();                   // every callee starts here
+    // … walk_inline(…, &mut e) as above, for this callee …
+    after.push(Some(e));
+}
+if let Some(joined) = Env::join(after) {
+    *env = joined;                                // one callee: exactly its state
+}
+```
+
+Walking them one after another on the same `env` would let the second callee
+see the first one's writes, and the tree would depend on the order the
+callees happen to be walked in (step 01.09 sorts them, but that order is for
+the nodes, not for the state). Part 04 has the same rule in summary mode: one
+snapshot per call expression (step 04.04, decision 3).
+
 **This is why inline mode is the easy case.** One walk holds every object, and
 state just flows along the calls. Part 04 has to say the same thing in a
 summary that knows nothing about its caller's objects: "parameter 0's

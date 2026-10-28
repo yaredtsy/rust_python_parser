@@ -1,7 +1,7 @@
 use ruff_python_ast::name::Name;
 // src/interp/walk.rs
-use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
-use ruff_python_ast::{Expr, ExprCall, ExprRef, Stmt};
+use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
+use ruff_python_ast::{Expr, ExprCall, ExprRef, Pattern, Stmt};
 use ruff_text_size::Ranged;
 use smallvec::smallvec;
 use ty_python_core::ProgramFile;
@@ -56,6 +56,75 @@ impl<'a, 'db> Walk<'a, 'db> {
             Stmt::Expr(s) => {
                 self.eval(&s.value, &mut env);
             }
+            Stmt::While(s) => {
+                self.eval(&s.test, &mut env);
+                let before = env;
+                let body = self.walk_stmts(&s.body, before.clone());
+                let after = Env::join(vec![before, body]);
+                env = self.walk_stmts(&s.orelse, after);
+            }
+            Stmt::If(s) => {
+                let mut cond = env;
+                self.eval(&s.test, &mut cond); // evaluated once, value ignored
+                let mut arms = vec![self.walk_stmts(&s.body, cond.clone())];
+                for clause in &s.elif_else_clauses {
+                    if let Some(t) = &clause.test {
+                        self.eval(t, &mut cond); // runs only if earlier tests failed
+                    }
+                    arms.push(self.walk_stmts(&clause.body, cond.clone()));
+                }
+                if !s.elif_else_clauses.iter().any(|c| c.test.is_none()) {
+                    arms.push(cond); // no `else`: skipping is an arm
+                }
+                env = Env::join(arms);
+            }
+            Stmt::For(s) => {
+                self.eval(&s.iter, &mut env);
+                let before = env;
+                let mut body_env = before.clone();
+                self.bind_from_ty(&s.target, &mut body_env); // the loop variable: ty's element type
+                let body = self.walk_stmts(&s.body, body_env);
+                let after = Env::join(vec![before, body]); // ran zero times, or ran
+                env = self.walk_stmts(&s.orelse, after);
+            }
+            Stmt::Try(s) => {
+                let before = env;
+                let body = self.walk_stmts(&s.body, before.clone());
+                let start = Env::join(vec![before, body.clone()]);
+                let mut arms = vec![self.walk_stmts(&s.orelse, body)];
+                for h in &s.handlers {
+                    let h = h.as_except_handler().unwrap();
+                    arms.push(self.walk_stmts(&h.body, start.clone()));
+                }
+                let joined = Env::join(arms);
+                env = self.walk_stmts(&s.finalbody, joined);
+            }
+            Stmt::Match(s) => {
+                self.eval(&s.subject, &mut env);
+                let before = env;
+                let mut arms = Vec::new();
+                for case in &s.cases {
+                    let mut arm = before.clone();
+                    for name in pattern_names(&case.pattern) {
+                        arm.bind(name, smallvec![AbstractValue::Unknown]);
+                    }
+                    if let Some(guard) = &case.guard {
+                        self.eval(guard, &mut arm);
+                    }
+                    arms.push(self.walk_stmts(&case.body, arm));
+                }
+                arms.push(before); // no case matched
+                env = Env::join(arms);
+            }
+            Stmt::With(s) => {
+                for item in &s.items {
+                    self.eval(&item.context_expr, &mut env);
+                    if let Some(target) = &item.optional_vars {
+                        self.bind_from_ty(target, &mut env);
+                    }
+                }
+                env = self.walk_stmts(&s.body, env);
+            }
             Stmt::Import(s) => {
                 for alias in &s.names {
                     let name = match &alias.asname {
@@ -87,18 +156,6 @@ impl<'a, 'db> Walk<'a, 'db> {
                     self.bind_target(&s.target, v, &mut env);
                 }
             }
-            Stmt::If(s) => {
-                self.eval(&s.test, &mut env);
-                env = self.walk_stmts(&s.body, env);
-                for clause in &s.elif_else_clauses {
-                    if let Some(t) = &clause.test {
-                        self.eval(t, &mut env);
-                    }
-                    env = self.walk_stmts(&clause.body, env);
-                }
-            }
-            // For, While, With, Try, Match: the same change, env threaded through.
-            // ...
             other => {
                 for e in simple_stmt_exprs(other) {
                     self.eval(e, &mut env);
@@ -116,6 +173,7 @@ impl<'a, 'db> Walk<'a, 'db> {
                     self.lift(ty)
                 }
             },
+
             Expr::Named(n) => {
                 let v = self.eval(&n.value, env);
                 self.bind_target(&n.target, v.clone(), env);
@@ -190,4 +248,37 @@ fn simple_stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
     let mut v = Exprs(Vec::new());
     walk_stmt(&mut v, stmt);
     v.0
+}
+
+/// Every name a `case` pattern binds, at any depth:
+/// `case [Point(x=a), *rest] as whole:` binds `a`, `rest` and `whole`.
+fn pattern_names(pattern: &Pattern) -> Vec<&Name> {
+    struct Names<'a>(Vec<&'a Name>);
+    impl<'a> Visitor<'a> for Names<'a> {
+        fn visit_pattern(&mut self, p: &'a Pattern) {
+            match p {
+                Pattern::MatchAs(m) => {
+                    if let Some(n) = &m.name {
+                        self.0.push(&n.id)
+                    }
+                }
+                Pattern::MatchStar(m) => {
+                    if let Some(n) = &m.name {
+                        self.0.push(&n.id)
+                    }
+                }
+                Pattern::MatchMapping(m) => {
+                    if let Some(n) = &m.rest {
+                        self.0.push(&n.id)
+                    }
+                }
+                _ => {}
+            }
+            walk_pattern(self, p); // nested patterns
+        }
+        fn visit_expr(&mut self, _: &'a Expr) {} // `case Color.RED:` binds nothing
+    }
+    let mut names = Names(Vec::new());
+    names.visit_pattern(pattern);
+    names.0
 }
