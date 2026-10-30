@@ -89,6 +89,44 @@ impl<'db> Sem<'db> {
         }
         None
     }
+    /// Names `func` (or a function nested in it) reads that are bound in an
+    /// enclosing FUNCTION scope outside `func`. Sorted.
+    pub fn free_variables(&self, func: Definition<'db>) -> Vec<Name> {
+        let parsed = self.parsed(func);
+        let Some(node) = self.function_node(func, &parsed) else {
+            return Vec::new();
+        };
+        let own = self.body_scope(func, node);
+        let index = semantic_index(self.db, own.file);
+        let mut scopes = vec![own.scope];
+        let mut i = 0;
+        while i < scopes.len() {
+            let kids: Vec<_> = index.child_scopes(scopes[i]).map(|(id, _)| id).collect();
+            scopes.extend(kids);
+            i += 1;
+        }
+        let mut out = Vec::new();
+        for scope in scopes {
+            for symbol in index.place_table(scope).symbols() {
+                if !symbol.is_used() {
+                    continue;
+                }
+                let at = BodyScope {
+                    file: own.file,
+                    scope,
+                };
+                if let Some(bound) = self.free_variable_scope(at, symbol.name().as_str()) {
+                    // free in `scope`, and bound outside `func`
+                    if !index.ancestor_scopes(bound.scope).any(|(id, _)| id == own.scope) {
+                        out.push(symbol.name().clone());
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
     pub fn new(db: &'db ProjectDatabase) -> Self {
         Sem { db }
     }

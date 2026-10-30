@@ -165,7 +165,7 @@ impl<'db> Walk<'db> {
         let new = self.new_frame(sol, def);
         let caller = std::mem::replace(&mut self.frame, new);
         let bound = self.bind_parameters(sol, def, node, args, enclosing);
-        sol.key(def, &bound);
+        sol.key(self, def, &bound, enclosing);
         let mut env = self.env_from_bound(node, &bound);
         env.scope = Some(sol.sem.body_scope(def, node));
         env.enclosing = enclosing;
@@ -200,10 +200,11 @@ impl<'db> Walk<'db> {
         def: Definition<'db>,
         node: &StmtFunctionDef,
         args: &EvaluatedArgs<'db>,
+        enclosing: Option<ActivationId>,
     ) -> Bound<'db> {
         let new = self.new_frame(sol, def);
         let caller = std::mem::replace(&mut self.frame, new);
-        let bound = self.bind_parameters(sol, def, node, args, None);
+        let bound = self.bind_parameters(sol, def, node, args, enclosing);
         self.frame = caller;
         bound
     }
@@ -219,16 +220,13 @@ impl<'db> Walk<'db> {
         targets: &mut SmallVec<[Target; 2]>,
         env: &Env<'db>,
     ) -> Values<'db> {
-        if enclosing.is_some() {
-            return smallvec![AbstractValue::Unknown]; // closures across a summary: step 07
-        }
         let parsed = sol.sem.parsed(def);
         let Some(node) = sol.sem.function_node(def, &parsed) else {
             return smallvec![AbstractValue::Unknown];
         };
         let runs = !args.has_empty();
-        let bound = self.bind_for_callee(sol, def, node, args);
-        let ctx = sol.key(def, &bound);
+        let bound = self.bind_for_callee(sol, def, node, args, enclosing);
+        let ctx = sol.key(self, def, &bound, enclosing);
         targets.push(Target::Call(ctx)); // recorded now, whatever `get` answers
         match sol.get(ctx) {
             _ if !runs => Values::new(), // Python never makes this call, whatever `get` answered

@@ -11,9 +11,17 @@ pub struct Env<'db> {
     pub scope: Option<BodyScope<'db>>,
     /// The run where this function's `def` ran. NEVER the caller.
     pub enclosing: Option<ActivationId>,
+    /// Holds a closure's free values by name, whatever scope binds them.
+    pub flat: bool,
 }
 
 impl<'db> Env<'db> {
+    pub fn flat() -> Self {
+        Env {
+            flat: true,
+            ..Env::default()
+        }
+    }
     pub fn get(&self, name: &Name) -> Option<&Values<'db>> {
         self.locals.get(name)
     }

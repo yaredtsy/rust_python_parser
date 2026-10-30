@@ -44,6 +44,7 @@ pub struct Stats {
 pub struct Options {
     pub mode: Mode,
     pub reuse: bool,
+    pub fp_depth: u8, // closures nest at most this deep, in keys and in summaries
     pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
 }
 
@@ -52,6 +53,7 @@ impl Default for Options {
         Options {
             mode: Mode::Inline,
             reuse: true,
+            fp_depth: 2,
             max_rounds: 32,
         }
     }
@@ -98,14 +100,9 @@ pub fn solve<'db>(
     let mut s = Solver::new(sem, opts.clone());
     // Called with no arguments (step 01.11). A walk of the entry's own frame
     // does the binding, exactly as step 02 did.
-    let bound = Walk::new(&s, def).bind_parameters(
-        &mut s,
-        def,
-        node,
-        &bind::EvaluatedArgs::default(),
-        None,
-    );
-    let root_ctx = s.key(def, &bound);
+    let mut w = Walk::new(&s, def);
+    let bound = w.bind_parameters(&mut s, def, node, &bind::EvaluatedArgs::default(), None);
+    let root_ctx = s.key(&w, def, &bound, None);
     s.get(root_ctx);
     Some((s, root_ctx))
 }
@@ -128,7 +125,7 @@ fn inline_tree(
     // Called with no arguments (step 01.11), and keyed like any call.
     let mut w = Walk::new(&s, def);
     let bound = w.bind_parameters(&mut s, def, node, &bind::EvaluatedArgs::default(), None);
-    s.key(def, &bound);
+    s.key(&w, def, &bound, None);
     let mut env = w.env_from_bound(node, &bound);
     env.scope = Some(s.sem.body_scope(def, node));
     w.walk_stmts(&mut s, &node.body, env);

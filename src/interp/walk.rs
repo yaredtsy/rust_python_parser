@@ -247,12 +247,36 @@ impl<'db> Walk<'db> {
         let mut cur = env.enclosing;
         while let Some(act) = cur {
             let outer = &self.activations[act];
+            if outer.flat {
+                return outer.get(name).cloned();
+            }
             if outer.scope == Some(bound_in) {
                 return outer.get(name).cloned();
             }
             cur = outer.enclosing;
         }
         None
+    }
+    /// A free variable of the closure `(func, act)`, read exactly as its own
+    /// body would: `lookup` from an empty env of `func`'s scope whose
+    /// `enclosing` is `act`. Empty if no run has bound it.
+    pub fn lookup_in(
+        &self,
+        sol: &Solver<'db>,
+        func: Definition<'db>,
+        act: ActivationId,
+        name: &Name,
+    ) -> Values<'db> {
+        let parsed = sol.sem.parsed(func);
+        let Some(node) = sol.sem.function_node(func, &parsed) else {
+            return Values::new();
+        };
+        let probe = Env {
+            scope: Some(sol.sem.body_scope(func, node)),
+            enclosing: Some(act),
+            ..Env::default()
+        };
+        self.lookup(sol, &probe, name).unwrap_or_default()
     }
     pub fn none_value(&self, sol: &Solver<'db>) -> Values<'db> {
         self.lift(sol, sol.sem.none_type(self.frame.file))

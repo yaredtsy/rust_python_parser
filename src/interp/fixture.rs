@@ -74,6 +74,18 @@ pub fn returns_of(fixture: &str, entry: &str, func: &str) -> BTreeSet<String> {
     out
 }
 
+/// How many contexts of `func` summary mode makes, solving from `entry`.
+pub fn contexts_of(fixture: &str, entry: &str, func: &str) -> usize {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let module = path.file_stem().unwrap().to_str().unwrap();
+    let (s, _) = solve(&db, file, entry, &summary()).unwrap();
+    let want = format!("{module}.{func}");
+    s.contexts.iter().filter(|(_, c)| s.sem.qname(c.func) == want).count()
+}
+
 pub fn relevant_names(fixture: &str, func: &str) -> Vec<String> {
     let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
     let root = path.parent().unwrap();
@@ -236,7 +248,7 @@ fn p01_10_returns() {
 
 #[test]
 fn p01_11_closures() {
-    check("01-functions/python/closures.py");
+    check_both("01-functions/python/closures.py");
 }
 
 #[test]
@@ -357,4 +369,17 @@ fn p02_06_capped_group_is_incomplete() {
     assert_eq!(st.rounds_capped, 1);
     let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &summary());
     assert_eq!(st.rounds_capped, 0);
+}
+
+#[test]
+fn p02_07_closures() {
+    check_both("02-function-summaries/python/closures_across.py");
+    let f = "02-function-summaries/python/closures_across.py";
+    let st = stats_for(f, "outer", &summary());
+    assert_eq!(st.contexts, 2); // outer, and one context of walk
+    let st = stats_for(f, "chained", &summary());
+    assert_eq!(st.rounds_capped, 0); // the depth limit, not the round cap, ends chain's fixpoint
+    assert_eq!(contexts_of(f, "chained", "chain.g"), 3);
+    assert_eq!(contexts_of(f, "use_walker", "make_walker.walk"), 1);
+    assert_eq!(contexts_of(f, "use_default", "with_default.walk"), 1); // Context.defaults
 }

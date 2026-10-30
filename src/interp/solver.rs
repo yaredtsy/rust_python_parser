@@ -6,7 +6,7 @@ use ruff_text_size::TextRange;
 
 use crate::interp::key::{Context, ContextId, Fp, FpId, Interner};
 use crate::interp::defer::{DeferredOp, no_values};
-use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status};
+use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status, same_svals};
 use crate::interp::walk::{Walk, contains_yield};
 use crate::interp::{Options, Stats};
 use crate::sem::{Definition, Sem};
@@ -52,17 +52,9 @@ impl<'db> Slot<'db> {
         self.current.clone().expect("a group member has a current summary")
     }
 
-    /// Back to round 0: the group's fixpoint (re)starts this member.
-    fn resolving_from_round0(&mut self) {
-        let w = self.walk.as_ref().expect("a member keeps its walk");
-        self.current = Some(Arc::new(w.finish_round(&no_values(w))));
-        self.walk.as_mut().unwrap().resolved = no_values(w);
-        self.state = State::Resolving;
-    }
-
     /// Store the round's summary. True when what a caller reads changed.
     fn set_current(&mut self, next: FunctionResult<'db>) -> bool {
-        let changed = self.current.as_ref().is_none_or(|c| c.returns != next.returns);
+        let changed = self.current.as_ref().is_none_or(|c| !same_svals(&c.returns, &next.returns));
         self.current = Some(Arc::new(next));
         changed
     }
@@ -218,7 +210,7 @@ impl<'db> Solver<'db> {
     /// A walk that waited on nothing: its summary is final.
     fn finish_alone(&mut self, ctx: ContextId, w: Walk<'db>) {
         debug_assert!(w.deferred.is_empty(), "{ctx:?} finishes alone with deferred operations");
-        let result = Arc::new(w.finish_round(&no_values(&w)));
+        let result = Arc::new(w.finish_round(self, &no_values(&w)));
         self.slots[ctx].state = State::Ready;
         self.slots[ctx].result = Some(result);
     }
@@ -247,11 +239,20 @@ impl<'db> Solver<'db> {
         self.stack.len() == f.base && self.heads.find(f.head) == head
     }
 
+    /// Back to round 0: the group's fixpoint (re)starts this member.
+    fn resolving_from_round0(&mut self, m: ContextId) {
+        let mut w = self.slots[m].walk.take().expect("a member keeps its walk");
+        self.slots[m].current = Some(Arc::new(w.finish_round(self, &no_values(&w))));
+        w.resolved = no_values(&w);
+        self.slots[m].walk = Some(w);
+        self.slots[m].state = State::Resolving;
+    }
+
     /// Keep a walked context under `head` until its group resolves.
     fn park(&mut self, ctx: ContextId, w: Walk<'db>, head: ContextId) {
         if self.slots[ctx].current.is_none() {
             // A joining context is read at once: it needs its round-0 summary now.
-            self.slots[ctx].current = Some(Arc::new(w.finish_round(&no_values(&w))));
+            self.slots[ctx].current = Some(Arc::new(w.finish_round(self, &no_values(&w))));
         }
         self.heads.union_into(ctx, head); // whatever is parked under ctx follows it
         self.slots[ctx].walk = Some(Box::new(w));
@@ -283,7 +284,7 @@ impl<'db> Solver<'db> {
         self.park(head, head_walk, head);
         let mut members = self.take_parked(head);
         for &m in &members {
-            self.slots[m].resolving_from_round0();
+            self.resolving_from_round0(m);
         }
         // Fixpoints nest: this one may run inside an operation of another. Keep it.
         let outer = self.fixpoint.replace(Fixpoint {
@@ -317,7 +318,7 @@ impl<'db> Solver<'db> {
             let joined = self.take_parked(head);
             changed |= !joined.is_empty();
             for &j in &joined {
-                self.slots[j].resolving_from_round0();
+                self.resolving_from_round0(j);
             }
             members.extend(joined);
             if !changed || capped {
@@ -336,7 +337,7 @@ impl<'db> Solver<'db> {
     fn replay_member(&mut self, m: ContextId, capped: bool) -> FunctionResult<'db> {
         let mut w = self.slots[m].walk.take().expect("a member keeps its walk");
         w.resolved = w.replay(self, capped);
-        let next = w.finish_round(&w.resolved);
+        let next = w.finish_round(self, &w.resolved);
         self.slots[m].walk = Some(w);
         next
     }
