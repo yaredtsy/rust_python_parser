@@ -17,6 +17,7 @@ pub struct Context<'db> {
     pub args:  SmallVec<[FpId; 4]>,          // one per parameter after binding, receiver first, defaults filled
     pub alias: SmallVec<[u8; 4]>,            // alias[i] = first parameter holding the same object as i
     pub free:  SmallVec<[(Name, FpId); 2]>,  // free variables of func, sorted by name. Empty unless func is a closure
+    pub defaults: SmallVec<[(Name, FpId); 2]>, // the called closure's own defaults (06): its recursive calls bind them
 }
 
 pub enum Fp<'db> {
@@ -61,9 +62,12 @@ fn key(&mut self, w: &Walk<'db>, func: Definition<'db>, combo: &Combo<'db>,
                       else { self.fp(Fp::Unknown) })
         .collect();
     let free = w.free_values(callee).iter()                       // the closure's OWN activation
-        .map(|(n, v)| (n.clone(), self.fingerprint(w, v, before, 0, &mut closures)))
+        .map(|(n, v)| (n.clone(), self.fingerprint(w, v, before, 1, &mut closures)))
         .collect();
-    self.contexts.intern(Context { func, args, alias: alias_vector(combo), free })
+    let defaults = w.closure_defaults(callee).iter()              // and its own defaults
+        .map(|(n, v)| (n.clone(), self.fingerprint(w, v, before, 1, &mut closures)))
+        .collect();
+    self.contexts.intern(Context { func, args, alias: alias_vector(combo), free, defaults })
 }
 ```
 
@@ -132,9 +136,11 @@ fn fp_one(&mut self, w: &Walk<'db>, v: AbstractValue<'db>, env: &Env<'db>,
         Instance { class, origin }   => Fp::Instance { class, attrs: self.fp_attrs(w, origin, env, depth + 1, closures) },
         Closure { func, activation } => match closures.position(func, activation) {
             Some(k)                         => Fp::Back(k),
-            None if depth == self.policy.fp_depth => Fp::Closure { func, free: self.unknown_free(func) },
+            None if depth == self.policy.fp_depth => Fp::Closure { func, free: self.unknown_free(func),
+                                                                   defaults: self.unknown_defaults(func, activation) },
             None => closures.with(func, activation, |cl|
-                        Fp::Closure { func, free: self.fp_free(w, activation, env, depth + 1, cl) }),
+                        Fp::Closure { func, free: self.fp_free(w, activation, env, depth + 1, cl),
+                                      defaults: self.fp_defaults(w, func, activation, env, depth + 1, cl) }),
         },
         BoundMethod { func, receiver } => Fp::Bound { func, recv: self.fp_one(w, w.values[receiver], env, depth + 1, closures) },
         Function(d) => Fp::Function(d),

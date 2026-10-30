@@ -58,7 +58,9 @@ pub enum SVal<'db> {
     Ref(Path),                                         // ← new: the caller's object at this path, when the call started
     Obj(u16),                                          // ← new: objects[j], built in this call
     Bound { func: Definition<'db>, recv: Box<SVal<'db>> },   // ← new
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]> },
+    Closure { func: Definition<'db>, free: Box<[(Name, SVals<'db>)]>,   // step 02.07
+              defaults: Box<[(Name, SVals<'db>)]> },
+    Back(u8),                                                           // step 02.07
 }
 
 pub enum PlainVal<'db> { /* … */ Opaque(Definition<'db>) }   // an object with no tracked identity

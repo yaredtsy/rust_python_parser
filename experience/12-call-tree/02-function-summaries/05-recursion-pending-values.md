@@ -349,12 +349,14 @@ callee that a pending value could reach: rare, and cheap.
 ```rust
 // src/interp/summary.rs
 /// Equal as sets: the same elements, in any order, duplicates ignored.
-pub fn same_svals(a: &SVals<'_>, b: &SVals<'_>) -> bool {
+/// One named lifetime: `==` compares two values of the same type, and two
+/// elided `'_` would be two different lifetimes.
+pub fn same_svals<'db>(a: &SVals<'db>, b: &SVals<'db>) -> bool {
     a.iter().all(|x| b.iter().any(|y| same_sval(x, y)))
         && b.iter().all(|y| a.iter().any(|x| same_sval(x, y)))
 }
 
-fn same_sval(x: &SVal<'_>, y: &SVal<'_>) -> bool {
+fn same_sval<'db>(x: &SVal<'db>, y: &SVal<'db>) -> bool {
     x == y   // step 07: closures compare their captures with `same_svals`
 }
 ```

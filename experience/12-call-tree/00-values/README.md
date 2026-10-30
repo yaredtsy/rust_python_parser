@@ -21,7 +21,7 @@ Solver                                   one per request. Owns everything below
 ├── limits, policy, stats
 ├── fps:      FpId → Fp                   fingerprints, interned
 ├── contexts: ContextId → Context         keys, interned
-│     Context { func, args: [FpId], alias, free: [(Name, FpId)] }
+│     Context { func, args: [FpId], alias, free: [(Name, FpId)], defaults: [(Name, FpId)] }
 ├── slots:    ContextId → Slot            one per context
 │     Slot { state, result, current, walk, lowest, joins, cut }
 │     ├── state:  New | Running | Parked | Resolving | Ready | Cut

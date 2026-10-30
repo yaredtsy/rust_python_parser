@@ -19,6 +19,7 @@ pub struct Context<'db> {
     pub args:  SmallVec<[FpId; 4]>,            // one per parameter: receiver first, defaults filled
     pub alias: SmallVec<[u8; 4]>,              // alias[i] = first parameter holding the same object as i
     pub free:  SmallVec<[(Name, FpId); 2]>,    // a closure's captured values, sorted by name
+    pub defaults: SmallVec<[(Name, FpId); 2]>, // and its defaults: its own recursive calls use them
 }
 
 pub enum Fp<'db> {

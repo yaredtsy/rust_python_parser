@@ -46,8 +46,9 @@ pub enum SVal<'db> {
     Ref(Path),                // "the caller's object at this path, when the call started"
     Obj(u16),                 // "objects[j]: an object I built"
     Bound   { func: Definition<'db>, recv: Box<SVal<'db>> },
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]>,
-              defaults: SmallVec<[(Name, SVals<'db>); 2]> },
+    Closure { func: Definition<'db>, free: Box<[(Name, SVals<'db>)]>,      // boxed: an SVal
+              defaults: Box<[(Name, SVals<'db>)]> },                       // can't hold SVals inline
+    Back(u8),                 // the closure k levels up: one that captures itself
 }
 
 pub enum PlainVal<'db> { Function(..), Class(..), Module(..), Ty(Type<'db>), Unknown, Opaque(Definition<'db>) }

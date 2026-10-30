@@ -120,7 +120,9 @@ defaults (rebuilding nested closures the same way, `Back(k)` becoming a
 closure over the k-th entry from the top), pop. The activation exists before
 its values because a value inside it can point back at it. In `materialize`
 the stack starts with the called closure itself, so `Back(0)` in
-`Context.free` is the walked closure.
+`Context.free` is the walked closure, and `Context.defaults` become its
+defaults: a recursive call inside the walk that leaves a parameter out binds
+the same default, so it keys the same context.
 
 Depth is counted the same way in both: 0 for a value in a parameter slot or a
 summary's returns, one more inside each closure, and the called closure counts

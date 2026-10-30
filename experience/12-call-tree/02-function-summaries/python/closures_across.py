@@ -72,6 +72,18 @@ def use_walker():
     make_walker()(1)
 
 
+def with_default():
+    def walk(n, cb=a):
+        cb()
+        walk(n)  # cb's default comes from the rebuilt closure: Context.defaults
+
+    return walk
+
+
+def use_default():
+    with_default()(1)
+
+
 # expect:
 # passed_along
 #   make
@@ -116,3 +128,9 @@ def use_walker():
 #   make_walker
 #   make_walker.walk
 #     make_walker.walk [recursive]
+# expect:
+# use_default
+#   with_default
+#   with_default.walk
+#     a
+#     with_default.walk [recursive]

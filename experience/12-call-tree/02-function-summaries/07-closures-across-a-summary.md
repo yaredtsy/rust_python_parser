@@ -41,6 +41,11 @@ def make_walker():
     def walk(n): walk(n)
     return walk                                         # a returned closure that captures itself
 def use_walker(): make_walker()(1)                      # make_walker.walk > make_walker.walk [recursive]
+
+def with_default():
+    def walk(n, cb=a): cb(); walk(n)                    # the recursive call takes cb's default
+    return walk
+def use_default(): with_default()(1)                    # with_default.walk > a, with_default.walk [recursive]
 ```
 
 ## Predict
@@ -63,12 +68,24 @@ pub enum SVal<'db> {
     Plain(PlainVal<'db>),
     Closure {                                                     // ← new
         func: Definition<'db>,
-        free: SmallVec<[(Name, SVals<'db>); 2]>,      // captured variables
-        defaults: SmallVec<[(Name, SVals<'db>); 2]>,  // the defaults computed when its `def` ran (step 01.11)
+        free: Box<[(Name, SVals<'db>)]>,       // captured variables
+        defaults: Box<[(Name, SVals<'db>)]>,   // the defaults computed when its `def` ran (step 01.11)
     },
-    Back(u8),                                         // ← new: the closure k levels up (decision 5)
+    Back(u8),                                  // ← new: the closure k levels up (decision 5)
 }
 ```
+
+**Why `Box<[…]>` and not `SmallVec`:** `SVals` is a `SmallVec`, which keeps
+its first two elements inline. A `SmallVec` of `SVals` inside an `SVal` would
+put `SVal`s inside an `SVal` by value: a type of infinite size, which Rust
+rejects (E0072). A box is a pointer, so the cycle goes through the heap, the
+same way `Bound { recv: Box<SVal> }` will in part 04. Closures in summaries
+are rare, so the allocation costs nothing measurable, and a boxed slice is
+fixed once built, like the rest of a summary. It collects from an iterator
+(`.collect()`), and `same_named` already takes slices, so the code below
+doesn't change. Rejected: `SVals = Vec<…>` everywhere (every summary's
+returns would pay a heap allocation for a closure-only problem), and
+interning closures by id (another table, for no measured gain).
 
 `finish` converts a returned `Closure { func, activation }` by reading each of
 `func`'s free variables (and its defaults) from that activation, and
@@ -87,11 +104,11 @@ fn to_svals(&self, s: &Solver<'db>, vals: &Values<'db>, resolved: &IndexVec<Defe
             AbstractValue::Pending(id) => out.extend(self.to_svals(s, &resolved[id], resolved, depth, cl)),
             AbstractValue::Closure { func, activation } => match cl.position(func, activation) {
                 Some(k) => out.push(SVal::Back(k)),
-                None if depth == s.opts.fp_depth => out.push(SVal::Plain(PlainVal::Unknown)),
+                None if depth == s.opts.fp_depth => out.push(self.closure_at_limit(s, func, activation)),
                 None => out.push(cl.with(func, activation, |cl| SVal::Closure {
                     func,
                     free: s.sem.free_variables(func).iter()
-                        .map(|n| (n.clone(), self.to_svals(s, &self.lookup_in(activation, n), resolved, depth + 1, cl)))
+                        .map(|n| (n.clone(), self.to_svals(s, &self.lookup_in(s, func, activation, n), resolved, depth + 1, cl)))
                         .collect(),
                     defaults: self.defaults.get(&(func, activation)).into_iter().flatten()
                         .map(|(n, v)| (n.clone(), self.to_svals(s, v, resolved, depth + 1, cl)))
@@ -109,6 +126,43 @@ fn to_svals(&self, s: &Solver<'db>, vals: &Values<'db>, resolved: &IndexVec<Defe
     unique
 }
 ```
+
+`closure_at_limit` keeps the function and makes every captured value and
+default `[Plain(Unknown)]`.
+
+`lookup_in` reads a closure's free variable from the run where its `def` ran.
+It is step 01.11's `lookup`, not a second rule:
+
+```rust
+// src/interp/walk.rs
+/// A free variable of the closure `(func, act)`, read exactly as its own body
+/// would: `lookup` from an empty env of `func`'s scope whose `enclosing` is
+/// `act`. Empty if no run has bound it.
+pub fn lookup_in(&self, s: &Solver<'db>, func: Definition<'db>, act: ActivationId, name: &Name) -> Values<'db> {
+    let parsed = s.sem.parsed(func);
+    let Some(node) = s.sem.function_node(func, &parsed) else { return Values::new() };
+    let probe = Env { scope: Some(s.sem.body_scope(func, node)), enclosing: Some(act), ..Env::default() };
+    self.lookup(s, &probe, name).unwrap_or_default()
+}
+```
+
+**Why not "the nearest activation that holds the name":** that rule differs
+from `lookup` when the scope that binds the name hasn't assigned it on the
+walked path:
+
+```python
+def outer():
+    f = a
+    def mid():
+        def inner(): f()
+        return inner        # mid binds f, but never assigns it before returning
+        f = b
+```
+
+Python: `inner()` raises, because `mid`'s `f` is unbound. "Nearest that holds
+it" skips `mid`'s activation and finds `outer`'s `f = a`: an edge Python
+never takes. `lookup` asks ty which scope binds `f` (`mid`), reads that run
+only, and finds nothing.
 
 `finish_round` converts the returns with
 `self.to_svals(s, &self.frame.returns, resolved, 0, &mut ClosureStack::default())`.
@@ -139,12 +193,21 @@ previous round's summary, one level deeper every round. In `chain`, write
 
 No two rounds are equal, so step 05's fixpoint would never stop. This isn't
 an exotic shape: it is how a middleware chain is built. With the limit, a
-closure inside `fp_depth` other closures becomes `Plain(Unknown)`. Round 2 is
-`g[g[Unknown, a], a]`, round 3 is the same, and the fixpoint stops. The tree
+closure inside `fp_depth` other closures keeps its function, and every value
+it captures becomes `Unknown`. Write `g[?]` for that. Round 2 is
+`g[g[g[?], a], a]`, round 3 is the same, and the fixpoint stops. The tree
 loses nothing: the renderer stops at `chain.g [recursive]` before the depth
 matters. Keys need the same limit (decision 5): a deferred call is keyed with
 each round's values, and a key that grew every round would be a new context,
 and a new walk, every round.
+
+**Why keep the function at the limit, not cut to `Unknown`:** the closure is
+still callable, and its body's own calls (to module functions, to its
+parameters) don't depend on what it captured. In a chain of *different*
+handlers, `h1` capturing `h2` capturing `h3`, cutting to `Unknown` would never
+walk `h3` at all. Keeping the function walks it, with its captures unknown.
+It is still finite: a closure at the limit holds no closure. (This is the
+plan's rule, `plan/03-call-tree/08-keys.md` § "Depth".)
 
 `fp_depth` is `Options.fp_depth`, 2. Part 04 uses the same limit for objects'
 attributes, and step 08 moves it into `Limits`.
@@ -164,7 +227,7 @@ rebuilds one closure whose `walk` is itself, and there is one context.
 are value sets too, so their order must not matter either:
 
 ```rust
-fn same_sval(x: &SVal<'_>, y: &SVal<'_>) -> bool {
+fn same_sval<'db>(x: &SVal<'db>, y: &SVal<'db>) -> bool {
     match (x, y) {
         (SVal::Closure { func: f, free: a, defaults: da },
          SVal::Closure { func: g, free: b, defaults: db }) => f == g && same_named(a, b) && same_named(da, db),
@@ -173,7 +236,7 @@ fn same_sval(x: &SVal<'_>, y: &SVal<'_>) -> bool {
 }
 
 /// Both lists come in a fixed order: free variables sorted, defaults in parameter order.
-fn same_named(a: &[(Name, SVals<'_>)], b: &[(Name, SVals<'_>)]) -> bool {
+fn same_named<'db>(a: &[(Name, SVals<'db>)], b: &[(Name, SVals<'db>)]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|((n, x), (m, y))| n == m && same_svals(x, y))
 }
 ```
@@ -241,7 +304,7 @@ fn resolve_in(&mut self, s: &Solver<'db>, vals: &SVals<'db>,
             SVal::Closure { func, free, defaults } => {
                 let activation = self.activations.push(Env::flat()); // 1. the activation, empty
                 cl.push((*func, activation));                         // 2. so a Back inside can reach it
-                for (name, vals) in free {                            // 3. its values
+                for (name, vals) in free.iter() {                     // 3. its values
                     let v = self.resolve_in(s, vals, cl);
                     self.activations[activation].bind(name, v);
                 }
@@ -287,7 +350,8 @@ pub enum Fp<'db> {
 pub struct Context<'db> {
     pub func: Definition<'db>,
     pub args: SmallVec<[FpId; 4]>,
-    pub free: SmallVec<[(Name, FpId); 2]>,   // ← new: the called closure's own free values
+    pub free: SmallVec<[(Name, FpId); 2]>,       // ← new: the called closure's own free values
+    pub defaults: SmallVec<[(Name, FpId); 2]>,   // ← new: and its own defaults
 }
 ```
 
@@ -301,6 +365,19 @@ the two `run`s are two contexts, with two different children.
 
 **Why not just the function:** two closures over the same `def` with different
 captured values do different things. That is the whole of `two_makers`.
+
+**Why the called closure's defaults too:** `args` already holds a default
+wherever the call left a parameter out. But the walk can call the closure
+again, from inside (`walk(n)` in `with_default`), and that call takes its
+defaults from the closure's activation. `materialize` has to put them there,
+and rule 1 says it can only take them from the key. Without them, the
+recursive call binds `cb = Unknown`, keys a second context, and walks it
+with less. `Context` now mirrors `Fp::Closure`: function, captures, defaults.
+
+**Rejected:** a `Context` that holds the called closure's whole fingerprint
+(`closure: Option<FpId>`) instead of `free` and `defaults`. It would remove a
+special case or two, but part 04's paths name a captured value as
+`Root::Free(i)`, an index into `Context.free`, so the list stays.
 
 ### Decision 4: a walk starts its free variables from the key
 
@@ -328,7 +405,7 @@ becomes `Back(k)`, its distance up the stack:
 ```rust
 AbstractValue::Closure { func, activation } => match closures.position(func, activation) {
     Some(k) => Fp::Back(k),
-    None if depth == self.opts.fp_depth => Fp::Unknown,       // decision 1: keys stay finite too
+    None if depth == self.opts.fp_depth => self.fp_closure_at_limit(func, activation),   // decision 1
     None => closures.with(func, activation, |cl| Fp::Closure {
         func,
         free: self.fp_free(w, activation, cl, depth + 1),
@@ -336,6 +413,10 @@ AbstractValue::Closure { func, activation } => match closures.position(func, act
     }),
 },
 ```
+
+`fp_closure_at_limit` is `Fp::Closure` with the function kept and every
+captured value and default `Unknown`, matching `closure_at_limit` in
+summaries.
 
 `fingerprint` gains a `depth` argument: 0 for a value in a parameter slot,
 one more inside each closure. The called closure counts as a closure too: its
@@ -362,7 +443,9 @@ rebuilt:
 
 The activation has to exist before its values are bound, because a value
 inside it can point back at it. In `materialize`, the stack starts with the
-called closure itself, so `Back(0)` in `Context.free` is the walked closure.
+called closure itself, so `Back(0)` in `Context.free` is the walked closure,
+and `Context.defaults` go under `(func, activation)` like any rebuilt
+closure's defaults.
 A self-capturing closure passed as an argument (`call_it(walk)`) has
 `Back(0)` inside its parameter's fingerprint, and two nested defs that call
 each other give `Back(1)`. All of them rebuild by these four steps:
@@ -391,7 +474,9 @@ Fp::Closure { func, free, defaults } => {
 
 - `SVal::Closure`, `Fp::Closure`, `Fp::Back`, `Context.free`.
 - `sem.free_variables(func)`.
-- `SVal::Back`.
+- `SVal::Back`, `Context.defaults`.
+- `lookup_in`, through step 01.11's `lookup`.
+- `closure_at_limit` and `fp_closure_at_limit`.
 - `to_svals` with `resolved`, `depth` and the closure stack; `same_sval` for
   closures; `Options.fp_depth` (2); `fingerprint`'s `depth`.
 - `finish` and `resolve` for closures, with the rebuilding rule; flat
@@ -453,8 +538,9 @@ impl<'db> ClosureStack<'db> {
 ```
 
 `key` starts the stack with the callee itself when the callee is a closure,
-and fingerprints its free values at depth 1, so `walk`'s own free value
-`walk` comes out as `Back(0)`. `to_svals` uses the same `ClosureStack`.
+and fingerprints its free values and defaults at depth 1 (into
+`Context.free` and `Context.defaults`), so `walk`'s own free value `walk`
+comes out as `Back(0)`. `to_svals` uses the same `ClosureStack`.
 
 </details>
 
@@ -472,8 +558,9 @@ fn p02_07_closures() {
     let st = stats_for("02-function-summaries/python/closures_across.py", "chained", &summary());
     assert_eq!(st.rounds_capped, 0);  // the depth limit, not the round cap, ends chain's fixpoint
     let f = "02-function-summaries/python/closures_across.py";
-    assert_eq!(contexts_of(f, "chained", "chain.g"), 2);              // the depth limit, pinned without the renderer
-    assert_eq!(contexts_of(f, "use_walker", "make_walker.walk"), 1);  // Back in the summary
+    assert_eq!(contexts_of(f, "chained", "chain.g"), 3);                // the depth limit, pinned without the renderer
+    assert_eq!(contexts_of(f, "use_walker", "make_walker.walk"), 1);    // Back in the summary
+    assert_eq!(contexts_of(f, "use_default", "with_default.walk"), 1);  // Context.defaults
 }
 ```
 
@@ -492,9 +579,12 @@ pub fn contexts_of(fixture: &str, entry: &str, func: &str) -> usize {
 }
 ```
 
-`chain.g` has two contexts: the closure `chained` calls, and the one inside
-it, whose `r` holds `Unknown` where the depth limit cut. A third would mean
-the limit isn't applied to keys; one would mean it cuts too early.
+`chain.g` has three contexts: the closure `chained` calls, the one it
+captured, and the one at the depth limit, whose `r` is `Unknown`. That last
+one is still walked, because at the limit a closure keeps its function. Two
+would mean the limit cuts the function too; four or more would mean the
+limit isn't applied to keys. `with_default.walk` has one: its recursive call
+finds `cb`'s default in the rebuilt closure, so it keys the same context.
 
 Every part 01 fixture now runs in both modes.
 

@@ -56,6 +56,7 @@ pub struct Context<'db> {
     pub args: SmallVec<[FpId; 4]>,
     pub alias: SmallVec<[u8; 4]>,            // ← new: alias[i] = the first parameter holding the same object as i
     pub free: SmallVec<[(Name, FpId); 2]>,
+    pub defaults: SmallVec<[(Name, FpId); 2]>,   // step 02.07
 }
 ```
 

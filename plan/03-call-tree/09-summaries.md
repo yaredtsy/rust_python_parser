@@ -66,8 +66,8 @@ pub enum SVal<'db> {
     Ref(Path),                                // the caller's object at this path when the call started
     Obj(u16),                                 // objects[j]
     Bound   { func: Definition<'db>, recv: Box<SVal<'db>> },
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]>,
-              defaults: SmallVec<[(Name, SVals<'db>); 2]> },   // values computed when its `def` ran (06)
+    Closure { func: Definition<'db>, free: Box<[(Name, SVals<'db>)]>,   // boxed: SVals is a SmallVec, so
+              defaults: Box<[(Name, SVals<'db>)]> },                    // inline it would be infinite (E0072)
     Back(u8),                                 // the closure k levels up: one that captures itself (11)
 }
 pub type SVals<'db> = SmallVec<[SVal<'db>; 2]>;
@@ -134,8 +134,10 @@ pub struct NewObject<'db> {
      `Pending` inside is resolved too). A closure already being converted
      (it captures itself) becomes `Back(k)`, with the same closure stack as
      fingerprinting ([`11`](11-closures-and-callbacks.md#a-closure-that-captures-itself)).
-     A closure inside `fp_depth` other closures becomes `Plain(Unknown)`, or a
-     recursion fixpoint never ends ([`12`](12-recursion.md#why-it-stops))
+     A closure inside `fp_depth` other closures keeps its function, with every
+     captured value and default `[Plain(Unknown)]`, as in a key
+     ([`08`](08-keys.md)). Without the limit a recursion fixpoint never ends
+     ([`12`](12-recursion.md#why-it-stops))
    - a bound method becomes `Bound { func, recv }`
    - a `Pending(id)` becomes its resolved values ([`12`](12-recursion.md))
    - everything else becomes `Plain(..)`
