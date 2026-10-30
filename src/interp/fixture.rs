@@ -1,8 +1,10 @@
 // src/interp/fixture.rs
-use ruff_db::system::SystemPath;
-
 use crate::db::{open, open_project};
+use crate::interp::bind::param_names;
+use crate::interp::relevant::relevant_params;
 use crate::interp::{Mode, Options, Stats, call_tree, to_text};
+use crate::sem::Sem;
+use ruff_db::system::SystemPath;
 
 pub struct Expect {
     pub entry: String,
@@ -38,6 +40,21 @@ pub fn expectations(source: &str) -> Vec<Expect> {
     out
 }
 
+pub fn relevant_names(fixture: &str, func: &str) -> Vec<String> {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let sem = Sem::new(&db);
+    let def = sem.entry(file, func).unwrap();
+    let parsed = sem.parsed(def);
+    let node = sem.function_node(def, &parsed).unwrap();
+    param_names(node)
+        .zip(relevant_params(&db, def))
+        .filter(|(_, r)| **r)
+        .map(|(n, _)| n.to_string())
+        .collect()
+}
 /// The stats of one entry in `fixture`, opened the way `check` does.
 pub fn stats_for(fixture: &str, entry: &str, opts: &Options) -> Stats {
     let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
@@ -230,4 +247,29 @@ fn p02_04_relevant() {
         &summary(),
     );
     assert_eq!(st.contexts, 9);
+}
+
+#[test]
+fn p02_04_relevance_cases() {
+    let fixture = "02-function-summaries/python/relevance_cases.py";
+    let cases: &[(&str, &[&str])] = &[
+        ("cond_only", &["b"]),
+        ("bare_condition", &[]),
+        ("attr_in_condition", &["cb"]),
+        ("loop_order", &["cb"]),
+        ("aug", &["cb"]),
+        ("attr_store", &["cb", "obj"]),
+        ("matched", &["cb"]),
+        ("nested_class", &["cb"]),
+        ("global_write", &["cb"]),
+        ("splats", &["args"]),
+    ];
+    let mut wrong = String::new();
+    for (func, want) in cases {
+        let got = relevant_names(fixture, func);
+        if got != *want {
+            wrong += &format!("{func}: expected {want:?}, got {got:?}\n");
+        }
+    }
+    assert!(wrong.is_empty(), "\n{wrong}");
 }

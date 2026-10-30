@@ -154,6 +154,30 @@ Inline mode builds its env with `env_from_bound`, exactly as before. The key
 is built from the same slots. Step 02 adds a second way to build an env:
 from the key.
 
+"In order" needs one definition, because several places pair parameter names
+with slots: `env_from_bound` now, `materialize` in step 02, the relevance pass
+in step 04. One function defines it, and all of them use it:
+
+```rust
+// src/interp/bind.rs
+/// Parameter names in slot order: positional, keyword-only, `*args`, `**kwargs`.
+pub fn param_names(def: &StmtFunctionDef) -> impl Iterator<Item = &Name> {
+    let p = &def.parameters;
+    p.posonlyargs.iter().chain(&p.args).chain(&p.kwonlyargs)
+        .map(|p| &p.parameter.name.id)
+        .chain(p.vararg.iter().map(|p| &p.name.id))
+        .chain(p.kwarg.iter().map(|p| &p.name.id))
+}
+```
+
+`bind_parameters` pushes its slots in the same order: positional and
+keyword-only as in step 01.07, then `*args` and `**kwargs` after the others
+(step 01.08), and one `Unknown` per `param_names` entry on the splat path.
+That is not the signature's order (`*args` comes before keyword-only
+parameters in a `def`), so don't use ruff's `Parameters::iter()` for slots.
+Any fixed order would work. What matters is that one function defines it.
+A mismatch here doesn't fail to compile: it binds a value to the wrong name.
+
 ### Decision 7: measure before you build the cache
 
 Inline mode computes and interns each call's key, and `Stats` gains

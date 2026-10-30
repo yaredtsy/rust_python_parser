@@ -48,12 +48,24 @@ Summary mode: **9** contexts with this step, 10 without.
 ```rust
 pub fn key(&mut self, func: Definition<'db>, bound: &Bound<'db>) -> ContextId {
     let relevant = relevant_params(self.sem.db, func);
+    debug_assert_eq!(relevant.len(), bound.slots.len(), "relevance out of sync with binding");
     let args = bound.slots.iter().enumerate()
-        .map(|(i, v)| if relevant[i] { self.fingerprint(v) } else { self.fps.intern(Fp::Unknown) })
+        .map(|(i, v)| if relevant.get(i).copied().unwrap_or(true) {
+            self.fingerprint(v)
+        } else {
+            self.fps.intern(Fp::Unknown)
+        })
         .collect();
     self.contexts.intern(Context { func, args })
 }
 ```
+
+**Why the guard:** the flags and the slots line up only because both come
+from `param_names` (step 02.01), in the same order. Today the lengths always
+match. If a later change to binding breaks that, the assertion fails loudly
+in tests, and in a release build a missing flag counts as relevant, which is
+the safe direction (decision 3). Indexing with `relevant[i]` would panic in
+the middle of a user's request instead.
 
 `log_event` never reads `payload`. Whatever a caller passes there, the walk
 does the same thing, so the key shouldn't hold it. Both calls in `main` now
@@ -101,6 +113,7 @@ may hold its value, reaches any of these:
 | a nested `def` or `class`, a `lambda` or a comprehension that reads it | `def inner(): cb()` |
 | a `with` item | `with cb: …` |
 | a `match` subject | `match cb: case …` |
+| a write to a `global` or `nonlocal` name | `global G; G = cb` |
 
 A parameter used only in a condition (`if flag:`) is not relevant: conditions
 are never evaluated, so its value can't change the walk.
@@ -117,27 +130,48 @@ enough: any name a pattern binds can only hold what the subject holds, and
 that is already marked. It over-marks when the bound names are never used,
 which only costs sharing.
 
-**Where the pass over-marks, on purpose.** Two shortcuts keep it simple, and
-both err toward relevant:
+**Why a `global`/`nonlocal` write is a sink, although nothing reads it yet:**
+today the walker gives these names `Unknown` (plan `05-the-walk.md`, "Scope
+limits"), so the sink protects nothing yet and costs a little sharing. It is
+there for the day writes through `nonlocal` are modelled (plan `15`, "Growth
+path": shared cells). Then a parameter written into an enclosing scope
+changes what another walk sees, and without this row the pass would
+under-mark it, silently. Python requires `global`/`nonlocal` before any use
+of the name in the function, so the pass sees the declaration before the
+write.
+
+**Where the pass over-marks, on purpose.** These shortcuts keep it simple,
+and all of them err toward relevant:
 
 - `params_in` collects every name in an expression, so
   `f = a if flag else b` makes `f` hold `flag` too. If `f` reaches a sink,
   `flag` is marked, although a ternary's test is never evaluated.
 - A nested `def` marks every parameter whose name appears anywhere inside it,
   even when the inner function rebinds that name (`def inner(cb): cb()`
-  shadows the outer `cb`). Telling them apart needs the nested scope's symbol
-  table.
+  shadows the outer `cb`), or only writes it (`cb = 1`). Telling them apart
+  needs the nested scope's symbol table.
+- Nested bodies are visited with the outer `holds` map, so an inner `x = cb`
+  makes the outer `x` hold `cb`.
+- `match flag:` marks `flag`, even when no pattern's names are used.
 
-Neither can change a tree. They only give some callers separate keys that
-could have shared one (decision 3). Fix one if a benchmark shows a function
-with many contexts that differ only in such a parameter.
+None of these can change a tree. They only give some callers separate keys
+that could have shared one (decision 3). Fix one if a benchmark shows a
+function with many contexts that differ only in such a parameter.
+
+**Not over-marking: an attribute in a condition.** `if cb.ready:` marks `cb`,
+and must. A condition's value is ignored, but the expression is still walked
+for what it calls (step 01.09), and from step 03.06 reading an attribute can
+call a property's getter. Which getter depends on `cb`'s class, so the
+condition can make an edge. Only a bare name in a condition (`if flag:`) is
+safe to skip. Don't "tighten" this one to gain reuse: it would lose edges, and
+no-reuse mode can't catch that (exercise 3).
 
 ### Yours
 
 - `relevant_params`, as a tracked function in `src/interp/key.rs` or its own
   file.
-- `key` uses it.
-- The fixture's stats test.
+- `key` uses it, with the length guard.
+- The fixture's stats test, and `relevant_names` with the cases test.
 
 <details><summary>Reference: this step's code</summary>
 
@@ -154,7 +188,8 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
     let parsed = parsed_module(db, func.python_file(db)).load(db);
     let DefinitionKind::Function(f) = func.kind(db) else { return Vec::new() };
     let def = f.node(&parsed);
-    let params: Vec<&ast::Name> = parameter_names(def).collect();
+    let params: Vec<&ast::Name> = param_names(def).collect();   // slot order, step 02.01
+    if params.is_empty() { return Vec::new() }
 
     // holds[name] = the parameters a local may hold. Seeded by the parameters themselves.
     let mut holds: FxHashMap<ast::Name, FxHashSet<usize>> = params.iter().enumerate()
@@ -163,9 +198,15 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
     let mut relevant = vec![false; params.len()];
 
     loop {
-        let mut pass = Taint { holds: &mut holds, relevant: &mut relevant, changed: false };
+        let mut pass = Taint {
+            holds: &mut holds,
+            relevant: &mut relevant,
+            escapes: FxHashSet::default(),
+            changed: false,
+        };
         pass.visit_body(&def.body);
-        if !pass.changed { break }
+        let changed = pass.changed;
+        if !changed || relevant.iter().all(|&r| r) { break }   // nothing left to find
     }
     relevant
 }
@@ -173,6 +214,8 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
 struct Taint<'a> {
     holds: &'a mut FxHashMap<ast::Name, FxHashSet<usize>>,
     relevant: &'a mut Vec<bool>,
+    /// Names declared `global` or `nonlocal`: a write to one leaves the function.
+    escapes: FxHashSet<ast::Name>,
     changed: bool,
 }
 
@@ -223,6 +266,7 @@ impl Taint<'_> {
     /// holds. An attribute or subscript target is a store: a sink for both sides.
     fn flow(&mut self, target: &Expr, from: &Expr) {
         match target {
+            Expr::Name(n) if self.escapes.contains(&n.id) => self.sink(from),
             Expr::Name(n) => {
                 let ps = self.params_in(from);
                 let set = self.holds.entry(n.id.clone()).or_default();
@@ -251,6 +295,8 @@ impl<'a> Visitor<'a> for Taint<'_> {
                 if let Some(t) = &item.optional_vars { self.flow(t, &item.context_expr) }
             },
             Stmt::Match(m) => self.sink(&m.subject),                  // patterns bind from it
+            Stmt::Global(g) => self.escapes.extend(g.names.iter().map(|i| i.id.clone())),
+            Stmt::Nonlocal(n) => self.escapes.extend(n.names.iter().map(|i| i.id.clone())),
             Stmt::FunctionDef(_) | Stmt::ClassDef(_) => self.sink_names_in(stmt),
             _ => {}   // `if` and `while` tests are not sinks; their bodies are visited below
         }
@@ -277,7 +323,11 @@ impl<'a> Visitor<'a> for Taint<'_> {
 The visitor visits sub-expressions after the match, which is what makes
 `f(g(cb))` mark `cb` through the inner call. `flow`'s last arm covers
 attribute and subscript targets in every assignment form: `self.h = cb`,
-`d[k] += cb`, `for self.x in cb`.
+`d[k] += cb`, `for self.x in cb`. Its first `Name` arm does the same for an
+escaping name, in every form too: `=`, `+=`, `for`, `with … as`, walrus.
+
+`escapes` starts empty on every pass. That is enough, because the
+declaration comes before every use of the name.
 
 </details>
 
@@ -293,6 +343,81 @@ fn p02_04_relevant() {
     assert_eq!(st.contexts, 9);
 }
 ```
+
+A context count can be right with the wrong parameter marked, so also test
+the pass directly, one small function per rule. `python/relevance_cases.py`
+holds them:
+
+| function | relevant | the rule it pins |
+|---|---|---|
+| `cond_only(a, b)`: `if a: b()` | `b` | a condition is not a sink |
+| `bare_condition(flag)`: `if flag: pass` | none | the same, alone |
+| `attr_in_condition(cb)`: `if cb.ready: pass` | `cb` | an attribute read can call a getter |
+| `loop_order(cb)`: `x()` in a loop before `x = cb` | `cb` | the pass repeats until nothing changes |
+| `aug(cb)`: `x += cb; x()` | `cb` | augmented assignment flows |
+| `attr_store(cb, obj)`: `obj.h = cb` | `cb`, `obj` | a store is a sink for both sides |
+| `matched(cb)`: `match cb: case _: pass` | `cb` | a `match` subject is a sink |
+| `nested_class(cb)`: `class C: h = cb`, then `C.h()` | `cb` | a nested class captures |
+| `global_write(cb)`: `global G; G = cb` | `cb` | an escaping write is a sink |
+| `splats(a, *args, k, **kw)`: `g(*args)` | `args` | a splat at a call is an argument |
+
+```rust
+#[test]
+fn p02_04_relevance_cases() {
+    let fixture = "02-function-summaries/python/relevance_cases.py";
+    let cases: &[(&str, &[&str])] = &[
+        ("cond_only", &["b"]),
+        ("bare_condition", &[]),
+        ("attr_in_condition", &["cb"]),
+        ("loop_order", &["cb"]),
+        ("aug", &["cb"]),
+        ("attr_store", &["cb", "obj"]),
+        ("matched", &["cb"]),
+        ("nested_class", &["cb"]),
+        ("global_write", &["cb"]),
+        ("splats", &["args"]),
+    ];
+    let mut wrong = String::new();
+    for (func, want) in cases {
+        let got = relevant_names(fixture, func);
+        if got != *want {
+            wrong += &format!("{func}: expected {want:?}, got {got:?}\n");
+        }
+    }
+    assert!(wrong.is_empty(), "\n{wrong}");
+}
+```
+
+```rust
+// src/interp/fixture.rs
+/// The parameters `relevant_params` marks in `func`, by name.
+pub fn relevant_names(fixture: &str, func: &str) -> Vec<String> {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let sem = Sem::new(&db);
+    let def = sem.entry(file, func).unwrap();
+    let parsed = sem.parsed(def);
+    let node = sem.function_node(def, &parsed).unwrap();
+    param_names(node)
+        .zip(relevant_params(&db, def))
+        .filter(|(_, r)| **r)
+        .map(|(n, _)| n.to_string())
+        .collect()
+}
+```
+
+**Why names, not a `[bool]`:** the slot order is positional, keyword-only,
+`*args`, `**kwargs` (step 02.01), which is not the order of the signature. A
+test written as `[false, true, false, false]` for `splats` would encode
+Python's order and fail for the wrong reason. By name, the test checks
+relevance only. The order is checked elsewhere: `key`'s assertion catches a
+length mismatch, and a mismatch in order moves `after_star`'s `cb` in
+`varargs.py` (step 01.08).
+
+The fixture has no `# expect:` block: there is no tree to compare, and
+`check` never reads it.
 
 Then every test. Relevance can only make keys share more; if any tree changed,
 the pass under-marked something. Find which parameter, and which sink the pass

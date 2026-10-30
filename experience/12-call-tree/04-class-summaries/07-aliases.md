@@ -126,7 +126,7 @@ the common case and is cheap.
 // src/interp/key.rs: materialize, parameters
 let ctx = &s.contexts[ctx_id];
 let mut param_values: SmallVec<[Values<'db>; 4]> = SmallVec::new();
-for (i, (name, &fp)) in parameter_names(node).zip(&ctx.args).enumerate() {
+for (i, (name, &fp)) in param_names(node).zip(&ctx.args).enumerate() {
     let a = ctx.alias[i] as usize;
     let v = if a != i {
         param_values[a].clone()                         // the same object as an earlier parameter

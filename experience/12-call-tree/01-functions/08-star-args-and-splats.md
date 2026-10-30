@@ -78,7 +78,7 @@ and in `bind_parameters`, first thing:
 
 ```rust
 if args.has_splat {
-    for name in all_parameter_names(def) { env.bind(name, smallvec![AbstractValue::Unknown]); }
+    for p in def.parameters.iter() { env.bind(&p.name().id, smallvec![AbstractValue::Unknown]); }
     return env;
 }
 ```
@@ -144,7 +144,7 @@ pub fn bind_parameters(&mut self, def: &StmtFunctionDef, args: &EvaluatedArgs<'d
     let unknown = || smallvec![AbstractValue::Unknown];
 
     if args.has_splat {
-        for p in params.iter() {               // [check] ruff's iterator over every parameter
+        for p in params.iter() {               // every parameter, *args and **kwargs included
             env.bind(&p.name().id, unknown());
         }
         return env;

@@ -63,7 +63,7 @@ def main():
 /// The starting env of a context's walk. Reads the key and the code. Nothing else.
 pub fn materialize(&mut self, s: &Solver<'db>, ctx: ContextId, node: &StmtFunctionDef) -> Env<'db> {
     let mut env = Env::new(s.sem.body_scope(s.contexts[ctx].func, node), None);
-    for (param, &fp) in parameter_names(node).zip(&s.contexts[ctx].args) {
+    for (param, &fp) in param_names(node).zip(&s.contexts[ctx].args) {
         let vals = self.from_fp(s, fp);
         env.bind(param, vals);
     }
