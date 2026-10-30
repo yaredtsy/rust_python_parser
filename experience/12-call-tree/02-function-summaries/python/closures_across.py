@@ -61,6 +61,17 @@ def chained():
     chain(3)()  # each round nests g one level deeper, until fp_depth
 
 
+def make_walker():
+    def walk(n):
+        walk(n)  # a returned closure that captures itself: Back(0) in the summary
+
+    return walk
+
+
+def use_walker():
+    make_walker()(1)
+
+
 # expect:
 # passed_along
 #   make
@@ -100,3 +111,8 @@ def chained():
 #   chain.g
 #     a
 #     chain.g [recursive]
+# expect:
+# use_walker
+#   make_walker
+#   make_walker.walk
+#     make_walker.walk [recursive]

@@ -148,6 +148,22 @@ rebinding the name is lost. `nonlocal` is also outside the precision policy. Fix
 later: shared cells, one per captured binding, carried in `Fp::Closure` and
 `SVal::Closure` by reference.
 
+### A closure passed as an argument keeps the values it had at the call
+
+```python
+def setup():
+    f = a
+    def h(): f()
+    register(h)       # keyed with f = a; register stores h on an object
+    f = b             # Python's h, run later, calls b. v1: a
+```
+
+A returned closure is read when its function's walk ends, which is right. A
+closure passed as an argument is read at the call, which is right only if the
+callee calls it before the caller rebinds the variable. Stored and run later,
+it keeps the old values. Same family as the `nonlocal` limit above (a rebinding
+after the closure left is lost), and the same fix: shared cells.
+
 ---
 
 ## Permanent checks

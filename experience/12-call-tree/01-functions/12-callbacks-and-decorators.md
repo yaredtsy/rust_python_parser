@@ -148,6 +148,13 @@ Still not entered (step 02, decision 6). **[check]** the Jedi driver on a call
 inside a lambda passed as a callback (`run(fetch, lambda: on_ok())`), and match
 it.
 
+**For later, if lambdas are entered:** a lambda is a closure like a nested
+`def`. Step 02.07's `free_variables` must then also count names bound in a
+lambda or comprehension scope, not only in a `def`. Fixtures for that day:
+`make2 = lambda f: lambda: f()` (`f` is bound in a lambda) and
+`fns = [lambda: g() for g in (a, b)]` (`g` is bound in a comprehension).
+Today neither matters: a `def` can't sit inside a lambda or a comprehension.
+
 ### Yours
 
 - `sem.decorated_defs(model, name_expr)`.

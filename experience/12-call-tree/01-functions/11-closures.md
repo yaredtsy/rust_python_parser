@@ -122,6 +122,13 @@ pub struct Frame<'db> { /* … */ pub act: ActivationId }   // this run's slot
 closures with the same `func`. That is why the value carries the activation,
 not just the function.
 
+**A gap until step 03.03:** if two such closures reach *one* call site
+(`h = make(a) if c else make(b); h()`), `eval_call` calls each, and inline
+mode pushes two `make.run` nodes under that site. The rule is one node per
+site and function (step 05). Step 03.03's `merge_into` fixes it, for this
+case as well as for several receivers. No fixture in this part has that
+shape, so nothing fails before then.
+
 ### Decision 3: free variables come from where the `def` ran, never the caller
 
 ```rust

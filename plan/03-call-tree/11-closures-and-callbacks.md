@@ -105,6 +105,27 @@ as the outer one, and the recursion is recorded, not entered
 ([`12`](12-recursion.md)). The same rule covers two nested defs that call each
 other.
 
+Summaries need the same thing. A returned closure that captures itself
+(`def make_walker(): def walk(n): walk(n); return walk`) is converted with the
+same closure stack, compared by `(func, activation)`, and comes out as
+`walk[walk = Back(0)]` ([`09`](09-summaries.md#values-relative-to-the-inputs)).
+Without it, the conversion expands `walk` inside `walk` until `fp_depth` cuts
+it, and the caller gets a second context of `walk` that a key would never
+make.
+
+**Rebuilding a closure** from a key (`materialize`) or from a summary
+(`resolve`) is one rule, with a stack of the closures being rebuilt: create
+the flat activation empty, push `(func, activation)`, bind its free values and
+defaults (rebuilding nested closures the same way, `Back(k)` becoming a
+closure over the k-th entry from the top), pop. The activation exists before
+its values because a value inside it can point back at it. In `materialize`
+the stack starts with the called closure itself, so `Back(0)` in
+`Context.free` is the walked closure.
+
+Depth is counted the same way in both: 0 for a value in a parameter slot or a
+summary's returns, one more inside each closure, and the called closure counts
+as one, so `Context.free` is at depth 1.
+
 ### Known limit: rebinding through `nonlocal`
 
 Each closure in a summary carries its own copy of its free values. Two closures
@@ -170,7 +191,9 @@ parso's `Lambda` is a `Function` subclass, and the Jedi driver's call collector
 skips nested functions, so lambda bodies are probably not traversed there.
 **[check]** with a fixture against the Jedi driver, then match it. If lambdas
 are wanted later: a lambda is a one-expression closure, the same machinery as a
-nested `def`.
+nested `def`, and `free_variables` must then count names bound in lambda and
+comprehension scopes too (`lambda f: lambda: f()`,
+`[lambda: g() for g in (a, b)]`), not only in `def`s.
 
 ### Decorators
 

@@ -68,6 +68,7 @@ pub enum SVal<'db> {
     Bound   { func: Definition<'db>, recv: Box<SVal<'db>> },
     Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]>,
               defaults: SmallVec<[(Name, SVals<'db>); 2]> },   // values computed when its `def` ran (06)
+    Back(u8),                                 // the closure k levels up: one that captures itself (11)
 }
 pub type SVals<'db> = SmallVec<[SVal<'db>; 2]>;
 
@@ -130,9 +131,11 @@ pub struct NewObject<'db> {
    - an `OPAQUE` or `Beyond` instance becomes `Plain(Opaque(class))`
    - a closure becomes `Closure { func, free, defaults }`, free values read
      from its activation at this exit and converted by these same rules (a
-     `Pending` inside is resolved too). A closure inside `fp_depth` other
-     closures becomes `Plain(Unknown)`, or a recursion fixpoint never ends
-     ([`12`](12-recursion.md#why-it-stops))
+     `Pending` inside is resolved too). A closure already being converted
+     (it captures itself) becomes `Back(k)`, with the same closure stack as
+     fingerprinting ([`11`](11-closures-and-callbacks.md#a-closure-that-captures-itself)).
+     A closure inside `fp_depth` other closures becomes `Plain(Unknown)`, or a
+     recursion fixpoint never ends ([`12`](12-recursion.md#why-it-stops))
    - a bound method becomes `Bound { func, recv }`
    - a `Pending(id)` becomes its resolved values ([`12`](12-recursion.md))
    - everything else becomes `Plain(..)`
