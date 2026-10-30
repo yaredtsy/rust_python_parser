@@ -6,6 +6,7 @@ mod call;
 mod fixture;
 mod key;
 mod member;
+mod relevant;
 mod render;
 mod solver;
 mod summary;

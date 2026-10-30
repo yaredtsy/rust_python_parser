@@ -106,6 +106,11 @@ When summary mode joins a fixture, a step tells you to switch that fixture's
 test from `check` to `check_both` (step `02.02`), and the same expected tree
 must come out.
 
+Stats are different: a step that changes the key (relevant parameters,
+splitting by type) changes how many contexts and walks a fixture needs. That
+step names every count that changes, and why. A count that changes without
+such a note is a bug.
+
 Where the two modes are allowed to differ, the fixture says so with a
 mode-specific block (`# expect inline:` / `# expect summary:`, from step
 `02.05`). Each one is explained in the step that adds it.

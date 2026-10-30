@@ -8,6 +8,7 @@ use smallvec::smallvec;
 
 use crate::interp::bind::{Bound, param_names};
 use crate::interp::env::Env;
+use crate::interp::relevant::relevant_params;
 use crate::interp::solver::Solver;
 use crate::interp::value::{AbstractValue, Values};
 use crate::interp::walk::Walk;
@@ -96,10 +97,19 @@ impl<'db> Solver<'db> {
 
     pub fn key(&mut self, func: Definition<'db>, bound: &Bound<'db>) -> ContextId {
         let file = func.program_file(self.sem.db);
+        // a parameter the walk can't be affected by is Unknown: callers share one summary
+        let relevant = relevant_params(self.sem.db, func);
         let args = bound
             .slots
             .iter()
-            .map(|v| self.fingerprint(file, v))
+            .enumerate()
+            .map(|(i, v)| {
+                if relevant.get(i).copied().unwrap_or(true) {
+                    self.fingerprint(file, v)
+                } else {
+                    self.fps.intern(Fp::Unknown)
+                }
+            })
             .collect();
         self.contexts.intern(Context { func, args })
     }

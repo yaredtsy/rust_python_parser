@@ -77,7 +77,8 @@ path".
 
 Two mechanisms that answer "what does this call do" must not both serve
 requests. The request path uses summary mode only: `Options::default()` is
-`Mode::Summary` from now on.
+`Mode::Summary` from now on. Tests that measure inline mode already say
+`inline()` (step 02.02), so none of them changes.
 
 What to do with inline mode itself is a choice:
 

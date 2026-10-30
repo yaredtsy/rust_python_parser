@@ -442,8 +442,10 @@ fn p02_02_summaries() {
 ```
 
 And every earlier test, now through `check_both`, except `p01_11_closures`,
-which stays on `check` until step 07. The `stats_for` assertions in `p01_13`
-and `p02_01` stay as they are: `Options::default()` is still inline mode.
+which stays on `check` until step 07. The `stats_for` calls in `p01_13` and
+`p02_01` measure inline mode: change their `&Options::default()` to
+`&inline()`, for the same reason `check` uses it (step 04.09 changes the
+default).
 
 ```bash
 cargo test interp::fixture -- --show-output

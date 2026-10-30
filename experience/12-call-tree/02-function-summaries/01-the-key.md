@@ -290,6 +290,9 @@ fn p02_01_keys() {
 
 Also add a `contexts` assertion to step 01.13's test: `wall.py` has 7.
 
+The 12 is right for now. Step 04 lowers it to 11 (`note` never reads `msg`,
+so its three calls share a key), and says so when you get there.
+
 ---
 
 ## Where you are

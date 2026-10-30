@@ -97,17 +97,40 @@ may hold its value, reaches any of these:
 | a call's argument (any call) | `note(name)` |
 | an attribute's receiver | `cb.x`, `cb.run()` |
 | a `return`, `yield` or `await` | `return cb` |
-| an attribute or subscript write, as target or value | `self.h = cb`, `d[k] = cb` |
-| a nested `def`, `lambda` or comprehension that reads it | `def inner(): cb()` |
+| an attribute or subscript write, as target or value | `self.h = cb`, `d[k] += cb` |
+| a nested `def` or `class`, a `lambda` or a comprehension that reads it | `def inner(): cb()` |
 | a `with` item | `with cb: …` |
+| a `match` subject | `match cb: case …` |
 
 A parameter used only in a condition (`if flag:`) is not relevant: conditions
 are never evaluated, so its value can't change the walk.
 
 **Flow through locals:** `x = cb` makes `x` hold `cb`'s value, so a sink on `x`
-marks `cb`. Assignments, walrus, `for x in cb`, `with … as x` and tuple targets
-all propagate. Branches and loops make "later" flow back, so iterate the pass
-over the body until nothing new is marked.
+marks `cb`. Assignments, augmented assignments (`x += cb`), walrus,
+`for x in cb`, `with … as x` and tuple targets all propagate. Branches and
+loops make "later" flow back, so iterate the pass over the body until nothing
+new is marked.
+
+**Why a `match` subject is a sink, not a flow:** patterns bind names in many
+shapes (`case [x, *rest]`, `case Point(x=px)`, `case {"k": v}`). A sink is
+enough: any name a pattern binds can only hold what the subject holds, and
+that is already marked. It over-marks when the bound names are never used,
+which only costs sharing.
+
+**Where the pass over-marks, on purpose.** Two shortcuts keep it simple, and
+both err toward relevant:
+
+- `params_in` collects every name in an expression, so
+  `f = a if flag else b` makes `f` hold `flag` too. If `f` reaches a sink,
+  `flag` is marked, although a ternary's test is never evaluated.
+- A nested `def` marks every parameter whose name appears anywhere inside it,
+  even when the inner function rebinds that name (`def inner(cb): cb()`
+  shadows the outer `cb`). Telling them apart needs the nested scope's symbol
+  table.
+
+Neither can change a tree. They only give some callers separate keys that
+could have shared one (decision 3). Fix one if a benchmark shows a function
+with many contexts that differ only in such a parameter.
 
 ### Yours
 
@@ -153,23 +176,64 @@ struct Taint<'a> {
     changed: bool,
 }
 
+/// Every name anywhere inside a node.
+#[derive(Default)]
+struct Names(Vec<ast::Name>);
+
+impl<'a> Visitor<'a> for Names {
+    fn visit_expr(&mut self, e: &'a Expr) {
+        if let Expr::Name(n) = e { self.0.push(n.id.clone()) }
+        walk_expr(self, e);
+    }
+}
+
 impl Taint<'_> {
     /// Every parameter any name in `e` may hold.
-    fn params_in(&self, e: &Expr) -> FxHashSet<usize> { /* collect Name loads, union their `holds` */ }
+    fn params_in(&self, e: &Expr) -> FxHashSet<usize> {
+        let mut names = Names::default();
+        names.visit_expr(e);
+        self.params_of(names)
+    }
 
-    fn sink(&mut self, e: &Expr) {
-        for i in self.params_in(e) {
+    fn params_of(&self, names: Names) -> FxHashSet<usize> {
+        names.0.iter().filter_map(|n| self.holds.get(n)).flatten().copied().collect()
+    }
+
+    fn mark(&mut self, ps: FxHashSet<usize>) {
+        for i in ps {
             if !self.relevant[i] { self.relevant[i] = true; self.changed = true; }
         }
     }
 
+    fn sink(&mut self, e: &Expr) {
+        let ps = self.params_in(e);
+        self.mark(ps);
+    }
+
+    /// A nested def or class captures: every name inside it, decorators and
+    /// defaults included. Takes the `Stmt` itself, so nothing is cloned.
+    fn sink_names_in(&mut self, stmt: &Stmt) {
+        let mut names = Names::default();
+        names.visit_stmt(stmt);
+        let ps = self.params_of(names);
+        self.mark(ps);
+    }
+
+    /// `target = from`: every name the target binds may now hold what `from`
+    /// holds. An attribute or subscript target is a store: a sink for both sides.
     fn flow(&mut self, target: &Expr, from: &Expr) {
-        let ps = self.params_in(from);
-        for name in target_names(target) {
-            let set = self.holds.entry(name).or_default();
-            let before = set.len();
-            set.extend(&ps);
-            if set.len() != before { self.changed = true; }
+        match target {
+            Expr::Name(n) => {
+                let ps = self.params_in(from);
+                let set = self.holds.entry(n.id.clone()).or_default();
+                let before = set.len();
+                set.extend(&ps);
+                if set.len() != before { self.changed = true; }
+            }
+            Expr::Tuple(t) => t.elts.iter().for_each(|e| self.flow(e, from)),
+            Expr::List(l) => l.elts.iter().for_each(|e| self.flow(e, from)),
+            Expr::Starred(st) => self.flow(&st.value, from),
+            other => { self.sink(from); self.sink(other); }
         }
     }
 }
@@ -179,15 +243,16 @@ impl<'a> Visitor<'a> for Taint<'_> {
         match stmt {
             Stmt::Assign(a) => for t in &a.targets { self.flow(t, &a.value) },
             Stmt::AnnAssign(a) => if let Some(v) = &a.value { self.flow(&a.target, v) },
+            Stmt::AugAssign(a) => self.flow(&a.target, &a.value),   // x += cb: x also holds cb
             Stmt::For(f) => self.flow(&f.target, &f.iter),
             Stmt::Return(r) => if let Some(v) = &r.value { self.sink(v) },
             Stmt::With(w) => for item in &w.items {
                 self.sink(&item.context_expr);
                 if let Some(t) = &item.optional_vars { self.flow(t, &item.context_expr) }
             },
-            Stmt::FunctionDef(d) => self.sink_free_names(d),   // a nested def captures
-            Stmt::If(_) | Stmt::While(_) => {}                 // tests are not sinks; bodies below
-            _ => {}
+            Stmt::Match(m) => self.sink(&m.subject),                  // patterns bind from it
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) => self.sink_names_in(stmt),
+            _ => {}   // `if` and `while` tests are not sinks; their bodies are visited below
         }
         walk_stmt(self, stmt);
     }
@@ -209,13 +274,10 @@ impl<'a> Visitor<'a> for Taint<'_> {
 }
 ```
 
-Attribute and subscript *targets* (`self.h = cb`) are sinks for both sides:
-add them in the `Assign` arm. `sink_free_names(d)` marks every parameter whose
-name (or a local holding it) is read inside the nested def, including its
-decorators and defaults.
-
-This is a sketch: the visitor visits sub-expressions after the match, which is
-what makes `f(g(cb))` mark `cb` through the inner call.
+The visitor visits sub-expressions after the match, which is what makes
+`f(g(cb))` mark `cb` through the inner call. `flow`'s last arm covers
+attribute and subscript targets in every assignment form: `self.h = cb`,
+`d[k] += cb`, `for self.x in cb`.
 
 </details>
 
@@ -235,6 +297,20 @@ fn p02_04_relevant() {
 Then every test. Relevance can only make keys share more; if any tree changed,
 the pass under-marked something. Find which parameter, and which sink the pass
 missed.
+
+### Two earlier counts change
+
+Trees never change here, but two stats assertions do, and that is expected.
+In `keys.py`, `note(msg)` never reads `msg`, so `note("x")`, `note("y")` and
+`note(1)` now share one key, `note(Unknown)`:
+
+| test | before | now | why |
+|---|---|---|---|
+| `p02_01_keys`, `contexts` (inline) | 12 | 11 | the two `note` keys are one |
+| `p02_03_solver`, `keys.py` `(walks, reuse_hits)` | (12, 5) | (11, 6) | one walk fewer, and `note(1)` becomes a reuse |
+
+Update both numbers in this step's commit, with a comment saying why. Step
+04.06 changes the second one again.
 
 ---
 

@@ -1,5 +1,6 @@
 """Step 02.01: the key. A call is its function plus a fingerprint of each
-argument. Inline mode walks 19 bodies for main; there are 12 distinct keys."""
+argument. Inline mode walks 19 bodies for main; there are 12 distinct keys
+(11 from step 02.04, which drops note's unread msg from the key)."""
 
 
 def a():

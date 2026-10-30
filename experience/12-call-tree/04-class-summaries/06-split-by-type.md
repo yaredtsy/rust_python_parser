@@ -198,12 +198,16 @@ that changed elsewhere is worth looking at: either the fixture had a hidden
 correlation (update it, with a mode-specific block, and say why), or the combo
 indices aren't reaching the origins.
 
-Two **stats** assertions do change, and that is expected: in `keys.py`,
+One **stats** assertion does change, and that is expected: in `keys.py`,
 `either`'s `run(f)` is no longer one `run(a | b)` context, but `run(a)` and
-`run(b)`, which already exist. So `keys.py` has 11 contexts, not 12 (step
-02.01's test), and summary mode walks 11 bodies with 5 reuses, not 12 and 5
-(step 02.03's test). Update both numbers in the same commit as this step, with
-a comment saying why. The trees don't change.
+`run(b)`, which already exist. Summary mode now walks 10 bodies with 6
+reuses, not 11 and 6 (step 02.03's test, as step 02.04 left it): the
+`run(a | b)` walk is gone, and its two inner reuses (`a`, `b`) become the two
+split calls' reuses. Update the number in the same commit as this step, with a
+comment saying why. The trees don't change.
+
+Step 02.01's `contexts` assertion stays at 11: it measures inline mode, and
+inline mode doesn't split (see "What about inline mode" above).
 
 ---
 

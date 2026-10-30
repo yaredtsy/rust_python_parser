@@ -99,11 +99,16 @@ Every rule below is a `KeyPolicy` rule. The walker never decides precision.
 - **Alias.** `alias[i] = j` when parameters `i` and `j` hold the same origin.
   Top-level parameters only ([`15`](15-checks-and-build-order.md#known-limits)).
 - **Irrelevant parameters.** `relevant_params(db, func)` is a taint pass over
-  the body. A parameter that reaches no callee, no receiver, no project-call
-  argument, no `return`, no attribute write and no nested `def` is replaced by
-  `Fp::Unknown` in the key. Seed every parameter (and every free variable),
-  propagate through assignments (`x = w; x.write()` taints `x`), and be
-  conservative: over-marking costs sharing, under-marking gives wrong trees. It
+  the body. A parameter that reaches no callee, no receiver, no call
+  argument, no `return`/`yield`/`await`, no attribute or subscript write, no
+  `with` item, no `match` subject and no nested `def`, `class`, `lambda` or
+  comprehension is replaced by `Fp::Unknown` in the key. Seed every parameter
+  (and every free variable), propagate through assignments, augmented
+  assignments, walrus, `for` and `with … as` targets (`x = w; x.write()`
+  taints `x`), and be conservative: over-marking costs sharing, under-marking
+  gives wrong trees. A `match` subject is a sink rather than a flow: whatever
+  a pattern binds holds only what the subject holds, which is then already
+  marked. It
   depends only on the code, so it obeys rule 3. It is a `#[salsa::tracked]`
   function in pylspt; `src/defs.rs::definitions` already shows a tracked
   function in pylspt over ty's `Db` works, and `Definition<'db>` is a salsa

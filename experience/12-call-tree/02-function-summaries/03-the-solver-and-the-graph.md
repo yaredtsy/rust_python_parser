@@ -355,6 +355,10 @@ fn p02_03_solver() {
 }
 ```
 
+The `keys.py` numbers are right for now. Two later steps change the key and
+change them, and each says so: step 04 gives (11, 6), step 04.06 gives
+(10, 6).
+
 Then the whole suite. Every part 01 fixture except `closures.py` passes in all
 three runs.
 

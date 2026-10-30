@@ -200,7 +200,7 @@ fn p02_01_keys() {
         &Options::default(),
     );
     assert_eq!(stats.walks, 19);
-    assert_eq!(stats.contexts, 12);
+    assert_eq!(stats.contexts, 11); // 12 before step 02.04: `note`'s `msg` is irrelevant
 }
 
 #[test]
@@ -215,8 +215,19 @@ fn p02_03_solver() {
     assert_eq!((st.walks, st.reuse_hits), (8, 2));
 
     let st = stats_for("02-function-summaries/python/keys.py", "main", &summary());
-    assert_eq!((st.walks, st.reuse_hits), (12, 5));
+    assert_eq!((st.walks, st.reuse_hits), (11, 6)); // (12, 5) before step 02.04
 
     let st = stats_for("01-functions/python/wall.py", "main", &summary());
     assert_eq!(st.walks, 7);
+}
+
+#[test]
+fn p02_04_relevant() {
+    check_both("02-function-summaries/python/relevant.py");
+    let st = stats_for(
+        "02-function-summaries/python/relevant.py",
+        "main",
+        &summary(),
+    );
+    assert_eq!(st.contexts, 9);
 }
