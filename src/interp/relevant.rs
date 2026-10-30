@@ -25,7 +25,10 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
         return Vec::new();
     };
     let def = f.node(&parsed);
-    let params: Vec<&Name> = param_names(def).collect();
+    let params: Vec<&Name> = param_names(def).collect(); // slot order, step 02.01
+    if params.is_empty() {
+        return Vec::new();
+    }
 
     // holds[name] = the parameters a local may hold. Seeded by the parameters themselves.
     let mut holds: FxHashMap<Name, FxHashSet<usize>> = params
@@ -39,11 +42,13 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
         let mut pass = Taint {
             holds: &mut holds,
             relevant: &mut relevant,
+            escapes: FxHashSet::default(),
             changed: false,
         };
         pass.visit_body(&def.body);
-        if !pass.changed {
-            break;
+        let changed = pass.changed;
+        if !changed || relevant.iter().all(|&r| r) {
+            break; // nothing left to find
         }
     }
     relevant
@@ -52,6 +57,8 @@ pub fn relevant_params<'db>(db: &'db dyn Db, func: Definition<'db>) -> Vec<bool>
 struct Taint<'a> {
     holds: &'a mut FxHashMap<Name, FxHashSet<usize>>,
     relevant: &'a mut Vec<bool>,
+    /// Names declared `global` or `nonlocal`: a write to one leaves the function.
+    escapes: FxHashSet<Name>,
     changed: bool,
 }
 
@@ -100,10 +107,10 @@ impl Taint<'_> {
         self.mark(ps);
     }
 
-    /// A nested `def` captures: every name it reads, decorators and defaults included.
-    fn sink_free_names(&mut self, d: &ast::StmtFunctionDef) {
+    /// A nested `def` or `class` captures: every name it reads, decorators and defaults included.
+    fn sink_names_in(&mut self, stmt: &Stmt) {
         let mut names = Names::default();
-        names.visit_stmt(&Stmt::FunctionDef(d.clone()));
+        names.visit_stmt(stmt);
         let ps = self.params_of(names);
         self.mark(ps);
     }
@@ -112,6 +119,7 @@ impl Taint<'_> {
     /// An attribute or subscript target is a store: a sink for both sides.
     fn flow(&mut self, target: &Expr, from: &Expr) {
         match target {
+            Expr::Name(n) if self.escapes.contains(&n.id) => self.sink(from),
             Expr::Name(n) => {
                 let ps = self.params_in(from);
                 let set = self.holds.entry(n.id.clone()).or_default();
@@ -157,7 +165,9 @@ impl<'a> Visitor<'a> for Taint<'_> {
                 }
             }
             Stmt::Match(m) => self.sink(&m.subject), // its patterns bind names: be conservative
-            Stmt::FunctionDef(d) => self.sink_free_names(d),
+            Stmt::Global(g) => self.escapes.extend(g.names.iter().map(|i| i.id.clone())),
+            Stmt::Nonlocal(n) => self.escapes.extend(n.names.iter().map(|i| i.id.clone())),
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) => self.sink_names_in(stmt),
             _ => {} // `if` and `while` tests are not sinks; their bodies are visited below
         }
         walk_stmt(self, stmt);

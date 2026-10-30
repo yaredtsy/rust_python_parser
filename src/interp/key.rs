@@ -99,6 +99,11 @@ impl<'db> Solver<'db> {
         let file = func.program_file(self.sem.db);
         // a parameter the walk can't be affected by is Unknown: callers share one summary
         let relevant = relevant_params(self.sem.db, func);
+        debug_assert_eq!(
+            relevant.len(),
+            bound.slots.len(),
+            "relevance out of sync with binding"
+        );
         let args = bound
             .slots
             .iter()
