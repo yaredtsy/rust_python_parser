@@ -1,12 +1,15 @@
 // src/interp/solver.rs
 use std::sync::Arc;
+use std::time::Instant;
+
+use rustc_hash::FxHashMap;
 
 use ruff_index::{Idx, IndexVec};
 use ruff_text_size::TextRange;
 
 use crate::interp::key::{Context, ContextId, Fp, FpId, Interner};
 use crate::interp::defer::{DeferredOp, no_values};
-use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status, same_svals};
+use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status, Cut, same_svals};
 use crate::interp::walk::{Walk, contains_yield};
 use crate::interp::{Options, Stats};
 use crate::sem::{Definition, Sem};
@@ -19,6 +22,7 @@ pub enum State {
     Parked { head: ContextId }, // walked, waiting for its group's fixpoint
     Resolving,                // its group is in the fixpoint: `current` is the latest round
     Ready,                    // walked: its summary can be reused
+    Cut,                      // walked, but a cost limit fired: never reused
 }
 
 pub struct Slot<'db> {
@@ -32,6 +36,8 @@ pub struct Slot<'db> {
     pub walk: Option<Box<Walk<'db>>>,
     /// A resolving group this walk reached: it joins that group.
     pub joins: Option<ContextId>,
+    /// A cost limit this walk (or something it read) hit.
+    pub cut: Option<Cut>,
 }
 
 impl Default for Slot<'_> {
@@ -43,6 +49,7 @@ impl Default for Slot<'_> {
             lowest: usize::MAX,
             walk: None,
             joins: None,
+            cut: None,
         }
     }
 }
@@ -105,6 +112,8 @@ pub struct Fixpoint {
     pub lowest: usize,
     /// A resolving group an operation reached.
     pub joins: Option<ContextId>,
+    /// A cost limit an operation hit.
+    pub cut: Option<Cut>,
 }
 
 pub enum Resolved {
@@ -128,6 +137,8 @@ pub struct Solver<'db> {
     pub stack: Vec<ContextId>,                 // summary mode: the walks in progress
     pub heads: Heads,
     pub fixpoint: Option<Fixpoint>,
+    pub per_func: FxHashMap<Definition<'db>, u32>, // contexts walked per function, this request
+    pub started: Instant,
     pub parked: Vec<ContextId>, // parked contexts, in the order their walks ended
     pub path: Vec<String>, // inline mode only: qualified names being walked, its recursion guard
     pub stats: Stats,
@@ -144,6 +155,8 @@ impl<'db> Solver<'db> {
             stack: Vec::new(),
             heads: Heads::default(),
             fixpoint: None,
+            per_func: FxHashMap::default(),
+            started: Instant::now(),
             parked: Vec::new(),
             path: Vec::new(),
             stats: Stats::default(),
@@ -157,7 +170,7 @@ impl<'db> Solver<'db> {
         }
         let depth = self.stack.len();
         match self.slots[ctx].state {
-            State::Ready if self.opts.reuse => {
+            State::Ready if self.opts.limits.reuse => {
                 self.stats.reuse_hits += 1;
                 return Got::Ready(self.slots[ctx].result.clone().unwrap());
             }
@@ -166,13 +179,18 @@ impl<'db> Solver<'db> {
                 return Got::Pending;
             }
             State::Parked { .. } | State::Resolving => return self.read_group_member(ctx),
-            _ => {}
+            _ => {} // New, Cut, or a Ready slot in no-reuse mode
+        }
+        if let Some(cut) = self.cost_limit(ctx, depth) {
+            self.reader_read_cut(cut);
+            return Got::Ready(Arc::new(FunctionResult::cut(cut))); // not stored
         }
 
         self.heads.reset(ctx);
         self.slots[ctx].state = State::Running { depth };
         self.slots[ctx].lowest = usize::MAX;
         self.slots[ctx].joins = None;
+        self.slots[ctx].cut = None;
         self.stack.push(ctx);
         let w = walk_context(self, ctx);
         self.stack.pop();
@@ -204,15 +222,61 @@ impl<'db> Solver<'db> {
         } else {
             self.finish_alone(ctx, w);
         }
-        Got::Ready(self.slots[ctx].result.clone().unwrap())
+        let result = self.slots[ctx].result.clone().unwrap();
+        self.pass_cut_up(&result);
+        Got::Ready(result)
+    }
+
+    /// The first cost limit that fires for a context about to be walked.
+    fn cost_limit(&mut self, ctx: ContextId, depth: usize) -> Option<Cut> {
+        let l = &self.opts.limits;
+        if depth >= l.max_stack {
+            return Some(Cut::Stack);
+        }
+        if self.stats.walks >= l.max_contexts {
+            return Some(Cut::Contexts);
+        }
+        let n = self.per_func.entry(self.contexts[ctx].func).or_default();
+        if *n >= l.contexts_per_func {
+            return Some(Cut::ContextsPerFunc);
+        }
+        if l.deadline.is_some_and(|d| self.started.elapsed() > d) {
+            return Some(Cut::Deadline);
+        }
+        *n += 1;
+        None
+    }
+
+    /// The reader (the top of the stack, or the fixpoint replaying an
+    /// operation) read a cut result.
+    fn reader_read_cut(&mut self, cut: Cut) {
+        self.stats.cuts.count(cut);
+        self.reader_is_cut(cut);
+    }
+
+    /// After `get` produced a result: a cut in it makes the reader cut.
+    fn pass_cut_up(&mut self, res: &FunctionResult<'db>) {
+        if let Some(cut) = res.status.cut {
+            self.reader_is_cut(cut);
+        }
+    }
+
+    fn reader_is_cut(&mut self, cut: Cut) {
+        if let Some(f) = self.fixpoint.as_mut().filter(|f| f.base == self.stack.len()) {
+            f.cut.get_or_insert(cut);
+        } else if let Some(&reader) = self.stack.last() {
+            self.slots[reader].cut.get_or_insert(cut);
+        }
     }
 
     /// A walk that waited on nothing: its summary is final.
     fn finish_alone(&mut self, ctx: ContextId, w: Walk<'db>) {
         debug_assert!(w.deferred.is_empty(), "{ctx:?} finishes alone with deferred operations");
-        let result = Arc::new(w.finish_round(self, &no_values(&w)));
-        self.slots[ctx].state = State::Ready;
-        self.slots[ctx].result = Some(result);
+        let mut result = w.finish_round(self, &no_values(&w));
+        let cut = self.slots[ctx].cut;
+        result.status.cut = cut;
+        self.slots[ctx].state = if cut.is_some() { State::Cut } else { State::Ready };
+        self.slots[ctx].result = Some(Arc::new(result));
     }
 
     /// A read of a parked or resolving context.
@@ -292,12 +356,13 @@ impl<'db> Solver<'db> {
             base: self.stack.len(),
             lowest: usize::MAX,
             joins: None,
+            cut: None,
         });
 
         let mut round = 0;
         let resolved = 'rounds: loop {
             round += 1;
-            let capped = round > self.opts.max_rounds;
+            let capped = round > self.opts.limits.max_rounds;
             let mut changed = false;
             for &m in &members {
                 let next = self.replay_member(m, capped);
@@ -305,11 +370,13 @@ impl<'db> Solver<'db> {
                 if f.lowest != usize::MAX {
                     // reached a context running further down: part of a bigger cycle
                     let under = self.stack[f.lowest];
+                    self.keep_cut(&members, f.cut);
                     self.park_all(&members, under);
                     break 'rounds Resolved::Merged(f.lowest);
                 }
                 if let Some(g) = f.joins {
                     // reached an outer group in its fixpoint
+                    self.keep_cut(&members, f.cut);
                     self.park_all(&members, g);
                     break 'rounds Resolved::Joined(g);
                 }
@@ -325,7 +392,8 @@ impl<'db> Solver<'db> {
                 if capped {
                     self.stats.rounds_capped += 1;
                 }
-                self.settle(&members, if capped { Gaps::CYCLE } else { Gaps::default() });
+                let cut = self.fixpoint.unwrap().cut;
+                self.settle(&members, if capped { Gaps::CYCLE } else { Gaps::default() }, cut);
                 break Resolved::Done;
             }
         };
@@ -343,7 +411,16 @@ impl<'db> Solver<'db> {
     }
 
     /// The group is final: every member's last summary is its result.
-    fn settle(&mut self, members: &[ContextId], gaps: Gaps) {
+    /// A cut an operation hit stays with the members while they wait.
+    fn keep_cut(&mut self, members: &[ContextId], cut: Option<Cut>) {
+        if let Some(cut) = cut {
+            for &m in members {
+                self.slots[m].cut.get_or_insert(cut);
+            }
+        }
+    }
+
+    fn settle(&mut self, members: &[ContextId], gaps: Gaps, fixpoint_cut: Option<Cut>) {
         let group = self.heads.find(members[0]);
         for &m in members {
             for d in &self.slots[m].walk.as_ref().unwrap().deferred {
@@ -356,13 +433,16 @@ impl<'db> Solver<'db> {
                 }
             }
         }
+        // If any member read a cut, every member is cut.
+        let cut = fixpoint_cut.or_else(|| members.iter().find_map(|&m| self.slots[m].cut));
         for &m in members {
             let slot = &mut self.slots[m];
             let mut result = Arc::unwrap_or_clone(slot.current.take().unwrap());
-            result.status = Status { gaps };
+            result.status = Status { gaps, cut };
             slot.result = Some(Arc::new(result));
             slot.walk = None;
-            slot.state = State::Ready;
+            slot.cut = cut;
+            slot.state = if cut.is_some() { State::Cut } else { State::Ready };
         }
     }
 
@@ -388,7 +468,11 @@ impl<'db> Solver<'db> {
 
     /// Its summary is missing what later rounds would have added.
     pub fn is_incomplete(&self, ctx: ContextId) -> bool {
-        self.slots[ctx].result.as_ref().is_some_and(|r| !r.status.gaps.is_empty())
+        // no result: it was cut before it was walked
+        self.slots[ctx]
+            .result
+            .as_ref()
+            .is_none_or(|r| !r.status.gaps.is_empty() || r.status.cut.is_some())
     }
 
     /// The file range of a site recorded relative to `func`'s `def`.

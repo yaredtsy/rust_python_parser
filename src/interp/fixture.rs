@@ -3,7 +3,7 @@ use crate::db::{open, open_project};
 use crate::interp::bind::param_names;
 use crate::interp::relevant::relevant_params;
 use crate::interp::summary::{PlainVal, SVal};
-use crate::interp::{Mode, Options, Stats, call_tree, solve, to_text};
+use crate::interp::{Limits, Mode, Options, Stats, call_tree, solve, to_text};
 use crate::sem::Sem;
 use ruff_db::system::SystemPath;
 use std::collections::BTreeSet;
@@ -128,19 +128,48 @@ pub fn check(fixture: &str) {
     check_with(fixture, &[inline()]);
 }
 
-/// Every mode. The same expected trees must come out of each.
+/// The `# limits: k=v,…` line of a fixture: limits for summary mode.
+pub fn fixture_limits(source: &str) -> Option<Limits> {
+    let line = source.lines().find_map(|l| l.strip_prefix("# limits:"))?;
+    let mut limits = Limits::default();
+    for kv in line.split(',') {
+        let (k, v) = kv.trim().split_once('=').expect("limits are `key=value`");
+        let n: u64 = v.trim().parse().expect("limits are numbers");
+        match k.trim() {
+            "max_rounds" => limits.max_rounds = n as u32,
+            "fp_depth" => limits.fp_depth = n as u8,
+            "max_stack" => limits.max_stack = n as usize,
+            "max_contexts" => limits.max_contexts = n as u32,
+            "contexts_per_func" => limits.contexts_per_func = n as u32,
+            other => panic!("unknown limit `{other}`"),
+        }
+    }
+    Some(limits)
+}
+
+/// Every mode. The same expected trees must come out of each. A fixture with
+/// limits skips the no-reuse run: that run compares outputs with no cuts at all.
 pub fn check_both(fixture: &str) {
-    check_with(
-        fixture,
-        &[
-            inline(),
-            summary(),
-            Options {
-                reuse: false,
+    let path = format!("experience/12-call-tree/{fixture}");
+    let limits = fixture_limits(&std::fs::read_to_string(path).unwrap());
+    let mut runs = vec![inline()];
+    match limits {
+        Some(limits) => runs.push(Options {
+            limits,
+            ..summary()
+        }),
+        None => {
+            runs.push(summary());
+            runs.push(Options {
+                limits: Limits {
+                    reuse: false,
+                    ..Limits::default()
+                },
                 ..summary()
-            },
-        ],
-    );
+            });
+        }
+    }
+    check_with(fixture, &runs);
 }
 
 /// One run per `Options`. Every failing block of every run goes in one report.
@@ -362,7 +391,10 @@ fn p02_06_entry_independence() {
 #[test]
 fn p02_06_capped_group_is_incomplete() {
     let opts = Options {
-        max_rounds: 1,
+        limits: Limits {
+            max_rounds: 1,
+            ..Limits::default()
+        },
         ..summary()
     };
     let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &opts);
@@ -382,4 +414,18 @@ fn p02_07_closures() {
     assert_eq!(contexts_of(f, "chained", "chain.g"), 3);
     assert_eq!(contexts_of(f, "use_walker", "make_walker.walk"), 1);
     assert_eq!(contexts_of(f, "use_default", "with_default.walk"), 1); // Context.defaults
+}
+
+#[test]
+fn p02_08_cuts() {
+    check_both("02-function-summaries/python/cuts.py");
+    let opts = Options {
+        limits: Limits {
+            max_stack: 4,
+            ..Limits::default()
+        },
+        ..summary()
+    };
+    let st = stats_for("02-function-summaries/python/cuts.py", "main", &opts);
+    assert_eq!(st.cuts.stack, 1); // mid under main > a > b > top
 }

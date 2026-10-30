@@ -19,10 +19,31 @@ pub struct FunctionResult<'db> {
     pub status: Status,
 }
 
-/// What a caller must know about how far to trust a summary (step 08 adds `cut`).
+/// What a caller must know about how far to trust a summary .
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Status {
     pub gaps: Gaps,
+    /// A cost limit fired somewhere this summary was computed from.
+    pub cut: Option<Cut>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cut {
+    Stack,
+    Contexts,
+    ContextsPerFunc,
+    Deadline,
+}
+
+impl<'db> FunctionResult<'db> {
+    /// What a call returns when a cost limit stopped it: something, we stopped looking.
+    pub fn cut(cut: Cut) -> Self {
+        FunctionResult {
+            calls: Vec::new(),
+            returns: smallvec![SVal::Plain(PlainVal::Unknown)],
+            status: Status { gaps: Gaps::default(), cut: Some(cut) },
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -125,7 +146,7 @@ impl<'db> Walk<'db> {
                 }
                 AbstractValue::Closure { func, activation } => match cl.position(func, activation) {
                     Some(k) => out.push(SVal::Back(k)),
-                    None if depth == s.opts.fp_depth => out.push(self.closure_at_limit(s, func, activation)),
+                    None if depth == s.opts.limits.fp_depth => out.push(self.closure_at_limit(s, func, activation)),
                     None => out.push(cl.with(func, activation, |cl| SVal::Closure {
                         func,
                         free: s

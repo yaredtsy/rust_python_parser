@@ -16,7 +16,10 @@ mod value;
 mod walk;
 pub use tree::{Mark, Node, to_text};
 
+use std::time::Duration;
+
 use ruff_db::files::File;
+use summary::Cut;
 use ty_project::ProjectDatabase;
 
 use crate::{
@@ -32,6 +35,25 @@ pub enum Mode {
     Summary,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cuts {
+    pub stack: u32,
+    pub contexts: u32,
+    pub contexts_per_func: u32,
+    pub deadline: u32,
+}
+
+impl Cuts {
+    pub fn count(&mut self, cut: Cut) {
+        match cut {
+            Cut::Stack => self.stack += 1,
+            Cut::Contexts => self.contexts += 1,
+            Cut::ContextsPerFunc => self.contexts_per_func += 1,
+            Cut::Deadline => self.deadline += 1,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub walks: u32,    // bodies walked, the entry included
@@ -39,22 +61,47 @@ pub struct Stats {
     pub contexts: u32, // distinct keys interned
     pub reuse_hits: u32, // calls answered from a Ready slot
     pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
+    pub cuts: Cuts,         // calls cut by a cost limit, by kind
 }
 #[derive(Clone, Debug)]
 pub struct Options {
     pub mode: Mode,
-    pub reuse: bool,
-    pub fp_depth: u8, // closures nest at most this deep, in keys and in summaries
+    pub limits: Limits,
+}
+
+#[derive(Clone, Debug)]
+pub struct Limits {
+    // precision (rule 3: decided by the key and the code)
     pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
+    pub fp_depth: u8,    // closures nest at most this deep, in keys and in summaries
+    // cost (each one cuts, is marked, and is never reused)
+    pub max_stack: usize,       // 256
+    pub max_contexts: u32,      // 50_000
+    pub contexts_per_func: u32, // 64, counted in this request only
+    pub deadline: Option<Duration>,
+    // checks
+    pub reuse: bool,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_rounds: 32,
+            fp_depth: 2,
+            max_stack: 256,
+            max_contexts: 50_000,
+            contexts_per_func: 64,
+            deadline: Some(Duration::from_secs(10)),
+            reuse: true,
+        }
+    }
 }
 
 impl Default for Options {
     fn default() -> Self {
         Options {
             mode: Mode::Inline,
-            reuse: true,
-            fp_depth: 2,
-            max_rounds: 32,
+            limits: Limits::default(),
         }
     }
 }
@@ -75,6 +122,9 @@ pub fn call_tree(
             let mut path = vec![qname.clone()];
             let mut root = Node::root(qname);
             root.children = render(&s, &[root_ctx], &mut path);
+            if s.is_incomplete(root_ctx) {
+                root.marks.push(Mark::Incomplete);
+            }
             s.stats.contexts = s.contexts.len() as u32;
             s.stats.nodes = root.children.iter().map(count_nodes).sum();
             Some((root, s.stats))

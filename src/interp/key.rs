@@ -137,7 +137,7 @@ impl<'db> Solver<'db> {
             AbstractValue::Unknown => Fp::Unknown,
             AbstractValue::Closure { func, activation } => match cl.position(func, activation) {
                 Some(k) => Fp::Back(k),
-                None if depth == self.opts.fp_depth => self.fp_closure_at_limit(w, func, activation),
+                None if depth == self.opts.limits.fp_depth => self.fp_closure_at_limit(w, func, activation),
                 None => cl.with(func, activation, |cl| Fp::Closure {
                     func,
                     free: self.fp_free(w, func, activation, cl, depth + 1),
