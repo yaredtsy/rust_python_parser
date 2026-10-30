@@ -2,9 +2,11 @@
 use crate::db::{open, open_project};
 use crate::interp::bind::param_names;
 use crate::interp::relevant::relevant_params;
-use crate::interp::{Mode, Options, Stats, call_tree, to_text};
+use crate::interp::summary::{PlainVal, SVal};
+use crate::interp::{Mode, Options, Stats, call_tree, solve, to_text};
 use crate::sem::Sem;
 use ruff_db::system::SystemPath;
+use std::collections::BTreeSet;
 
 pub struct Expect {
     pub entry: String,
@@ -40,6 +42,34 @@ pub fn expectations(source: &str) -> Vec<Expect> {
             .unwrap()
             .to_string();
         out.push(Expect { entry, tree, mode });
+    }
+    out
+}
+
+/// The functions `func` can return (qualified names), over all its contexts,
+/// solved in summary mode from `entry`.
+pub fn returns_of(fixture: &str, entry: &str, func: &str) -> BTreeSet<String> {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let module = path.file_stem().unwrap().to_str().unwrap();
+
+    let (s, _) = solve(&db, file, entry, &summary()).unwrap();
+    let want = format!("{module}.{func}");
+    let mut out = BTreeSet::new();
+    for (ctx, c) in s.contexts.iter() {
+        if s.sem.qname(c.func) != want {
+            continue;
+        }
+        let Some(res) = &s.slots[ctx].result else {
+            continue;
+        };
+        for v in &res.returns {
+            if let SVal::Plain(PlainVal::Function(d)) = v {
+                out.insert(s.sem.qname(*d));
+            }
+        }
     }
     out
 }
@@ -118,7 +148,10 @@ fn failures(fixture: &str, opts: &Options) -> String {
     let blocks = expectations(&source);
     assert!(!blocks.is_empty(), "{fixture}: no `# expect:` block");
     let mut report = String::new();
-    for e in blocks.iter().filter(|e| e.mode.is_none_or(|m| m == opts.mode)) {
+    for e in blocks
+        .iter()
+        .filter(|e| e.mode.is_none_or(|m| m == opts.mode))
+    {
         let got = call_tree(&db, file, &e.entry, opts)
             .map(|(t, _)| to_text(&t, module))
             .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
@@ -143,7 +176,10 @@ fn reads_blocks() {
     assert_eq!(b[1].entry, "other");
 
     let b = expectations("# expect inline:\n# f\n#   f [recursive]\n# expect summary:\n# f\n");
-    assert_eq!((b[0].mode, b[1].mode), (Some(Mode::Inline), Some(Mode::Summary)));
+    assert_eq!(
+        (b[0].mode, b[1].mode),
+        (Some(Mode::Inline), Some(Mode::Summary))
+    );
     assert_eq!(b[1].entry, "f");
 }
 
@@ -285,4 +321,40 @@ fn p02_04_relevance_cases() {
 #[test]
 fn p02_05_pending() {
     check_both("02-function-summaries/python/pending.py");
+}
+
+#[test]
+fn p02_06_groups() {
+    check_both("02-function-summaries/python/groups.py");
+}
+
+#[test]
+fn p02_06_entry_independence() {
+    // The same contexts, solved from two entries: the group's members are
+    // walked in a different order, and must settle on the same returns.
+    let f = "02-function-summaries/python/groups.py";
+    let from_expr = returns_of(f, "parse_expr", "parse_expr");
+    assert_eq!(
+        from_expr,
+        BTreeSet::from(["groups.binop", "groups.num"].map(String::from))
+    );
+    for func in ["parse_expr", "parse_atom", "combine"] {
+        assert_eq!(
+            returns_of(f, "parse_expr", func),
+            returns_of(f, "parse_atom", func),
+            "{func}"
+        );
+    }
+}
+
+#[test]
+fn p02_06_capped_group_is_incomplete() {
+    let opts = Options {
+        max_rounds: 1,
+        ..summary()
+    };
+    let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &opts);
+    assert_eq!(st.rounds_capped, 1);
+    let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &summary());
+    assert_eq!(st.rounds_capped, 0);
 }

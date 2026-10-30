@@ -63,6 +63,9 @@ impl<K: Clone + Eq + Hash, I: ruff_index::Idx> Interner<K, I> {
     pub fn len(&self) -> usize {
         self.items.len()
     }
+    pub fn iter(&self) -> impl Iterator<Item = (I, &K)> {
+        self.items.iter_enumerated()
+    }
 }
 
 impl<K, I: ruff_index::Idx> std::ops::Index<I> for Interner<K, I> {

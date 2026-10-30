@@ -1,6 +1,4 @@
 // src/interp/defer.rs
-use std::sync::Arc;
-
 use ruff_index::IndexVec;
 use smallvec::smallvec;
 
@@ -9,7 +7,7 @@ use crate::interp::env::Env;
 use crate::interp::key::ContextId;
 use crate::interp::solver::{Got, Solver};
 use crate::interp::summary::{FunctionResult, SiteId};
-use crate::interp::value::{AbstractValue, DeferId, Values};
+use crate::interp::value::{AbstractValue, DeferId, Values, dedup};
 use crate::interp::walk::Walk;
 
 #[derive(Clone)]
@@ -50,28 +48,6 @@ fn substitute<'db>(vals: &Values<'db>, now: &IndexVec<DeferId, Values<'db>>) -> 
         .collect()
 }
 
-impl<'db> Solver<'db> {
-    /// The head of its own cycle: repeat the deferred operations, never the body,
-    /// until the summary's returns stop changing.
-    pub fn resolve_one(&mut self, ctx: ContextId, mut w: Walk<'db>) -> FunctionResult<'db> {
-        let mut resolved = no_values(&w); // round 0: every pending value empty
-        let mut current = Arc::new(w.finish_round(&resolved));
-        self.slots[ctx].state = crate::interp::solver::State::Resolving;
-        loop {
-            self.slots[ctx].current = Some(current.clone());
-            resolved = w.replay(self, &resolved); // each operation once, in order
-            let next = w.finish_round(&resolved);
-            let changed = next.returns != current.returns; // what a caller reads
-            current = Arc::new(next);
-            if !changed {
-                break;
-            }
-        }
-        self.slots[ctx].current = None;
-        Arc::unwrap_or_clone(current)
-    }
-}
-
 impl<'db> Walk<'db> {
     pub fn defer(&mut self, op: DeferredOp<'db>, env: &Env<'db>) -> DeferId {
         self.deferred.push(Deferred {
@@ -80,14 +56,11 @@ impl<'db> Walk<'db> {
         })
     }
 
-    /// Each deferred operation once, in order. An operation may read the
-    /// results of earlier ones in this same round.
-    fn replay(
-        &mut self,
-        sol: &mut Solver<'db>,
-        last: &IndexVec<DeferId, Values<'db>>,
-    ) -> IndexVec<DeferId, Values<'db>> {
-        let mut now = last.clone();
+    /// Each deferred operation once, in order, starting from the last round's
+    /// values. An operation may read the results of earlier ones in this same
+    /// round. `capped`: the last round allowed, so every result also gets `Unknown`.
+    pub fn replay(&mut self, sol: &mut Solver<'db>, capped: bool) -> IndexVec<DeferId, Values<'db>> {
+        let mut now = self.resolved.clone();
         self.replaying = true;
         let ids: Vec<DeferId> = self.deferred.indices().collect();
         for id in ids {
@@ -95,7 +68,7 @@ impl<'db> Walk<'db> {
             let v = match d.op {
                 DeferredOp::Apply { ctx } => match sol.get(ctx) {
                     Got::Ready(res) => self.resolve(&res.returns),
-                    Got::Pending => Values::new(), // step 06
+                    Got::Pending => Values::new(), // the solver flagged it: the round is abandoned
                 },
                 DeferredOp::Call {
                     site,
@@ -117,6 +90,11 @@ impl<'db> Walk<'db> {
                     self.call_values(sol, site, &callee, &args, None, &fallback, Some(edge), &d.before)
                 }
             };
+            let mut v = v;
+            if capped {
+                v.push(AbstractValue::Unknown);
+                dedup(&mut v);
+            }
             now[id] = v;
         }
         self.replaying = false;

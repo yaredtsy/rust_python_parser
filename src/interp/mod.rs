@@ -38,11 +38,13 @@ pub struct Stats {
     pub nodes: u32,    // tree nodes produced
     pub contexts: u32, // distinct keys interned
     pub reuse_hits: u32, // calls answered from a Ready slot
+    pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
 }
 #[derive(Clone, Debug)]
 pub struct Options {
     pub mode: Mode,
     pub reuse: bool,
+    pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
 }
 
 impl Default for Options {
@@ -50,6 +52,7 @@ impl Default for Options {
         Options {
             mode: Mode::Inline,
             reuse: true,
+            max_rounds: 32,
         }
     }
 }

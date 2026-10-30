@@ -23,6 +23,8 @@ pub struct Walk<'db> {
     pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
     /// Operations that waited on a pending value, in the order the walk met them.
     pub deferred: IndexVec<DeferId, Deferred<'db>>,
+    /// What each deferred operation resolved to in the latest round.
+    pub resolved: IndexVec<DeferId, Values<'db>>,
     /// Set while the solver repeats the deferred operations.
     pub replaying: bool,
     /// The body yields: its call returns a generator, whatever it returns.
@@ -64,6 +66,7 @@ impl<'db> Walk<'db> {
             activations,
             defaults: FxHashMap::default(),
             deferred: IndexVec::new(),
+            resolved: IndexVec::new(),
             replaying: false,
             generator: false,
         }

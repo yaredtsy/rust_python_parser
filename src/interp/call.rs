@@ -233,7 +233,7 @@ impl<'db> Walk<'db> {
         match sol.get(ctx) {
             _ if !runs => Values::new(), // Python never makes this call, whatever `get` answered
             Got::Ready(res) => self.resolve(&res.returns),
-            Got::Pending if self.replaying => Values::new(), // step 06
+            Got::Pending if self.replaying => Values::new(), // the solver flagged the reader
             Got::Pending => {
                 let id = self.defer(DeferredOp::Apply { ctx }, env);
                 smallvec![AbstractValue::Pending(id)]

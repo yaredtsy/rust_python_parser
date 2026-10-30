@@ -12,6 +12,24 @@ use crate::sem::{Definition, Type};
 pub struct FunctionResult<'db> {
     pub calls: Vec<CallEdge>, // one per call site reached, in evaluation order
     pub returns: SVals<'db>,       // the union of every return
+    pub status: Status,
+}
+
+/// What a caller must know about how far to trust a summary (step 08 adds `cut`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Status {
+    pub gaps: Gaps,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Gaps(u8);
+
+impl Gaps {
+    /// The group's fixpoint hit `max_rounds`: later rounds might have added more.
+    pub const CYCLE: Gaps = Gaps(1);
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -78,6 +96,7 @@ impl<'db> Walk<'db> {
         FunctionResult {
             calls: self.frame.calls.clone(),
             returns: returns.into_iter().map(to_sval).collect(),
+            status: Status::default(),
         }
     }
 

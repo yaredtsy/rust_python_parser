@@ -21,6 +21,9 @@ pub fn render(s: &Solver<'_>, ctxs: &[ContextId], path: &mut Vec<String>) -> Vec
         for (callee, callee_ctxs) in group_by_function(s, &targets) {
             let q = s.sem.qname(callee);
             let mut node = Node::call(q.clone(), s.site_range(func, site));
+            if callee_ctxs.iter().any(|&c| s.is_incomplete(c)) {
+                node.marks.push(Mark::Incomplete);
+            }
             if path.contains(&q) {
                 node.marks.push(Mark::Recursive); // shown, not entered
             } else {
