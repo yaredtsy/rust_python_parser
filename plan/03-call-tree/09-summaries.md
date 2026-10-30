@@ -128,8 +128,11 @@ pub struct NewObject<'db> {
    - an `Entry(path)` origin becomes `Ref(path)`
    - a `New` origin becomes `Obj(j)`, and the object is added to `objects`
    - an `OPAQUE` or `Beyond` instance becomes `Plain(Opaque(class))`
-   - a closure becomes `Closure { func, free }`, free values read from its
-     activation at this exit
+   - a closure becomes `Closure { func, free, defaults }`, free values read
+     from its activation at this exit and converted by these same rules (a
+     `Pending` inside is resolved too). A closure inside `fp_depth` other
+     closures becomes `Plain(Unknown)`, or a recursion fixpoint never ends
+     ([`12`](12-recursion.md#why-it-stops))
    - a bound method becomes `Bound { func, recv }`
    - a `Pending(id)` becomes its resolved values ([`12`](12-recursion.md))
    - everything else becomes `Plain(..)`

@@ -156,8 +156,8 @@ which is why `Box` has no `__init__`.
 
 ### Yours
 
-- `Fp::Instance`, `Fp::Opaque`, `Fp::Bound`, `fp_depth`, and `key` reading the
-  caller's env.
+- `Fp::Instance`, `Fp::Opaque`, `Fp::Bound`, `fp_depth` (from step 02.07,
+  now counting attributes too), and `key` reading the caller's env.
 - `Path`, `Root`, `Step`, `OriginKey::Entry(Path)`, and `materialize` for
   objects and bound methods.
 - If your `attrs` is a flat `(origin, name)` map: fingerprinting lists one

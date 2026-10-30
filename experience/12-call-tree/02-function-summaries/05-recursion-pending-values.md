@@ -113,10 +113,22 @@ it is becomes a deferred operation:
 |---|---|
 | a call to a running context | `Apply`, value `Pending(new id)` |
 | `p(…)` | `Call`, value `Pending(new id)` |
-| `f(p)`, where `f` is a project function (its key would read `p`) | `Call`, value `Pending(new id)` |
-| `print(p)`: no key reads it | nothing: the call happens now |
+| `f(p)`, where `p` lands in a relevant parameter of a project function | `Call`, value `Pending(new id)` |
+| `f(p)`, where `p` lands only in irrelevant parameters (step 04) | nothing: keyed and called now |
+| `print(p)`: no project callee, so no key | nothing: the call happens now |
 | `x = p`, `return p`, `if p:` | nothing: carried along |
 | `p.name`, `p.name = v` | part 04, with objects |
+
+**One rule behind the `f(p)` rows: defer a call only if its key would read a
+pending value.** The key reads the callee and the relevant slots, nothing
+else. If `p` lands only in an irrelevant slot, the key holds `Unknown` there
+now and would hold `Unknown` there in the fixpoint too, so it is the same key.
+And the callee's answer can't depend on `p`: an irrelevant parameter reaches
+no return and no call. Calling it now gives exactly what a replay would,
+records the edge at once, and leaves one operation fewer to repeat each round.
+To know where `p` lands, bind first (`bind_for_callee`), then look at the
+relevant slots. That also catches a pending value that arrives through a
+default rather than an argument.
 
 In `walk`: `walk(n - 1)` is `Apply { ctx: walk }`, value `Pending(0)`. `r()` is
 `Call { callee: [Pending(0)] }`, value `Pending(1)`. `return done` is concrete.
@@ -152,13 +164,19 @@ Until step 06, the third case finishes alone with its pending values empty.
 `recursion.py` from part 01 still passes: its trees don't use any recursive
 call's value.
 
+That incomplete summary is stored `Ready`, so every later caller reuses it as
+it is: its pending values stayed empty, and its deferred `Call` edges were
+never filled. So don't write an `# expect` block for mutual recursion before
+step 06: it would pin the wrong tree. Step 06's `groups.py` is the first.
+
 ### Decision 4: a fixpoint over the operations, never the body
 
 ```
 round 0:  finish() with every pending value empty
 round n:  repeat each deferred operation once, in order, against its `before`,
           reading this function's latest summary; then finish() again
-stop:     when a round leaves the summary's returns unchanged
+stop:     when a round leaves the summary's returns unchanged, compared as
+          sets; or at `max_rounds`
 ```
 
 For `walk`:
@@ -185,8 +203,43 @@ answer at least `Unknown`, and `walk > done` would never appear.
 
 **Why it stops:** each round can only add values, and for functions there are
 finitely many: the project's functions, a few types, `Unknown`. Once a round
-adds nothing, the next one would add nothing either. Step 06 adds a round cap
-for the cases where "finitely many" is still too many.
+adds nothing, the next one would add nothing either. (Step 07 has to bound
+closures nested in closures to keep that true.)
+
+**Why each round replaces the last round's values.** `now[id]` is this
+round's answer, not merged with last round's. Every operation is monotone:
+more input values give more output values. The walker never removes a value
+because another one appeared, and a fan-out cap turns a big set into
+`Unknown`, which says more, not less. So this round's value already contains
+last round's, and replacing it loses nothing.
+
+Two alternatives, rejected:
+
+- **Union with last round** (`now[id] = last[id] ∪ v`). It forces growth, but
+  once values have structure it keeps every old version next to the new one.
+  From step 07 a closure carries its captures: `g[r = done]` and
+  `g[r = g[done], done]` are two elements, and in the next round each is its
+  own key and its own walk. Part 04's objects would do the same.
+- **A join that merges versions of the same closure.** With monotone
+  operations it gives exactly what replace gives (merging `last` into a value
+  that already contains it changes nothing). And it needs a rule for "the
+  same closure" across rounds, which is easy to get wrong: merge two closures
+  of one `def` made by different callers, and their captures mix into calls
+  Python never makes.
+
+**Why compare as sets:** the order of the returns is an accident of which
+return statement came first and of the order inside each pending value.
+Comparing with `==` could see "changed" when only the order changed, and if
+the order flipped every round, the loop would never stop. `same_svals`
+compares the elements, in any order. (`Type` has no `Ord`, so the returns
+can't simply be sorted.)
+
+**Why a round cap already here:** monotonicity is a claim about every
+operation, now and in every later step. If one ever shrinks a value, rounds
+could flip forever. `max_rounds` (32) stops that, and `Stats.rounds_capped`
+counts it. On any fixture it must be 0: a capped round there is a bug, in the
+operation that shrank. Step 06 decides what a capped summary means (a last
+round with `Unknown`, and a gap).
 
 **Why the body is not walked again:** every statement's effect on the env was
 recorded on the first walk. Only the operations that waited on the unknown
@@ -206,8 +259,10 @@ latest round's summary. When a repeated `Apply { ctx: walk }` calls `get`,
 - Factor the second half of `eval_call` into `call_values(s, site, callees,
   args, env)`, so a repeated `Call` runs the same code as a live one.
 - `get` with `Running { depth }`, `lowest`, and the three outcomes.
+- `needs_defer`: bind, then look at the relevant slots.
 - `resolve_one(ctx, walk)`: round 0, rounds, stop. `finish` takes the resolved
   values of the pending ids and substitutes them.
+- `same_svals`, `Options.max_rounds` (32), `Stats.rounds_capped`.
 - `walk_context` returns the `Walk`, unfinished. Finishing is the solver's
   decision now.
 - The harness: `# expect inline:` and `# expect summary:` blocks.
@@ -258,20 +313,74 @@ fn reader_depends_on(&mut self, d: usize) {
 ```
 
 ```rust
+// src/interp/call.rs
+/// A call can't be keyed now if its key would read a pending value: the
+/// callee is pending, or a pending value lands in a relevant parameter.
+fn needs_defer(&mut self, s: &mut Solver<'db>, callees: &Values<'db>, args: &EvaluatedArgs<'db>) -> bool {
+    let pending = |v: &Values<'db>| v.iter().any(|x| matches!(x, AbstractValue::Pending(_)));
+    if pending(callees) { return true }
+    for c in callees {
+        match *c {
+            AbstractValue::Function(def) if s.sem.is_project(def) => {
+                let parsed = s.sem.parsed(def);
+                let Some(node) = s.sem.function_node(def, &parsed) else { continue };
+                let bound = self.bind_for_callee(s, def, node, args);
+                let relevant = relevant_params(s.sem.db, def);
+                if bound.slots.iter().zip(relevant).any(|(v, &r)| r && pending(v)) {
+                    return true;
+                }
+            }
+            // A closure's key arrives in step 07. Until then, any pending argument defers it.
+            AbstractValue::Closure { func, .. } if s.sem.is_project(func) => {
+                if args.positional.iter().any(pending) || args.keywords.iter().any(|(_, v)| pending(v)) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+```
+
+Binding twice (here, and again when the call is made) only happens for a
+callee that a pending value could reach: rare, and cheap.
+
+```rust
+// src/interp/summary.rs
+/// Equal as sets: the same elements, in any order, duplicates ignored.
+pub fn same_svals(a: &SVals<'_>, b: &SVals<'_>) -> bool {
+    a.iter().all(|x| b.iter().any(|y| same_sval(x, y)))
+        && b.iter().all(|y| a.iter().any(|x| same_sval(x, y)))
+}
+
+fn same_sval(x: &SVal<'_>, y: &SVal<'_>) -> bool {
+    x == y   // step 07: closures compare their captures with `same_svals`
+}
+```
+
+```rust
 // src/interp/defer.rs
 impl<'db> Solver<'db> {
     pub fn resolve_one(&mut self, ctx: ContextId, mut w: Walk<'db>) -> FunctionResult<'db> {
         let mut resolved = no_values(&w);                       // round 0: every pending value empty
         let mut current = Arc::new(w.finish_round(self, &resolved));
         self.slots[ctx].state = State::Resolving;
-        loop {
+        for round in 1u32.. {
             self.slots[ctx].current = Some(current.clone());
             resolved = w.replay(self, &resolved);               // each operation once, in order
             let next = w.finish_round(self, &resolved);
-            let changed = next.returns != current.returns;      // what a caller reads
+            let changed = !same_svals(&next.returns, &current.returns);   // what a caller reads
             current = Arc::new(next);
             if !changed { break }
+            if round == self.opts.max_rounds {
+                self.stats.rounds_capped += 1;                  // some operation shrank: a bug
+                break;
+            }
         }
+        // Ready from here: drop the stale round. `unwrap_or_clone` then doesn't
+        // clone: the slot only ever held an earlier round's `Arc`.
+        self.slots[ctx].current = None;
         Arc::unwrap_or_clone(current)
     }
 }
@@ -369,6 +478,8 @@ assert_eq!(b[1].entry, "f");
 #[test]
 fn p02_05_pending() {
     check_both("02-function-summaries/python/pending.py");
+    let st = stats_for("02-function-summaries/python/pending.py", "main", &summary());
+    assert_eq!(st.rounds_capped, 0);
 }
 ```
 

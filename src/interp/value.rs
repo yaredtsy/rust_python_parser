@@ -12,6 +12,10 @@ use ty_python_semantic::types::Type;
 #[newtype_index]
 pub struct ActivationId;
 
+/// A deferred operation of one walk: a recursive call, or a use of its value.
+#[newtype_index]
+pub struct DeferId;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum AbstractValue<'db> {
     Function(Definition<'db>), // a def: something you can walk
@@ -22,6 +26,7 @@ pub enum AbstractValue<'db> {
     Ty(Type<'db>), // ty's answer, for everything you don't model
     Module(Type<'db>),
     Unknown, // nothing known
+    Pending(DeferId), // the value of an operation waiting on a recursive call
 }
 
 /// Several possibilities, kept apart. Never collapsed into one ty union.

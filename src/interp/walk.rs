@@ -6,7 +6,8 @@ use crate::interp::summary::CallEdge;
 use crate::interp::env::Env;
 use crate::interp::tree::Node;
 use crate::interp::value::AbstractValue::Unknown;
-use crate::interp::value::{AbstractValue, ActivationId, Values};
+use crate::interp::defer::Deferred;
+use crate::interp::value::{AbstractValue, ActivationId, DeferId, Values};
 use crate::sem::{Definition, SemanticModel};
 use ruff_index::IndexVec;
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
@@ -20,6 +21,12 @@ pub struct Walk<'db> {
     pub activations: IndexVec<ActivationId, Env<'db>>,
     /// A nested def's defaults, as computed when its `def` ran. Per run.
     pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
+    /// Operations that waited on a pending value, in the order the walk met them.
+    pub deferred: IndexVec<DeferId, Deferred<'db>>,
+    /// Set while the solver repeats the deferred operations.
+    pub replaying: bool,
+    /// The body yields: its call returns a generator, whatever it returns.
+    pub generator: bool,
 }
 
 /// The body being walked now.
@@ -56,6 +63,9 @@ impl<'db> Walk<'db> {
             frame: frame_for(sol, func, act),
             activations,
             defaults: FxHashMap::default(),
+            deferred: IndexVec::new(),
+            replaying: false,
+            generator: false,
         }
     }
     pub fn new_frame(&mut self, sol: &Solver<'db>, func: Definition<'db>) -> Frame<'db> {

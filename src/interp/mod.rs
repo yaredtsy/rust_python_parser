@@ -2,6 +2,7 @@ mod env;
 
 mod bind;
 mod call;
+mod defer;
 #[cfg(test)]
 mod fixture;
 mod key;

@@ -9,15 +9,19 @@ use ruff_db::system::SystemPath;
 pub struct Expect {
     pub entry: String,
     pub tree: String,
+    pub mode: Option<Mode>, // None: `# expect:`, every mode
 }
 /// Every `# expect:` block in `source`.
 pub fn expectations(source: &str) -> Vec<Expect> {
     let mut out = Vec::new();
     let mut lines = source.lines().peekable();
     while let Some(line) = lines.next() {
-        if line.trim_end() != "# expect:" {
-            continue;
-        }
+        let mode = match line.trim_end() {
+            "# expect:" => None,
+            "# expect inline:" => Some(Mode::Inline),
+            "# expect summary:" => Some(Mode::Summary),
+            _ => continue,
+        };
         let mut tree = String::new();
         while let Some(rest) = lines.peek().and_then(|l| l.strip_prefix("# ")) {
             if rest.starts_with("expect") {
@@ -35,7 +39,7 @@ pub fn expectations(source: &str) -> Vec<Expect> {
             .next()
             .unwrap()
             .to_string();
-        out.push(Expect { entry, tree });
+        out.push(Expect { entry, tree, mode });
     }
     out
 }
@@ -114,7 +118,7 @@ fn failures(fixture: &str, opts: &Options) -> String {
     let blocks = expectations(&source);
     assert!(!blocks.is_empty(), "{fixture}: no `# expect:` block");
     let mut report = String::new();
-    for e in &blocks {
+    for e in blocks.iter().filter(|e| e.mode.is_none_or(|m| m == opts.mode)) {
         let got = call_tree(&db, file, &e.entry, opts)
             .map(|(t, _)| to_text(&t, module))
             .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
@@ -137,6 +141,10 @@ fn reads_blocks() {
     assert_eq!(b[0].entry, "main");
     assert_eq!(b[0].tree, "main\n  a [recursive]\n");
     assert_eq!(b[1].entry, "other");
+
+    let b = expectations("# expect inline:\n# f\n#   f [recursive]\n# expect summary:\n# f\n");
+    assert_eq!((b[0].mode, b[1].mode), (Some(Mode::Inline), Some(Mode::Summary)));
+    assert_eq!(b[1].entry, "f");
 }
 
 #[test]
@@ -272,4 +280,9 @@ fn p02_04_relevance_cases() {
         }
     }
     assert!(wrong.is_empty(), "\n{wrong}");
+}
+
+#[test]
+fn p02_05_pending() {
+    check_both("02-function-summaries/python/pending.py");
 }

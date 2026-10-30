@@ -91,6 +91,7 @@ impl<'db> Solver<'db> {
             AbstractValue::Ty(t) => Fp::Data(self.sem.widen(t, file)),
             AbstractValue::Unknown => Fp::Unknown,
             AbstractValue::Closure { .. } => Fp::Unknown, // placeholder until step 07
+            AbstractValue::Pending(_) => Fp::Unknown, // a call with a pending argument is deferred, never keyed
         };
         self.fps.intern(fp)
     }

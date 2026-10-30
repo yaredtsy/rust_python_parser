@@ -153,13 +153,31 @@ not its attributes, once it leaves the group.
 Pending values start empty and only grow. A call that waits on a value
 contributes nothing until the value arrives ([`10`](10-one-call.md#a-call-with-no-value)).
 Every value is bounded: fingerprints by `fp_depth`, paths by `max_path`, unions
-by the fan-out caps, objects by the identity rule above. So the summaries reach
-a point where no round changes them. Fan-out caps that turn a union into
-`Unknown` act as widening: once `Unknown`, a value stays `Unknown`.
+by the fan-out caps, objects by the identity rule above, and closures nested in
+closures by `fp_depth`, in keys and in summaries alike. (A recursive function
+that returns a closure capturing its own recursive call, a middleware chain,
+otherwise nests one level deeper every round: `g[a]`, `g[g[a], a]`, …) So the
+summaries reach a point where no round changes them. Fan-out caps that turn a
+union into `Unknown` act as widening: once `Unknown`, a value stays `Unknown`.
 
-`max_rounds` is the safety net. At the cap, one last round runs with `Unknown`
-added to every deferred operation's result, and every member gets the `CYCLE`
-gap. The cap depends only on the group's equations, which depend only on the
+Each round **replaces** every deferred operation's value with this round's.
+The operations are monotone (more values in, more values out; `Unknown` says
+more, not less), so the new value already contains the old one. Rejected:
+union with the previous round, which keeps every stale version of a closure
+or an object next to the new one, each its own key and walk in the next
+round; and a join that merges versions of "the same" closure, which gives
+replace's answer when operations are monotone, and needs a cross-round
+identity rule that silently mixes captures when it is wrong. Summaries are
+compared **as sets** (`same_svals`, recursively through closures' captures):
+order is not meaning, and `Type` has no order to sort by. A call is deferred
+only if its key would read a pending value, which means the callee or a
+relevant slot ([`08`](08-keys.md)): a pending value that lands only in
+irrelevant parameters is keyed and called at once.
+
+`max_rounds` is the safety net, and a counter (`Stats.rounds_capped`): on a
+fixture, reaching it means some operation shrank a value. At the cap, one
+last round runs with `Unknown` added to every deferred operation's result,
+and every member gets the `CYCLE` gap. The cap depends only on the group's equations, which depend only on the
 keys, so a capped summary is still reusable.
 
 ### Why the entry point does not matter

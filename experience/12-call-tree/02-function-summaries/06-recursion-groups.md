@@ -199,10 +199,13 @@ later caller, from any direction.
 **The test:** enter the parser at `parse_atom` instead of `parse_expr`, and
 compare every member's returns. They must be equal as sets.
 
-### Decision 6: a round cap, as a safety net
+### Decision 6: what a capped summary means
 
-`max_rounds` (32). At the cap, one last round runs with `Unknown` added to
-every deferred operation's result, and every member gets the `CYCLE` gap:
+Step 05 stops at `max_rounds` (32) and counts it, nothing more: that summary
+is missing whatever later rounds would have added. Now the cap covers a
+group, and makes the result sound. At the cap, one last round runs with
+`Unknown` added to every deferred operation's result, and every member gets
+the `CYCLE` gap:
 
 ```rust
 pub struct Status { pub gaps: Gaps }        // step 08 adds `cut`
@@ -214,8 +217,10 @@ A node whose summary has a gap is marked `[incomplete]` when rendered.
 The cap depends only on the group's equations, which depend only on the keys
 and the code. So a capped summary is still reusable: rule 3 holds.
 
-For functions, values form a small finite set, and the cap is hard to reach.
-It matters for objects (part 04) and closures nesting inside closures.
+For functions, values form a small finite set, and closures nest at most
+`fp_depth` deep (step 07), so the cap is hard to reach. Reaching it on a
+fixture still means an operation shrank a value (step 05): `rounds_capped`
+stays 0 on every fixture that isn't about the cap.
 
 ### Yours
 
@@ -223,7 +228,8 @@ It matters for objects (part 04) and closures nesting inside closures.
   `ContextId`), `Fixpoint { head, base, lowest }` on the solver.
 - `get`'s full shape, `read_group_member`, `resolve_group` (generalising
   `resolve_one`), merging.
-- `Status`, `Gaps::CYCLE`, `max_rounds`, and `[incomplete]` in `render`.
+- `Status`, `Gaps::CYCLE`, the last round at `max_rounds`, and `[incomplete]`
+  in `render`.
 - The entry-independence test.
 
 <details><summary>Reference: this step's code</summary>
@@ -275,7 +281,7 @@ fn resolve_group(&mut self, head: ContextId, head_walk: Walk<'db>) -> Resolved {
                 self.fixpoint = None;
                 return Resolved::Merged(d);
             }
-            changed |= self.slots[m].set_current(next);       // compares returns only, for now
+            changed |= self.slots[m].set_current(next);       // returns, with same_svals (step 05)
         }
         let joined = self.take_parked(head);
         changed |= !joined.is_empty();

@@ -57,7 +57,8 @@ def main():
 ```rust
 pub struct Limits {
     // precision (rule 3: decided by the key and the code)
-    pub max_rounds: u32,                  // 32. Step 06
+    pub max_rounds: u32,                  // 32. Step 05 (counted), step 06 (CYCLE)
+    pub fp_depth: u8,                     // 2. Step 07 (closures), part 04 (objects)
     // cost (each one cuts, is marked, and is never reused)
     pub max_stack: usize,                 // 256
     pub max_contexts: u32,                // 50_000
@@ -113,14 +114,15 @@ never produce a `Ready` summary, so it can never change a reusable answer.
 
 | limit | depends on | result |
 |---|---|---|
-| `max_rounds` (step 06) | the group's equations: keys and code | `CYCLE` gap. **Reusable** |
+| `max_rounds` (steps 05, 06) | the group's equations: keys and code | `CYCLE` gap. **Reusable** |
+| `fp_depth` (step 07) | the values, to a fixed depth | `Unknown` past it. **Reusable** |
 | `max_stack` | how deep the path is | cut. Never reused |
 | `max_contexts` | how many contexts exist so far | cut. Never reused |
 | `contexts_per_func` | how many contexts of this function exist so far | cut. Never reused |
 | `deadline` | the clock | cut. Never reused |
 
-Part 04 adds more precision limits (`fp_depth`, `max_path`, fan-out caps), all
-on the reusable side.
+Part 04 adds more precision limits (`max_path`, fan-out caps) and applies
+`fp_depth` to objects, all on the reusable side.
 
 **Why `contexts_per_func` cuts instead of widening:** the alternative, past
 64 contexts give every further call to that function one catch-all context,
@@ -153,7 +155,7 @@ is a scaffold, not something to run on real code.
 
 ### Yours
 
-- `Limits` (move `reuse` and `max_rounds` into it), `Cut`, `Status.cut`,
+- `Limits` (move `reuse`, `max_rounds` and `fp_depth` into it), `Cut`, `Status.cut`,
   `State::Cut`, `cost_limit`, `reader_read_cut`, `pass_cut_up`.
 - In a recursion group, if any member read a cut, every member is cut.
 - `Stats.cuts`, by kind.

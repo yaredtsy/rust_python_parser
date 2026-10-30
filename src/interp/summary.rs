@@ -1,13 +1,11 @@
 // src/interp/summary.rs
-use ruff_python_ast::StmtFunctionDef;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 use smallvec::{SmallVec, smallvec};
 
-use crate::interp::env::Env;
 use crate::interp::key::ContextId;
-use crate::interp::solver::Solver;
-use crate::interp::value::{AbstractValue, Values, dedup};
-use crate::interp::walk::{Walk, contains_yield};
+use crate::interp::value::{AbstractValue, DeferId, Values, dedup};
+use ruff_index::IndexVec;
+use crate::interp::walk::Walk;
 use crate::sem::{Definition, Type};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -62,27 +60,33 @@ pub enum PlainVal<'db> {
 }
 
 impl<'db> Walk<'db> {
-    pub fn finish(
-        mut self,
-        sol: &Solver<'db>,
-        end: Option<Env<'db>>,
-        node: &StmtFunctionDef,
-    ) -> FunctionResult<'db> {
-        if end.is_some() {
-            let none = self.none_value(sol);
-            self.frame.returns.extend(none); // fell off the end
-        }
-        let mut returns = if contains_yield(&node.body) {
+    /// The summary so far. Every pending value is replaced by what it resolved to.
+    pub fn finish_round(&self, resolved: &IndexVec<DeferId, Values<'db>>) -> FunctionResult<'db> {
+        let mut returns: Values<'db> = if self.generator {
             smallvec![AbstractValue::Unknown]
         } else {
-            std::mem::take(&mut self.frame.returns)
+            self.frame
+                .returns
+                .iter()
+                .flat_map(|v| match *v {
+                    AbstractValue::Pending(id) => resolved[id].clone(),
+                    other => smallvec![other],
+                })
+                .collect()
         };
         dedup(&mut returns);
-        let returns = returns.into_iter().map(to_sval).collect();
         FunctionResult {
-            calls: self.frame.calls,
-            returns,
+            calls: self.frame.calls.clone(),
+            returns: returns.into_iter().map(to_sval).collect(),
         }
+    }
+
+    /// The file range of a site recorded relative to this frame's `def`.
+    pub fn site_range(&self, site: SiteId) -> TextRange {
+        TextRange::new(
+            self.frame.def_start + site.start,
+            self.frame.def_start + site.end,
+        )
     }
 
     /// The caller's own values for a callee's returns.
@@ -106,5 +110,6 @@ fn to_sval(v: AbstractValue<'_>) -> SVal<'_> {
         AbstractValue::Ty(t) => PlainVal::Ty(t),
         AbstractValue::Unknown => PlainVal::Unknown,
         AbstractValue::Closure { .. } => PlainVal::Unknown, // step 07
+        AbstractValue::Pending(_) => PlainVal::Unknown, // substituted before this point
     })
 }

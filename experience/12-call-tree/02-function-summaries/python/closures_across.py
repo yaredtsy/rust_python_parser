@@ -45,6 +45,22 @@ def outer(root):
     walk(root)
 
 
+def chain(n):
+    if n:
+        r = chain(n - 1)
+    else:
+        r = a
+
+    def g():
+        r()
+
+    return g
+
+
+def chained():
+    chain(3)()  # each round nests g one level deeper, until fp_depth
+
+
 # expect:
 # passed_along
 #   make
@@ -71,3 +87,16 @@ def outer(root):
 # outer
 #   outer.walk
 #     outer.walk [recursive]
+# expect inline:
+# chained
+#   chain
+#     chain [recursive]
+#   chain.g
+#     a
+# expect summary:
+# chained
+#   chain
+#     chain [recursive]
+#   chain.g
+#     a
+#     chain.g [recursive]
