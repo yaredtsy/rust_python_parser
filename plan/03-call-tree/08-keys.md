@@ -26,7 +26,8 @@ pub enum Fp<'db> {
     Class(Definition<'db>),
     Module(Type<'db>),                       // ty's module literal type, as in 04
     Bound    { func: Definition<'db>, recv: FpId },
-    Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]> },
+    Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]>,
+               defaults: SmallVec<[(Name, FpId); 2]> },   // values computed when its `def` ran (06)
     Back(u8),                                // the closure k levels up in this fingerprint (below)
     Instance { class: Definition<'db>, attrs: SmallVec<[(Name, FpId); 4]> },  // sorted by name
     Opaque(Definition<'db>),                 // class known, attribute state not in the key

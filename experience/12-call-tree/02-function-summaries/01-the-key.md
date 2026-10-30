@@ -189,8 +189,12 @@ use crate::interp::bind::Bound;
 use crate::interp::value::{AbstractValue, Values};
 use crate::sem::{Definition, Sem, Type};
 
-newtype_index! { pub struct FpId; }
-newtype_index! { pub struct ContextId; }
+#[newtype_index]
+#[derive(Ord, PartialOrd)]          // `fingerprint` sorts FpIds
+pub struct FpId;
+
+#[newtype_index]
+pub struct ContextId;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Fp<'db> {

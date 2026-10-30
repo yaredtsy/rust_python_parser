@@ -1130,6 +1130,7 @@ dependencies = [
  "anyhow",
  "rpds",
  "ruff_db",
+ "ruff_index",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_python_stdlib",

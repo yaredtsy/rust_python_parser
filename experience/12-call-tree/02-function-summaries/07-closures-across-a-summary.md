@@ -49,7 +49,11 @@ def outer(root):
 ```rust
 pub enum SVal<'db> {
     Plain(PlainVal<'db>),
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]> },   // ← new
+    Closure {                                                     // ← new
+        func: Definition<'db>,
+        free: SmallVec<[(Name, SVals<'db>); 2]>,      // captured variables
+        defaults: SmallVec<[(Name, SVals<'db>); 2]>,  // the defaults computed when its `def` ran (step 01.11)
+    },
 }
 ```
 
@@ -84,17 +88,25 @@ The plan pins it; `plan/03-call-tree/15` § "Known limits".)
 nested inside it that resolves to a scope *outside* `func` that is a function.
 Module globals are not free variables: ty answers them on every path.
 
+The closure's **defaults** travel the same way. Step 01.11 keeps them in
+`Walk.defaults[(func, activation)]`, keyed by an activation, which is
+walk-local. So `finish` writes them into the `SVal::Closure` beside the free
+values, and whoever rebuilds the closure puts them back under its new
+activation.
+
 ### Decision 2: the caller resolves a closure into a new activation of its own
 
 ```rust
-SVal::Closure { func, free } => {
+SVal::Closure { func, free, defaults } => {
     let mut env = Env::flat();                        // holds free values by name, no scope
     for (name, vals) in free {
         let v = self.resolve(s, vals);
         env.bind(name, v);
     }
     let activation = self.activations.push(env);
-    AbstractValue::Closure { func, activation }
+    let defaults = defaults.iter().map(|(n, v)| (n.clone(), self.resolve(s, v))).collect();
+    self.defaults.insert((*func, activation), defaults);
+    AbstractValue::Closure { func: *func, activation }
 }
 ```
 
@@ -107,7 +119,11 @@ activation answers any name it holds, whatever scope ty says binds it.
 ```rust
 pub enum Fp<'db> {
     // …
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]> },   // sorted by name
+    Closure {
+        func: Definition<'db>,
+        free: SmallVec<[(Name, FpId); 2]>,       // sorted by name
+        defaults: SmallVec<[(Name, FpId); 2]>,   // the defaults it was made with
+    },
     Back(u8),                                                               // decision 5
 }
 
@@ -157,6 +173,7 @@ AbstractValue::Closure { func, activation } => match closures.position(func, act
     None => closures.with(func, activation, |cl| Fp::Closure {
         func,
         free: self.fp_free(w, activation, cl),
+        defaults: self.fp_defaults(w, func, activation, cl),   // from w.defaults[(func, activation)]
     }),
 },
 ```
@@ -257,7 +274,7 @@ Every part 01 fixture now runs in both modes.
 ```
 Fp      += Closure { func, free }, Back(k)
 Context += free
-SVal    += Closure { func, free: [(Name, SVals)] }
+SVal    += Closure { func, free: [(Name, SVals)], defaults: [(Name, SVals)] }
 activations: per walk. A flat activation holds free values by name
 ```
 

@@ -76,10 +76,11 @@ silently drops `cb()`, `make()()`, `self.handler.process()`.
 def flaky(): on_ok()
 ```
 
-At runtime `flaky` is `retry(flaky)`, which is `wrapper`. ty types it that
-way: `flaky` is the function literal `retry.wrapper`. Calling it walks
-`wrapper` with `fn = Unknown`, and the tree shows `retry.wrapper` with nothing
-under it.
+At runtime `flaky` is `retry(flaky)`, which is `wrapper`. ty types `flaky` as
+whatever `retry` is declared to return. `retry` has no return annotation, so
+that is `Unknown`, and `flaky()` gets no node at all. (With
+`def retry(fn) -> Callable[[], None]`, ty would say `Callable`, which is no
+better: still not `flaky`.)
 
 The rule: **a name bound by a `def` statement resolves to that `def`,
 whatever the decorators do.**

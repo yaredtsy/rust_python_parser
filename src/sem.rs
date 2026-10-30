@@ -6,6 +6,8 @@ use ruff_text_size::{Ranged, TextSize};
 use ty_project::glob::IncludeResult;
 use ty_project::{Db as _, ProjectDatabase};
 use ty_python_core::ProgramFile;
+use ty_python_core::scope::{FileScopeId, NodeWithScopeRef, ScopeKind};
+use ty_python_core::semantic_index;
 use ty_python_semantic::types::vnoc;
 use ty_python_semantic::{Db as _, HasDefinition, HasType};
 
@@ -18,6 +20,11 @@ pub struct Sem<'db> {
     pub db: &'db ProjectDatabase,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BodyScope<'db> {
+    pub file: ProgramFile<'db>,
+    pub scope: FileScopeId,
+}
 pub enum Shape<'db> {
     Function(Definition<'db>), // a `def`, as ty sees it
     Union(Vec<Type<'db>>),     // keep the alternatives
@@ -26,6 +33,55 @@ pub enum Shape<'db> {
     Other,   // keep as `Ty`
 }
 impl<'db> Sem<'db> {
+    pub fn definition_of(
+        &self,
+        model: &SemanticModel<'db>,
+        d: &StmtFunctionDef,
+    ) -> Definition<'db> {
+        d.definition(model)
+    }
+    /// The scope of a function's body. [check] the accessor name.
+    pub fn body_scope(&self, def: Definition<'db>, node: &StmtFunctionDef) -> BodyScope<'db> {
+        let file = def.program_file(self.db);
+        let index = semantic_index(self.db, file);
+        BodyScope {
+            file,
+            scope: index.node_scope(NodeWithScopeRef::Function(node)),
+        }
+    }
+    /// If `name` is a free variable of `scope`, the enclosing FUNCTION scope
+    /// that binds it. `None` for a local, a global or a builtin.
+    pub fn free_variable_scope(&self, scope: BodyScope<'db>, name: &str) -> Option<BodyScope<'db>> {
+        let index = semantic_index(self.db, scope.file);
+        let mut ancestors = index.ancestor_scopes(scope.scope);
+        ancestors.next(); // the scope itself
+        if index
+            .place_table(scope.scope)
+            .symbol_by_name(name)
+            .is_some_and(|s| s.is_bound())
+        {
+            return None; // bound here: a local, even if not assigned yet on this path
+        }
+        for (id, s) in ancestors {
+            match s.kind() {
+                ScopeKind::Class | ScopeKind::TypeParams => continue, // skipped by name resolution
+                ScopeKind::Module => return None,                     // a global
+                _ => {
+                    if index
+                        .place_table(id)
+                        .symbol_by_name(name)
+                        .is_some_and(|s| s.is_bound())
+                    {
+                        return Some(BodyScope {
+                            file: scope.file,
+                            scope: id,
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
     pub fn new(db: &'db ProjectDatabase) -> Self {
         Sem { db }
     }
@@ -57,6 +113,10 @@ impl<'db> Sem<'db> {
             }
             _ => Shape::Other,
         }
+    }
+
+    pub fn none_type(&self, file: ProgramFile<'db>) -> Type<'db> {
+        Type::none(self.db, &ProgramEnvironment::from_file(file))
     }
 
     pub fn is_project(&self, def: Definition<'db>) -> bool {

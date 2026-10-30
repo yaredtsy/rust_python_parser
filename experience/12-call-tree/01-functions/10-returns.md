@@ -51,8 +51,8 @@ async def amain():
 
 Run it with your step 09 code first.
 
-1. `pick_a()()` and `f = pick(1); f()` may already pass. Who answered? Why do
-   `ident(b)()` and `through(a)()` fail?
+1. Which blocks fail, and what is the value of `pick_a()` with your step 09
+   code? (Hint: what does ty say a call to an unannotated function returns?)
 2. `fail()` never returns. What should `log`'s parameter `x` hold?
 3. In `early`, why must `f()` not see `a`?
 
@@ -83,11 +83,16 @@ dedup(&mut out);
 out
 ```
 
-**Why not keep ty's answer:** ty gives one return type per function, for all
-callers. For `pick_a` that is exact, so step 02's code already passed it. For
-`ident`, the return depends on the argument, and ty's answer is the
-parameter's declared type: `Unknown`. Your walk has `f = b` on this path, so
-`return f` returns `b`.
+**Why not keep ty's answer:** ty types a call by the callee's *annotated*
+return type, and never infers one from the body (ty's own tests:
+`mdtest/function/return_type.md`). None of these functions is annotated, so
+ty says `Unknown` for every call in the fixture, and only `nothing()` and
+`fail()` match by accident. And even an annotation is one type for all
+callers: for `ident`, the return depends on the argument. Your walk has
+`f = b` on this path, so `return f` returns `b`.
+
+This is also why steps 01–09 never relied on the value of a call: with ty's
+answer, it was `Unknown` for every unannotated project function.
 
 This is the first place where the env-first rule of step 03 pays: a value
 from a caller (`b`) goes in as an argument, comes back as a return, and is

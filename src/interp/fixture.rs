@@ -122,3 +122,13 @@ fn p01_08_varargs() {
 fn p01_09_branches() {
     check("01-functions/python/branches.py");
 }
+
+#[test]
+fn p01_10_returns() {
+    check("01-functions/python/returns.py");
+}
+
+#[test]
+fn p01_11_closures() {
+    check("01-functions/python/closures.py");
+}

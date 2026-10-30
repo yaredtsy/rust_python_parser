@@ -1,21 +1,22 @@
 use ruff_python_ast::name::Name;
 // src/interp/walk.rs
+use crate::interp::env::Env;
+use crate::interp::tree::Node;
+use crate::interp::value::AbstractValue::Unknown;
+use crate::interp::value::{AbstractValue, ActivationId, Values};
+use crate::sem::{Definition, Sem, SemanticModel};
+use ruff_index::IndexVec;
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
 use ruff_python_ast::{Expr, ExprCall, ExprRef, Pattern, Stmt};
 use ruff_text_size::Ranged;
 use smallvec::smallvec;
 use ty_python_core::ProgramFile;
 
-use crate::interp::env::Env;
-use crate::interp::tree::Node;
-use crate::interp::value::AbstractValue::Unknown;
-use crate::interp::value::{AbstractValue, Values};
-use crate::sem::{Definition, Sem, SemanticModel};
-
 pub struct Walk<'a, 'db> {
     pub sem: &'a Sem<'db>,
     pub frame: Frame<'db>,
     pub path: Vec<String>,
+    pub activations: IndexVec<ActivationId, Env<'db>>,
 }
 
 /// The body being walked now.
@@ -24,35 +25,85 @@ pub struct Frame<'db> {
     pub file: ProgramFile<'db>,
     pub model: SemanticModel<'db>,
     pub children: Vec<Node>,
-}
-impl<'db> Frame<'db> {
-    pub fn new(sem: &Sem<'db>, func: Definition<'db>) -> Self {
-        let file = func.program_file(sem.db);
-        Frame {
-            func,
-            file,
-            model: sem.model(file),
-            children: Vec::new(),
-        }
-    }
+    pub returns: Values<'db>,
+    pub act: ActivationId,
 }
 impl<'a, 'db> Walk<'a, 'db> {
     pub fn new(sem: &'a Sem<'db>, func: Definition<'db>) -> Self {
+        let mut activations = IndexVec::new();
+        let act = activations.push(Env::default());
+        let file = func.program_file(sem.db);
         Walk {
             sem,
-            frame: Frame::new(sem, func),
+            frame: Frame {
+                func,
+                file,
+                model: sem.model(file),
+                children: Vec::new(),
+                returns: Values::new(),
+                act,
+            },
             path: vec![],
+            activations,
+        }
+    }
+    pub fn new_frame(&mut self, func: Definition<'db>) -> Frame<'db> {
+        let act = self.activations.push(Env::default());
+        let file = func.program_file(self.sem.db);
+        Frame {
+            func,
+            file,
+            model: self.sem.model(file),
+            children: Vec::new(),
+            returns: Values::new(),
+            act,
         }
     }
 
-    pub fn walk_stmts(&mut self, body: &[Stmt], mut env: Env<'db>) -> Env<'db> {
+    pub fn walk_stmts(&mut self, body: &[Stmt], mut env: Env<'db>) -> Option<Env<'db>> {
         for stmt in body {
-            env = self.walk_stmt(stmt, env);
+            self.activations[self.frame.act] = env.clone(); // what closures read
+            env = self.walk_stmt(stmt, env)?;
         }
-        env
+        Some(env)
     }
-    fn walk_stmt(&mut self, stmt: &Stmt, mut env: Env<'db>) -> Env<'db> {
+    fn walk_stmt(&mut self, stmt: &Stmt, mut env: Env<'db>) -> Option<Env<'db>> {
         match stmt {
+            Stmt::Return(s) => {
+                let v = match &s.value {
+                    Some(e) => self.eval(e, &mut env),
+                    None => self.none_value(),
+                };
+                self.frame.returns.extend(v);
+                return None;
+            }
+            Stmt::Raise(s) => {
+                if let Some(e) = &s.exc {
+                    self.eval(e, &mut env);
+                }
+                if let Some(c) = &s.cause {
+                    self.eval(c, &mut env);
+                }
+                return None;
+            }
+            Stmt::FunctionDef(d) => {
+                for dec in &d.decorator_list {
+                    self.eval(&dec.expression, &mut env); // runs now, in this function
+                }
+                for p in d.parameters.iter_non_variadic_params() {
+                    if let Some(default) = p.default.as_deref() {
+                        self.eval(default, &mut env); // runs now: the `def` statement's calls
+                    }
+                }
+                let func = self.sem.definition_of(&self.frame.model, d);
+                env.bind(
+                    &d.name.id,
+                    smallvec![AbstractValue::Closure {
+                        func,
+                        activation: self.frame.act
+                    }],
+                );
+            }
             Stmt::Expr(s) => {
                 self.eval(&s.value, &mut env);
             }
@@ -60,8 +111,8 @@ impl<'a, 'db> Walk<'a, 'db> {
                 self.eval(&s.test, &mut env);
                 let before = env;
                 let body = self.walk_stmts(&s.body, before.clone());
-                let after = Env::join(vec![before, body]);
-                env = self.walk_stmts(&s.orelse, after);
+                let after = Env::join(vec![Some(before), body])?;
+                env = self.walk_stmts(&s.orelse, after)?;
             }
             Stmt::If(s) => {
                 let mut cond = env;
@@ -74,9 +125,9 @@ impl<'a, 'db> Walk<'a, 'db> {
                     arms.push(self.walk_stmts(&clause.body, cond.clone()));
                 }
                 if !s.elif_else_clauses.iter().any(|c| c.test.is_none()) {
-                    arms.push(cond); // no `else`: skipping is an arm
+                    arms.push(Some(cond)); // no `else`: skipping is an arm
                 }
-                env = Env::join(arms);
+                env = Env::join(arms)?;
             }
             Stmt::For(s) => {
                 self.eval(&s.iter, &mut env);
@@ -84,20 +135,23 @@ impl<'a, 'db> Walk<'a, 'db> {
                 let mut body_env = before.clone();
                 self.bind_from_ty(&s.target, &mut body_env); // the loop variable: ty's element type
                 let body = self.walk_stmts(&s.body, body_env);
-                let after = Env::join(vec![before, body]); // ran zero times, or ran
-                env = self.walk_stmts(&s.orelse, after);
+                let after = Env::join(vec![Some(before), body])?; // ran zero times, or ran
+                env = self.walk_stmts(&s.orelse, after)?;
             }
             Stmt::Try(s) => {
                 let before = env;
                 let body = self.walk_stmts(&s.body, before.clone());
-                let start = Env::join(vec![before, body.clone()]);
-                let mut arms = vec![self.walk_stmts(&s.orelse, body)];
+                let start = Env::join(vec![Some(before), body.clone()])?;
+                let mut arms = vec![match body {
+                    Some(b) => self.walk_stmts(&s.orelse, b),
+                    None => None,
+                }];
                 for h in &s.handlers {
                     let h = h.as_except_handler().unwrap();
                     arms.push(self.walk_stmts(&h.body, start.clone()));
                 }
-                let joined = Env::join(arms);
-                env = self.walk_stmts(&s.finalbody, joined);
+                let joined = Env::join(arms)?;
+                env = self.walk_stmts(&s.finalbody, joined)?;
             }
             Stmt::Match(s) => {
                 self.eval(&s.subject, &mut env);
@@ -113,8 +167,8 @@ impl<'a, 'db> Walk<'a, 'db> {
                     }
                     arms.push(self.walk_stmts(&case.body, arm));
                 }
-                arms.push(before); // no case matched
-                env = Env::join(arms);
+                arms.push(Some(before)); // no case matched
+                env = Env::join(arms)?;
             }
             Stmt::With(s) => {
                 for item in &s.items {
@@ -123,7 +177,7 @@ impl<'a, 'db> Walk<'a, 'db> {
                         self.bind_from_ty(target, &mut env);
                     }
                 }
-                env = self.walk_stmts(&s.body, env);
+                env = self.walk_stmts(&s.body, env)?;
             }
             Stmt::Import(s) => {
                 for alias in &s.names {
@@ -162,12 +216,32 @@ impl<'a, 'db> Walk<'a, 'db> {
                 }
             }
         }
-        env
+        Some(env)
+    }
+    /// A local of this run, else a free variable read from the run where the
+    /// `def` ran (never the caller's), else `None`: ty answers.
+    pub fn lookup(&self, env: &Env<'db>, name: &Name) -> Option<Values<'db>> {
+        if let Some(v) = env.get(name) {
+            return Some(v.clone());
+        }
+        let bound_in = self.sem.free_variable_scope(env.scope?, name.as_str())?;
+        let mut cur = env.enclosing;
+        while let Some(act) = cur {
+            let outer = &self.activations[act];
+            if outer.scope == Some(bound_in) {
+                return outer.get(name).cloned();
+            }
+            cur = outer.enclosing;
+        }
+        None
+    }
+    pub fn none_value(&self) -> Values<'db> {
+        self.lift(self.sem.none_type(self.frame.file))
     }
     pub fn eval(&mut self, expr: &Expr, env: &mut Env<'db>) -> Values<'db> {
         match expr {
-            Expr::Name(n) => match env.get(&n.id) {
-                Some(v) => v.clone(),
+            Expr::Name(n) => match self.lookup(env, &n.id) {
+                Some(v) => v,
                 None => {
                     let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));
                     self.lift(ty)
@@ -180,6 +254,7 @@ impl<'a, 'db> Walk<'a, 'db> {
                 v
             }
             Expr::Call(call) => self.eval_call(call, env),
+            Expr::Await(a) => self.eval(&a.value, env),
             Expr::Lambda(_) => smallvec![AbstractValue::Unknown],
             Expr::Attribute(a) => self.eval_attribute(a, env),
             other => {
@@ -281,4 +356,28 @@ fn pattern_names(pattern: &Pattern) -> Vec<&Name> {
     let mut names = Names(Vec::new());
     names.visit_pattern(pattern);
     names.0
+}
+
+/// Does `body` yield? Nested `def`, `class` and `lambda` are their own scopes.
+pub fn contains_yield(body: &[Stmt]) -> bool {
+    struct Finder(bool);
+    impl<'a> Visitor<'a> for Finder {
+        fn visit_stmt(&mut self, s: &'a Stmt) {
+            if !matches!(s, Stmt::FunctionDef(_) | Stmt::ClassDef(_)) {
+                walk_stmt(self, s);
+            }
+        }
+        fn visit_expr(&mut self, e: &'a Expr) {
+            match e {
+                Expr::Yield(_) | Expr::YieldFrom(_) => self.0 = true,
+                Expr::Lambda(_) => {}
+                _ => walk_expr(self, e),
+            }
+        }
+    }
+    let mut f = Finder(false);
+    for s in body {
+        f.visit_stmt(s);
+    }
+    f.0
 }

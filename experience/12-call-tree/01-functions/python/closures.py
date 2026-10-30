@@ -61,9 +61,18 @@ def two_runs():
 
 def setup():
     def handler(cb=pick()):  # the default runs here, when the def runs
-        cb()
+        cb()  # a: the value computed then. ty would say Unknown (pick is unannotated)
 
     handler()
+
+
+def entry_closure():
+    f = pick()  # a, from pick's return. ty can't know it
+
+    def inner():
+        f()  # found only if the entry's own run has its scope
+
+    inner()
 
 
 # expect:
@@ -96,4 +105,9 @@ def setup():
 # setup
 #   pick
 #   setup.handler
+#     a
+# expect:
+# entry_closure
+#   pick
+#   entry_closure.inner
 #     a

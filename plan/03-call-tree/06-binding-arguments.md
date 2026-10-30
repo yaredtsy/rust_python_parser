@@ -114,9 +114,16 @@ the walk that ran it already evaluated it and recorded its calls
 ([`05`](05-the-walk.md#straight-line-statements)). Binding never evaluates a
 call again. `default_value` is:
 
-- a module-level function: ty's type of the default expression, lifted;
-- a nested def: a name is read from the closure's defining activation
-  (`def inner(h=h)`); anything else is ty's type, lifted.
+- a module-level function: ty's type of the default expression, lifted. A
+  name is fine; a call is `Unknown`, because ty types a call by the callee's
+  *annotated* return type and never infers one (`mdtest/function/return_type.md`),
+  and the module body is not walked;
+- a nested def: the value the walk computed when the `def` statement ran.
+  The `def` arm evaluates each default anyway (for its calls), and keeps the
+  values with the closure, keyed by `(func, activation)`. A closure that
+  crosses a call carries them in `Fp::Closure` and `SVal::Closure`, like its
+  free values. This is Python's own rule (a default is evaluated once, when
+  the `def` runs), and it doesn't depend on ty's return types.
 
 Getting this backwards fails quietly: the caller's env misses the name, ty
 answers, and the bug hides until a caller shadows the name.

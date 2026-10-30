@@ -66,7 +66,8 @@ pub enum SVal<'db> {
     Ref(Path),                                // the caller's object at this path when the call started
     Obj(u16),                                 // objects[j]
     Bound   { func: Definition<'db>, recv: Box<SVal<'db>> },
-    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]> },
+    Closure { func: Definition<'db>, free: SmallVec<[(Name, SVals<'db>); 2]>,
+              defaults: SmallVec<[(Name, SVals<'db>); 2]> },   // values computed when its `def` ran (06)
 }
 pub type SVals<'db> = SmallVec<[SVal<'db>; 2]>;
 

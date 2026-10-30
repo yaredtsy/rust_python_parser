@@ -5,7 +5,7 @@ use ruff_python_ast::{
 use smallvec::{SmallVec, smallvec};
 
 use crate::interp::env::Env;
-use crate::interp::value::{AbstractValue, Values};
+use crate::interp::value::{AbstractValue, ActivationId, Values};
 use crate::interp::walk::Walk;
 use crate::sem::Name;
 
@@ -22,6 +22,19 @@ impl<'db> EvaluatedArgs<'db> {
             .iter()
             .find(|(n, _)| n.as_str() == name)
             .map(|(_, v)| v)
+    }
+    /// Python never passes "no value"; an empty slot binds as `Unknown`.
+    fn with_unknown_for_empty(&self) -> Self {
+        let fix = |v: &Values<'db>| if v.is_empty() { smallvec![AbstractValue::Unknown] } else { v.clone() };
+        EvaluatedArgs {
+            positional: self.positional.iter().map(fix).collect(),
+            keywords: self.keywords.iter().map(|(n, v)| (n.clone(), fix(v))).collect(),
+            has_splat: self.has_splat,
+        }
+    }
+    pub fn has_empty(&self) -> bool {
+        self.positional.iter().any(|v| v.is_empty())
+            || self.keywords.iter().any(|(_, v)| v.is_empty())
     }
 }
 
@@ -54,8 +67,10 @@ impl<'a, 'db> Walk<'a, 'db> {
         &mut self,
         def: &StmtFunctionDef,
         args: &EvaluatedArgs<'db>,
+        enclosing: Option<ActivationId>,
     ) -> Env<'db> {
         let mut env = Env::default();
+        let args = &args.with_unknown_for_empty();
         let mut positional = args.positional.iter();
         let params = &def.parameters;
         let unknown = || smallvec![AbstractValue::Unknown];
@@ -74,7 +89,7 @@ impl<'a, 'db> Walk<'a, 'db> {
                 .keyword(name)
                 .cloned()
                 .or_else(|| positional.next().cloned())
-                .or_else(|| self.default_value(p))
+                .or_else(|| self.default_value(p, enclosing))
                 .unwrap_or_else(|| smallvec![AbstractValue::Unknown]);
             env.bind(name, v);
         }
@@ -83,7 +98,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             let v = args
                 .keyword(name)
                 .cloned()
-                .or_else(|| self.default_value(p))
+                .or_else(|| self.default_value(p, enclosing))
                 .unwrap_or_else(|| smallvec![AbstractValue::Unknown]);
             env.bind(name, v);
         }
@@ -96,8 +111,18 @@ impl<'a, 'db> Walk<'a, 'db> {
         env
     }
 
-    fn default_value(&mut self, p: &ParameterWithDefault) -> Option<Values<'db>> {
+    fn default_value(
+        &mut self,
+        p: &ParameterWithDefault,
+        enclosing: Option<ActivationId>,
+    ) -> Option<Values<'db>> {
         let expr = p.default.as_deref()?;
+        // `def inner(h=h)`: a plain name is read from the closure's run.
+        if let (Expr::Name(n), Some(act)) = (expr, enclosing) {
+            if let Some(v) = self.activations[act].get(&n.id) {
+                return Some(v.clone());
+            }
+        }
         let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));
         Some(self.lift(ty))
     }

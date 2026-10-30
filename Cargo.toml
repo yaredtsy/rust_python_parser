@@ -12,6 +12,7 @@ edition = "2024"
 ruff_db = { path = "vendor/ruff/crates/ruff_db", default-features = false, features = [
     "os",
 ] }
+ruff_index = { path = "vendor/ruff/crates/ruff_index" }
 ruff_python_ast = { path = "vendor/ruff/crates/ruff_python_ast" }
 ruff_python_stdlib = { path = "vendor/ruff/crates/ruff_python_stdlib" }
 ruff_source_file = { path = "vendor/ruff/crates/ruff_source_file" }

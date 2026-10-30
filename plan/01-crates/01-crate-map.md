@@ -85,7 +85,7 @@ positions your wire format needs.** One per file, built once.
 | `ruff_python_codegen` | AST → source (reformats). You want its `Stylist` for line-ending/indent detection — see [`02-mapping/02`](../02-mapping/02-id-injection.md). |
 | `ruff_python_stdlib` | is-this-a-builtin lookups. Replaces your `BUILTIN_NAMES` set. |
 | `ruff_graph` | module-level import graph. Useful for scheduling/ordering work, not for call resolution. |
-| `ruff_index` | `newtype_index!` macro — typed `u32` indices. Use it for your own arenas. |
+| `ruff_index` | `#[newtype_index]` attribute on a unit struct — typed `u32` indices (derives `Copy, Eq, Hash, Debug, Idx`; add `Ord` yourself). Use it for your own arenas. |
 | `ty_vendored` | bundled typeshed. You get it transitively; know it exists when stdlib types resolve "magically". |
 | `ruff_notebook` | only if you need `.ipynb`. You don't. |
 

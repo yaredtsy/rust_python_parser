@@ -42,6 +42,11 @@ def setup():
     def handler(cb=pick()):   # pick is called here
         cb()
     handler()                 # pick, setup.handler > a
+
+def entry_closure():
+    f = pick()
+    def inner(): f()
+    inner()                   # pick, entry_closure.inner > a
 ```
 
 (`same_frame` is in the file too.)
@@ -66,10 +71,15 @@ Stmt::FunctionDef(d) => {
     for dec in &d.decorator_list {
         self.eval(&dec.expression, &mut env);         // runs now, in this function
     }
-    for default in parameter_defaults(&d.parameters) {
-        self.eval(default, &mut env);                 // runs now: `pick()` is setup's call
+    let mut defaults = Vec::new();
+    for p in d.parameters.iter_non_variadic_params() {
+        if let Some(default) = p.default.as_deref() {
+            let v = self.eval(default, &mut env);     // runs now: `pick()` is setup's call
+            defaults.push((p.parameter.name.id.clone(), v));   // and its value is kept (decision 6)
+        }
     }
     let func = self.sem.definition_of(&self.frame.model, d);
+    self.defaults.insert((func, self.frame.act), defaults);
     env.bind(&d.name.id, smallvec![AbstractValue::Closure { func, activation: self.frame.act }]);
 }
 ```
@@ -189,27 +199,51 @@ summary must not contain an `ActivationId`, since that number means nothing to
 any other walk. The closure has to carry its free values with it instead. You
 will build that in `02.07`, and this fixture is its test.
 
-### Decision 6: defaults of a nested def
+### Decision 6: a nested def's defaults are the values computed when the `def` ran
 
-A nested function's default is read the way step 07 reads one, with one
-addition. If the default is a plain name (`def inner(h=h)`, a common idiom to
-capture a loop variable), it is read from the closure's activation. Anything
-else is ty's type of the expression, lifted.
+Python evaluates a default once, when the `def` statement runs. Decision 1
+already evaluates it right there, for its calls. So keep the value:
 
-That reads the activation when the closure is *called*, while Python
-evaluated the default when the `def` ran. They differ only if the name is
-rebound in between. That is a known approximation, kept because it needs no
-extra state.
+```rust
+// in Walk
+pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
+```
+
+When a closure `Closure { func, activation }` is called, `bind_parameters`
+takes a missing argument's value from `defaults[(func, activation)]`. Only a
+module-level function falls back to step 07's rule (ty's type of the default
+expression), because the module body is not walked.
+
+**Why not ask ty, as step 07 does:** ty types a call by the callee's
+*annotated* return type, and never infers one from the body (ty's own tests:
+`mdtest/function/return_type.md`). `def handler(cb=pick())` with an
+unannotated `pick` would be `Unknown` for ty, and `handler`'s `cb()` would lose
+its edge. Your walk has already computed `pick()`'s value on this path.
+
+**Why keyed by the activation:** two runs of `setup` evaluate the default
+twice, possibly to different values; each run's `handler` closure must use its
+own. That is also exactly Python: a default is bound to the function object
+the `def` made, once.
+
+`def inner(h=h)` (the idiom that captures a loop variable's current value)
+works for the same reason: `h` is read when the `def` runs, not when `inner`
+is called.
 
 ### Yours
 
 - `ruff_index` in `Cargo.toml` (`{ path = "vendor/ruff/crates/ruff_index" }`)
-  for `IndexVec`, and an `ActivationId` newtype with `newtype_index!`.
+  for `IndexVec`, and an `ActivationId` made with ruff's `#[newtype_index]`.
+  It is an **attribute**, not a `macro!{}`: put it on a unit struct, as in the
+  reference below. It derives `Copy`, `Clone`, `Eq`, `PartialEq`, `Hash` and
+  `Debug`, and `Idx` (what `IndexVec` needs), but not `Ord`: add
+  `#[derive(Ord, PartialOrd)]` when you need to sort ids, as ty does.
 - `sem.definition_of(model, def_stmt)`, `sem.body_scope(def)`,
   `sem.free_variable_scope(scope, name)`.
-- `Closure`, `activations`, `Frame.act`, `Env.scope`, `Env.enclosing`.
-- The `FunctionDef` arm, `lookup`, and closures in `eval_call` and
-  `call_function`.
+- `Closure`, `activations`, `Frame.act`, `Env.scope`, `Env.enclosing`,
+  `Walk.defaults`.
+- The `FunctionDef` arm (keeping the defaults' values), `lookup`, closures in
+  `eval_call` and `call_function`, and `default_value` for closures.
+- `call_tree` starting the entry like a call: parameters bound, scope set.
 
 <details><summary>Reference: this step's code</summary>
 
@@ -263,9 +297,10 @@ impl<'db> Sem<'db> {
 
 ```rust
 // src/interp/walk.rs (changed parts)
-ruff_index::newtype_index! {
-    pub struct ActivationId;
-}
+use ruff_index::{IndexVec, newtype_index};
+
+#[newtype_index]
+pub struct ActivationId;
 
 pub struct Walk<'a, 'db> {
     pub sem: &'a Sem<'db>,
@@ -296,14 +331,39 @@ for callee in &callees {
 }
 
 // in call_function(def, enclosing, site, args), after switching frames:
-let mut env = self.bind_parameters(node, args, enclosing);
-env.scope = self.sem.body_scope(def, node);
+let mut env = self.bind_parameters(def, node, args, enclosing);   // defaults[(def, enclosing)]
+env.scope = Some(self.sem.body_scope(def, node));
 env.enclosing = enclosing;
 ```
 
-`Env::default()` needs a `scope`; give `BodyScope` a placeholder or make
-`Env::new(scope, enclosing)` the only constructor. Joins keep the first arm's
-`scope` and `enclosing`: every arm is the same run.
+```rust
+// src/interp/bind.rs: a missing argument's default
+fn default_value(&mut self, func: Definition<'db>, enclosing: Option<ActivationId>,
+                 p: &ParameterWithDefault) -> Option<Values<'db>> {
+    let expr = p.default.as_deref()?;
+    if let Some(act) = enclosing {
+        // a nested def: the value computed when its `def` ran
+        return self.defaults.get(&(func, act))?
+            .iter().find(|(n, _)| *n == p.parameter.name.id).map(|(_, v)| v.clone());
+    }
+    let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));   // module level: step 07
+    Some(self.lift(ty))
+}
+```
+
+**The entry needs the same start as a call.** `call_tree` must start the
+entry's walk exactly the way `call_function` starts a callee: bind the
+parameters (no arguments, so each is its default or `Unknown`) and set
+`env.scope` to the entry's body scope. If the entry's env has no scope, a
+closure defined in the entry finds the entry's activation but can't match its
+scope, so `lookup` falls through to ty. ty knows simple cases (`f = a`), which
+hides the bug; `entry_closure` in the fixture is the case it doesn't know.
+The simplest way to get this right is to make `call_tree` use the same
+function as a call does, for the entry.
+
+`Env::default()` with `scope: None` is fine for blocks inside a run (they
+inherit it), never for the start of one. Joins keep the first arm's `scope`
+and `enclosing`: every arm is the same run.
 
 </details>
 

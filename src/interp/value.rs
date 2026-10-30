@@ -1,13 +1,22 @@
 use crate::{interp::walk::Walk, sem::Shape};
+use ruff_index::newtype_index;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use ty_python_core::definition::Definition;
 use ty_python_semantic::types::Type;
 // src/interp/value.rs
+/// One run of a function body inside the walk. Walk-local: never leaves a summary.
+#[newtype_index]
+pub struct ActivationId;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum AbstractValue<'db> {
     Function(Definition<'db>), // a def: something you can walk
-    Ty(Type<'db>),             // ty's answer, for everything you don't model
+    Closure {
+        func: Definition<'db>,
+        activation: ActivationId, // the run whose `def` statement made it
+    },
+    Ty(Type<'db>), // ty's answer, for everything you don't model
     Module(Type<'db>),
     Unknown, // nothing known
 }

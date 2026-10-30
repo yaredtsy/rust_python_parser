@@ -28,7 +28,8 @@ pub enum Fp<'db> {
     Class(Definition<'db>),
     Module(Type<'db>),
     Bound    { func: Definition<'db>, recv: FpId },                   // a bound method
-    Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]> },
+    Closure  { func: Definition<'db>, free: SmallVec<[(Name, FpId); 2]>,
+               defaults: SmallVec<[(Name, FpId); 2]> },   // values computed when its `def` ran
     Back(u8),                                   // "the closure k levels up": a closure that captures itself
     Instance { class: Definition<'db>, attrs: SmallVec<[(Name, FpId); 4]> },   // attrs sorted by name
     Opaque(Definition<'db>),                    // an object: class known, attributes not in the key
@@ -47,7 +48,7 @@ object, or where it was built:
 | `3`, `"x"`, `[1, 2]` | `Data(int)`, `Data(str)`, `Data(list[int])` |
 | a function, class or module | itself |
 | `obj.method` | `Bound { func, recv: <obj's fingerprint> }` |
-| a closure | `Closure { func, free }`, its captured values fingerprinted |
+| a closure | `Closure { func, free, defaults }`, its captured values and its defaults fingerprinted |
 | nothing known | `Unknown` |
 
 Three more rules decide what goes in:

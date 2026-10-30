@@ -89,7 +89,7 @@ the env and join it ([`06`](06-the-env.md)).
 
 1. **Join the exits**: one exit env.
 2. **Returns**: each value converted to an `SVal`: an input object → `Ref(path)`,
-   an object built here → `Obj(j)`, a closure → `Closure { func, free }`,
+   an object built here → `Obj(j)`, a closure → `Closure { func, free, defaults }`,
    anything else → `Plain(..)` ([`09`](09-the-four-conversions.md)).
 3. **Effects**: read off the exit env's `written` set. A write to an input object
    becomes an `Effect` at its path; `strong` if written on every path.

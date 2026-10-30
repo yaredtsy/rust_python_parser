@@ -133,6 +133,13 @@ reading the default from the caller's env would pick it up, and the tree would
 show a call Python never makes. Nested defs, whose defaults can read the
 enclosing function's locals, are step 11.
 
+**A limit worth knowing:** ty types a call by the callee's *annotated* return
+type, never by what its body returns (ty's own tests say so:
+`mdtest/function/return_type.md`). So a module-level default that is a call,
+`def f(h=make())` with `make` unannotated, is `Unknown` here. A name, like
+`fallback`, is fine. The module body is not walked, so there is no better
+value to use. Nested defs don't have this problem (step 11).
+
 ### Decision 4: a parameter with no value is `Unknown`, and the call still shows
 
 `missing()` binds `cb = Unknown`. `cb()` gives no edge, and the `missing` node
