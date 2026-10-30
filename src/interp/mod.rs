@@ -45,7 +45,9 @@ pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options)
     let mut walk = Walk::new(&sem, def);
     let qname = sem.qname(def);
     walk.path.push(qname.clone());
-    walk.walk_stmts(&node.body, Env::default());
+    let mut env = walk.bind_parameters(def, node, &bind::EvaluatedArgs::default(), None);
+    env.scope = Some(sem.body_scope(def, node));
+    walk.walk_stmts(&node.body, env);
 
     let mut root = Node::root(sem.qname(def));
     root.children = walk.frame.children;

@@ -7,7 +7,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::interp::env::Env;
 use crate::interp::value::{AbstractValue, ActivationId, Values};
 use crate::interp::walk::Walk;
-use crate::sem::Name;
+use crate::sem::{Definition, Name};
 
 #[derive(Clone, Default)]
 pub struct EvaluatedArgs<'db> {
@@ -65,6 +65,7 @@ impl<'a, 'db> Walk<'a, 'db> {
     /// The callee's starting env. Must run with the callee's frame active.
     pub fn bind_parameters(
         &mut self,
+        func: Definition<'db>,
         def: &StmtFunctionDef,
         args: &EvaluatedArgs<'db>,
         enclosing: Option<ActivationId>,
@@ -89,7 +90,7 @@ impl<'a, 'db> Walk<'a, 'db> {
                 .keyword(name)
                 .cloned()
                 .or_else(|| positional.next().cloned())
-                .or_else(|| self.default_value(p, enclosing))
+                .or_else(|| self.default_value(func, enclosing, p))
                 .unwrap_or_else(|| smallvec![AbstractValue::Unknown]);
             env.bind(name, v);
         }
@@ -98,7 +99,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             let v = args
                 .keyword(name)
                 .cloned()
-                .or_else(|| self.default_value(p, enclosing))
+                .or_else(|| self.default_value(func, enclosing, p))
                 .unwrap_or_else(|| smallvec![AbstractValue::Unknown]);
             env.bind(name, v);
         }
@@ -113,15 +114,19 @@ impl<'a, 'db> Walk<'a, 'db> {
 
     fn default_value(
         &mut self,
-        p: &ParameterWithDefault,
+        func: Definition<'db>,
         enclosing: Option<ActivationId>,
+        p: &ParameterWithDefault,
     ) -> Option<Values<'db>> {
         let expr = p.default.as_deref()?;
-        // `def inner(h=h)`: a plain name is read from the closure's run.
-        if let (Expr::Name(n), Some(act)) = (expr, enclosing) {
-            if let Some(v) = self.activations[act].get(&n.id) {
-                return Some(v.clone());
-            }
+        if let Some(act) = enclosing {
+            // a nested def: the value computed when its `def` ran
+            return self
+                .defaults
+                .get(&(func, act))?
+                .iter()
+                .find(|(n, _)| *n == p.parameter.name.id)
+                .map(|(_, v)| v.clone());
         }
         let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));
         Some(self.lift(ty))

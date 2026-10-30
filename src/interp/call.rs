@@ -68,7 +68,7 @@ impl<'a, 'db> Walk<'a, 'db> {
 
         let new = self.new_frame(def);
         let caller = std::mem::replace(&mut self.frame, new);
-        let mut env = self.bind_parameters(node, args, enclosing);
+        let mut env = self.bind_parameters(def, node, args, enclosing);
         env.scope = Some(self.sem.body_scope(def, node));
         env.enclosing = enclosing;
         if self.walk_stmts(&node.body, env).is_some() {

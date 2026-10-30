@@ -1,4 +1,5 @@
 use ruff_python_ast::name::Name;
+use rustc_hash::FxHashMap;
 // src/interp/walk.rs
 use crate::interp::env::Env;
 use crate::interp::tree::Node;
@@ -17,6 +18,8 @@ pub struct Walk<'a, 'db> {
     pub frame: Frame<'db>,
     pub path: Vec<String>,
     pub activations: IndexVec<ActivationId, Env<'db>>,
+    /// A nested def's defaults, as computed when its `def` ran. Per run.
+    pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
 }
 
 /// The body being walked now.
@@ -45,6 +48,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             },
             path: vec![],
             activations,
+            defaults: FxHashMap::default(),
         }
     }
     pub fn new_frame(&mut self, func: Definition<'db>) -> Frame<'db> {
@@ -90,12 +94,15 @@ impl<'a, 'db> Walk<'a, 'db> {
                 for dec in &d.decorator_list {
                     self.eval(&dec.expression, &mut env); // runs now, in this function
                 }
+                let mut defaults = Vec::new();
                 for p in d.parameters.iter_non_variadic_params() {
                     if let Some(default) = p.default.as_deref() {
-                        self.eval(default, &mut env); // runs now: the `def` statement's calls
+                        let v = self.eval(default, &mut env); // runs now: the `def` statement's calls
+                        defaults.push((p.parameter.name.id.clone(), v)); // and its value is kept
                     }
                 }
                 let func = self.sem.definition_of(&self.frame.model, d);
+                self.defaults.insert((func, self.frame.act), defaults);
                 env.bind(
                     &d.name.id,
                     smallvec![AbstractValue::Closure {
