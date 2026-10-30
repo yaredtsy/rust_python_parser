@@ -1,6 +1,7 @@
 use ruff_python_ast::name::Name;
 use rustc_hash::FxHashMap;
 // src/interp/walk.rs
+use crate::interp::Stats;
 use crate::interp::env::Env;
 use crate::interp::tree::Node;
 use crate::interp::value::AbstractValue::Unknown;
@@ -20,6 +21,7 @@ pub struct Walk<'a, 'db> {
     pub activations: IndexVec<ActivationId, Env<'db>>,
     /// A nested def's defaults, as computed when its `def` ran. Per run.
     pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
+    pub stats: Stats,
 }
 
 /// The body being walked now.
@@ -49,6 +51,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             path: vec![],
             activations,
             defaults: FxHashMap::default(),
+            stats: Stats::default(),
         }
     }
     pub fn new_frame(&mut self, func: Definition<'db>) -> Frame<'db> {

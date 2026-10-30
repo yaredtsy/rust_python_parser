@@ -24,6 +24,11 @@ pub enum Mode {
     Inline,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Stats {
+    pub walks: u32, // bodies walked, the entry included
+    pub nodes: u32, // tree nodes produced
+}
 #[derive(Clone, Debug)]
 pub struct Options {
     pub mode: Mode,
@@ -37,7 +42,12 @@ impl Default for Options {
 
 /// The call tree under `entry`, a function in `file`. `None` when there is no
 /// such function.
-pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options) -> Option<Node> {
+pub fn call_tree(
+    db: &ProjectDatabase,
+    file: File,
+    entry: &str,
+    _opts: &Options,
+) -> Option<(Node, Stats)> {
     let sem = Sem::new(db);
     let def = sem.entry(file, entry)?;
     let parsed = sem.parsed(def);
@@ -45,11 +55,12 @@ pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, _opts: &Options)
     let mut walk = Walk::new(&sem, def);
     let qname = sem.qname(def);
     walk.path.push(qname.clone());
+    walk.stats.walks += 1; // the entry
     let mut env = walk.bind_parameters(def, node, &bind::EvaluatedArgs::default(), None);
     env.scope = Some(sem.body_scope(def, node));
     walk.walk_stmts(&node.body, env);
 
     let mut root = Node::root(sem.qname(def));
     root.children = walk.frame.children;
-    Some(root)
+    Some((root, walk.stats))
 }

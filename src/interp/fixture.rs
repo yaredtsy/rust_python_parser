@@ -2,7 +2,7 @@
 use ruff_db::system::SystemPath;
 
 use crate::db::{open, open_project};
-use crate::interp::{Options, call_tree, to_text};
+use crate::interp::{Options, Stats, call_tree, to_text};
 
 pub struct Expect {
     pub entry: String,
@@ -38,6 +38,15 @@ pub fn expectations(source: &str) -> Vec<Expect> {
     out
 }
 
+/// The stats of one entry in `fixture`, opened the way `check` does.
+pub fn stats_for(fixture: &str, entry: &str, opts: &Options) -> Stats {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    call_tree(&db, file, entry, opts).unwrap().1
+}
+
 /// Run every block in `fixture` (relative to experience/12-call-tree).
 pub fn check(fixture: &str) {
     let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
@@ -53,7 +62,7 @@ pub fn check(fixture: &str) {
 
     for e in blocks {
         let got = call_tree(&db, file, &e.entry, &Options::default())
-            .map(|t| to_text(&t, module))
+            .map(|(t, _)| to_text(&t, module))
             .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
         println!("--- {fixture}: \n{got} {}\n", e.tree);
 
@@ -136,4 +145,11 @@ fn p01_11_closures() {
 #[test]
 fn p01_12_callbacks() {
     check("01-functions/python/callbacks.py");
+}
+#[test]
+fn p01_13_wall() {
+    check("01-functions/python/wall.py");
+    let stats = stats_for("01-functions/python/wall.py", "main", &Options::default());
+    assert_eq!(stats.walks, 15);
+    assert_eq!(stats.nodes, 14);
 }

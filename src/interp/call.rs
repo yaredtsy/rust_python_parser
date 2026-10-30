@@ -56,6 +56,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             let mut node = Node::call(qname, site);
             node.marks.push(Mark::Recursive);
             self.frame.children.push(node);
+            self.stats.nodes += 1;
             return smallvec![AbstractValue::Unknown];
         }
 
@@ -65,6 +66,7 @@ impl<'a, 'db> Walk<'a, 'db> {
         };
         let runs = !args.has_empty();
         self.path.push(qname.clone());
+        self.stats.walks += 1;
 
         let new = self.new_frame(def);
         let caller = std::mem::replace(&mut self.frame, new);
@@ -84,6 +86,7 @@ impl<'a, 'db> Walk<'a, 'db> {
             marks: Vec::new(),
             children: callee.children,
         });
+        self.stats.nodes += 1;
         if !runs {
             Values::new() // Python never makes this call
         } else if contains_yield(&node.body) {
