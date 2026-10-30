@@ -18,7 +18,7 @@ pub struct Solver<'db> {
     slots:    IndexVec<ContextId, Slot<'db>>,
     stack:    Vec<ContextId>,                 // contexts whose walk is in progress
     heads:    UnionFind<ContextId>,           // group heads; merging groups unions them
-    fixpoint: Option<Fixpoint>,               // the group currently in its fixpoint, if any
+    fixpoint: Option<Fixpoint>,               // the innermost group in its fixpoint. resolve_group saves the outer one
     per_func: FxHashMap<Definition<'db>, u32>,   // contexts created this request, for the cost limit
     stats:    Stats,
 }
@@ -80,6 +80,7 @@ pub fn get(&mut self, ctx: ContextId) -> Got<'db> {
         let head = self.heads.find(self.stack[lowest]);
         self.park(ctx, w, head);                         // a group it joined merges into `head` too
         self.reader_depends_on(lowest);
+        if let Some(j) = joins { self.reader_joins(j) }  // `joins` is inherited, like `lowest`
         return Got::Pending;
     }
     if let Some(head) = joins {
@@ -89,9 +90,10 @@ pub fn get(&mut self, ctx: ContextId) -> Got<'db> {
     }
     if lowest == depth {
         // ctx is the head of a cycle.
-        if let Merged(d) = self.resolve_group(ctx, w) {  // the group turned out to be part of a bigger one
-            self.reader_depends_on(d);
-            return Got::Pending;
+        match self.resolve_group(ctx, w) {
+            Done => {}
+            Merged(d) => { self.reader_depends_on(d); return Got::Pending }   // part of a bigger cycle
+            Joined(_) => return self.read_group_member(ctx),                 // its replay reached an outer fixpoint
         }
     } else {
         self.finish_alone(ctx, w);                       // no cycle: Ready, or Cut
@@ -107,11 +109,23 @@ fn read_group_member(&mut self, ctx: ContextId) -> Got<'db> {
         // The head's walk is still on the stack: the reader is in that cycle.
         State::Running { depth } => { self.reader_depends_on(depth); Got::Pending }
         // The group is in its fixpoint.
-        _ if self.reader_is_fixpoint() => Got::Ready(self.slots[ctx].current()),   // an operation reads a member
-        _ => { self.reader_joins(head); Got::Pending }                            // a new walk reaches the group
+        _ if self.reader_is_fixpoint_of(head) => Got::Ready(self.slots[ctx].current()),   // its own group's operation
+        _ => { self.reader_joins(head); Got::Pending }   // a new walk, or a fixpoint nested inside this one
     }
 }
 ```
+
+`park(ctx, w, head)` keeps the walk, unions `ctx` into `head` in `heads` (so
+whatever parked under `ctx` follows it), and computes the round-0 summary as
+`current` if the slot has none: a joining context is read by the replay at
+once, before `resolving_from_round0` runs at the end of the round.
+
+`reader_is_fixpoint_of(head)` is true only when the stack is at the current
+fixpoint's `base` **and** that fixpoint's head is `head`. A fixpoint can start
+inside an operation of another (a context first reached in the outer one is
+the head of its own cycle); if the inner one's replay reads the outer group,
+that is a new reader reaching the group, and the inner group joins the outer
+one, whole (`Resolved::Joined`).
 
 `reader_depends_on(d)`, `reader_joins(head)`, `reader_read_cut(c)` and
 `pass_cut_up(ctx)` update the reader: the slot on top of the stack, or the
@@ -125,10 +139,11 @@ fn resolve_group(&mut self, head: ContextId, head_walk: Walk<'db>) -> Resolved {
     self.park(head, head_walk, head);
     let mut members = self.take_parked(head);            // every slot parked under head, in walk-end order
     for m in &members { self.slots[*m].resolving_from_round0() }   // state Resolving, current = round-0 summary
-    self.fixpoint = Some(Fixpoint { head, base: self.stack.len(), lowest: usize::MAX });
+    // Fixpoints nest like calls: save the outer one, restore it on every exit.
+    let outer = self.fixpoint.replace(Fixpoint { head, base: self.stack.len(), lowest: usize::MAX, joins: None });
 
     let mut round = 0;
-    loop {
+    let resolved = 'rounds: loop {
         round += 1;
         let capped = round > self.limits.max_rounds;
         let mut changed = false;
@@ -136,23 +151,33 @@ fn resolve_group(&mut self, head: ContextId, head_walk: Walk<'db>) -> Resolved {
             let next = replay(self, m, capped);           // the member's deferred ops, then finish()
             if let Some(d) = self.fixpoint_lowest() {     // reached a context running further down
                 self.park_all(&members, self.stack[d]);   // keep walks and current summaries
-                self.fixpoint = None;
-                return Resolved::Merged(d);
+                break 'rounds Resolved::Merged(d);
             }
-            changed |= self.slots[m].set_current(next);   // compares returns, effects, objects
+            if let Some(g) = self.fixpoint_joins() {      // reached an outer group in its fixpoint
+                self.park_all(&members, g);
+                break 'rounds Resolved::Joined(g);
+            }
+            changed |= self.slots[m].set_current(next);   // compares returns, effects, objects, as sets
         }
         let joined = self.take_parked(head);              // contexts first walked this round that joined
         changed |= !joined.is_empty();
         for j in &joined { self.slots[*j].resolving_from_round0() }
         members.extend(joined);
         self.stats.contexts_per_round.push(self.contexts_created_since_last_round());
-        if !changed || capped { break }
-    }
-    self.fixpoint = None;
-    self.settle(&members, /* gaps: */ if round > self.limits.max_rounds { Gaps::CYCLE } else { Gaps::empty() });
-    Resolved::Done
+        if !changed || capped {
+            self.settle(&members, /* gaps: */ if capped { Gaps::CYCLE } else { Gaps::empty() });
+            break Resolved::Done;
+        }
+    };
+    self.fixpoint = outer;
+    resolved
 }
 ```
+
+In debug builds, `settle` asserts that every member's `Apply` targets are in
+its group, and `finish_alone` that its walk has no deferred operations. Every
+`Pending` answer puts the reader into the target's group, so either assertion
+firing means a summary became final while it waited on something unfinished.
 
 `settle` stores each member's last summary as its result: `State::Ready`, or
 `State::Cut` for every member if any of them read a cut result.

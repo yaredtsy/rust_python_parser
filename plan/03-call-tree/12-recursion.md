@@ -98,6 +98,16 @@ Two more cases, both found during the fixpoint:
   into the cycle, so it is part of it. It gets `Pending` for that call, parks
   under the group's head when its walk ends, and joins the fixpoint as a member.
   Its body is walked once, like every other member's.
+- **Joining is inherited.** A walk can reach the resolving group and, in the
+  same walk, a context still running above it. It parks under that context,
+  which inherits its `joins` as well as its `lowest`, so the whole small cycle
+  joins. Otherwise that context would resolve its cycle on the spot, from the
+  group's unfinished summaries, and cache the wrong answer.
+- **Nested fixpoints.** A context first reached during the fixpoint can be the
+  head of its own cycle, resolved right there: a fixpoint inside one operation
+  of another. The outer fixpoint is saved and restored around it. If the
+  inner fixpoint's replay reads the outer group, it is a new reader, not one
+  of the outer group's operations: the inner group joins the outer one, whole.
 - **Merging.** If a walk or an operation during the fixpoint reaches a context
   still running further down the stack, this group is part of a bigger cycle.
   It can't finish now. The fixpoint stops, every member parks under the outer
@@ -186,8 +196,14 @@ Inside a group, every call from one member to another returns a pending value,
 whichever member was entered first. A context first reached during the fixpoint
 sees the same thing: the member it calls is resolving, so it gets `Pending`. So
 each member's walk is the same for every entry point. The fixpoint is the least
-solution of the same equations, and with values that only grow, the order of the
-rounds doesn't change it. So `Finished` and `CYCLE` summaries are safe to reuse.
+solution of the same equations, and the order of the rounds doesn't change it.
+Values can drop for a round (a late joiner restarts from round 0, a nested
+group joins with its own rounds' values), but they never go above that
+solution: everything starts empty, operations are monotone, and an unfinished
+summary is at most its final value. So after n more rounds each value is
+between n rounds from empty and the solution, a round that changes nothing is
+a solution, and one no bigger than the least solution is it. So `Finished`
+and `CYCLE` summaries are safe to reuse.
 The no-reuse check tests it on every fixture
 ([`15`](15-checks-and-build-order.md#no-reuse-mode)).
 
