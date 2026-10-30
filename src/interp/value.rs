@@ -1,4 +1,7 @@
-use crate::{interp::walk::Walk, sem::Shape};
+use crate::{
+    interp::{solver::Solver, walk::Walk},
+    sem::Shape,
+};
 use ruff_index::newtype_index;
 use smallvec::SmallVec;
 use smallvec::smallvec;
@@ -35,12 +38,12 @@ pub fn dedup(vals: &mut Values<'_>) {
         }
     });
 }
-impl<'a, 'db> Walk<'a, 'db> {
-    pub fn lift(&self, ty: Type<'db>) -> Values<'db> {
-        match self.sem.shape(ty, self.frame.file) {
+impl<'db> Walk<'db> {
+    pub fn lift(&self, sol: &Solver<'db>, ty: Type<'db>) -> Values<'db> {
+        match sol.sem.shape(ty, self.frame.file) {
             Shape::Module => smallvec![AbstractValue::Module(ty)],
             Shape::Function(d) => smallvec![AbstractValue::Function(d)],
-            Shape::Union(members) => members.into_iter().flat_map(|t| self.lift(t)).collect(),
+            Shape::Union(members) => members.into_iter().flat_map(|t| self.lift(sol, t)).collect(),
             Shape::Unknown => smallvec![AbstractValue::Unknown],
             Shape::Other => smallvec![AbstractValue::Ty(ty)],
         }

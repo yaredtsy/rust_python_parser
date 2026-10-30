@@ -95,3 +95,11 @@ pub fn instance_of<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type
     let class = ty.to_class_type(db)?;
     Some(Type::instance(db, env, class))
 }
+
+/// A literal's class: `Literal[3]` is `int`, `Literal["x"]` is `str`. Non-literals come back unchanged.
+///
+/// Added for the call-tree key: the walker never reads a literal's value, so
+/// two calls that differ only in a literal share one key.
+pub fn widen<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Type<'db> {
+    ty.promote(db, env)
+}

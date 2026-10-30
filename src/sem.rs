@@ -103,6 +103,11 @@ impl<'db> Sem<'db> {
         let env = ProgramEnvironment::from_file(file);
         vnoc::member(self.db, &env, ty, name)
     }
+    /// A literal's class (`Literal[3]` is `int`); anything else unchanged.
+    pub fn widen(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Type<'db> {
+        let env = ProgramEnvironment::from_file(file);
+        vnoc::widen(self.db, &env, ty)
+    }
     pub fn type_of_import(&self, model: &SemanticModel<'db>, alias: &Alias) -> Type<'db> {
         alias.inferred_type(model).unwrap_or(Type::unknown())
     }

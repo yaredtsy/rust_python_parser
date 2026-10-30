@@ -1,27 +1,25 @@
 use ruff_python_ast::name::Name;
 use rustc_hash::FxHashMap;
 // src/interp/walk.rs
-use crate::interp::Stats;
+use crate::interp::solver::Solver;
+use crate::interp::summary::CallEdge;
 use crate::interp::env::Env;
 use crate::interp::tree::Node;
 use crate::interp::value::AbstractValue::Unknown;
 use crate::interp::value::{AbstractValue, ActivationId, Values};
-use crate::sem::{Definition, Sem, SemanticModel};
+use crate::sem::{Definition, SemanticModel};
 use ruff_index::IndexVec;
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
 use ruff_python_ast::{Expr, ExprCall, ExprRef, Pattern, Stmt};
-use ruff_text_size::Ranged;
+use ruff_text_size::TextSize;
 use smallvec::smallvec;
 use ty_python_core::ProgramFile;
 
-pub struct Walk<'a, 'db> {
-    pub sem: &'a Sem<'db>,
+pub struct Walk<'db> {
     pub frame: Frame<'db>,
-    pub path: Vec<String>,
     pub activations: IndexVec<ActivationId, Env<'db>>,
     /// A nested def's defaults, as computed when its `def` ran. Per run.
     pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
-    pub stats: Stats,
 }
 
 /// The body being walked now.
@@ -31,80 +29,78 @@ pub struct Frame<'db> {
     pub model: SemanticModel<'db>,
     pub children: Vec<Node>,
     pub returns: Values<'db>,
+    pub calls: Vec<CallEdge>, // one per call site with a project callee
+    pub def_start: TextSize,       // where this `def` starts: sites are relative to it
     pub act: ActivationId,
 }
-impl<'a, 'db> Walk<'a, 'db> {
-    pub fn new(sem: &'a Sem<'db>, func: Definition<'db>) -> Self {
+
+fn frame_for<'db>(sol: &Solver<'db>, func: Definition<'db>, act: ActivationId) -> Frame<'db> {
+    let file = func.program_file(sol.sem.db);
+    Frame {
+        func,
+        file,
+        model: sol.sem.model(file),
+        children: Vec::new(),
+        returns: Values::new(),
+        calls: Vec::new(),
+        def_start: sol.sem.def_position(func).1,
+        act,
+    }
+}
+
+impl<'db> Walk<'db> {
+    pub fn new(sol: &Solver<'db>, func: Definition<'db>) -> Self {
         let mut activations = IndexVec::new();
         let act = activations.push(Env::default());
-        let file = func.program_file(sem.db);
         Walk {
-            sem,
-            frame: Frame {
-                func,
-                file,
-                model: sem.model(file),
-                children: Vec::new(),
-                returns: Values::new(),
-                act,
-            },
-            path: vec![],
+            frame: frame_for(sol, func, act),
             activations,
             defaults: FxHashMap::default(),
-            stats: Stats::default(),
         }
     }
-    pub fn new_frame(&mut self, func: Definition<'db>) -> Frame<'db> {
+    pub fn new_frame(&mut self, sol: &Solver<'db>, func: Definition<'db>) -> Frame<'db> {
         let act = self.activations.push(Env::default());
-        let file = func.program_file(self.sem.db);
-        Frame {
-            func,
-            file,
-            model: self.sem.model(file),
-            children: Vec::new(),
-            returns: Values::new(),
-            act,
-        }
+        frame_for(sol, func, act)
     }
 
-    pub fn walk_stmts(&mut self, body: &[Stmt], mut env: Env<'db>) -> Option<Env<'db>> {
+    pub fn walk_stmts(&mut self, sol: &mut Solver<'db>, body: &[Stmt], mut env: Env<'db>) -> Option<Env<'db>> {
         for stmt in body {
             self.activations[self.frame.act] = env.clone(); // what closures read
-            env = self.walk_stmt(stmt, env)?;
+            env = self.walk_stmt(sol, stmt, env)?;
         }
         Some(env)
     }
-    fn walk_stmt(&mut self, stmt: &Stmt, mut env: Env<'db>) -> Option<Env<'db>> {
+    fn walk_stmt(&mut self, sol: &mut Solver<'db>, stmt: &Stmt, mut env: Env<'db>) -> Option<Env<'db>> {
         match stmt {
             Stmt::Return(s) => {
                 let v = match &s.value {
-                    Some(e) => self.eval(e, &mut env),
-                    None => self.none_value(),
+                    Some(e) => self.eval(sol, e, &mut env),
+                    None => self.none_value(sol),
                 };
                 self.frame.returns.extend(v);
                 return None;
             }
             Stmt::Raise(s) => {
                 if let Some(e) = &s.exc {
-                    self.eval(e, &mut env);
+                    self.eval(sol, e, &mut env);
                 }
                 if let Some(c) = &s.cause {
-                    self.eval(c, &mut env);
+                    self.eval(sol, c, &mut env);
                 }
                 return None;
             }
             Stmt::FunctionDef(d) => {
                 for dec in &d.decorator_list {
-                    self.eval(&dec.expression, &mut env); // runs now, in this function
+                    self.eval(sol, &dec.expression, &mut env); // runs now, in this function
                 }
                 let mut defaults = Vec::new();
                 for p in d.parameters.iter_non_variadic_params() {
                     if let Some(default) = p.default.as_deref() {
-                        let v = self.eval(default, &mut env); // runs now: the `def` statement's calls
+                        let v = self.eval(sol, default, &mut env); // runs now: the `def` statement's calls
                         defaults.push((p.parameter.name.id.clone(), v)); // and its value is kept
                     }
                 }
-                let func = self.sem.definition_of(&self.frame.model, d);
+                let func = sol.sem.definition_of(&self.frame.model, d);
                 self.defaults.insert((func, self.frame.act), defaults);
                 env.bind(
                     &d.name.id,
@@ -115,24 +111,24 @@ impl<'a, 'db> Walk<'a, 'db> {
                 );
             }
             Stmt::Expr(s) => {
-                self.eval(&s.value, &mut env);
+                self.eval(sol, &s.value, &mut env);
             }
             Stmt::While(s) => {
-                self.eval(&s.test, &mut env);
+                self.eval(sol, &s.test, &mut env);
                 let before = env;
-                let body = self.walk_stmts(&s.body, before.clone());
+                let body = self.walk_stmts(sol, &s.body, before.clone());
                 let after = Env::join(vec![Some(before), body])?;
-                env = self.walk_stmts(&s.orelse, after)?;
+                env = self.walk_stmts(sol, &s.orelse, after)?;
             }
             Stmt::If(s) => {
                 let mut cond = env;
-                self.eval(&s.test, &mut cond); // evaluated once, value ignored
-                let mut arms = vec![self.walk_stmts(&s.body, cond.clone())];
+                self.eval(sol, &s.test, &mut cond); // evaluated once, value ignored
+                let mut arms = vec![self.walk_stmts(sol, &s.body, cond.clone())];
                 for clause in &s.elif_else_clauses {
                     if let Some(t) = &clause.test {
-                        self.eval(t, &mut cond); // runs only if earlier tests failed
+                        self.eval(sol, t, &mut cond); // runs only if earlier tests failed
                     }
-                    arms.push(self.walk_stmts(&clause.body, cond.clone()));
+                    arms.push(self.walk_stmts(sol, &clause.body, cond.clone()));
                 }
                 if !s.elif_else_clauses.iter().any(|c| c.test.is_none()) {
                     arms.push(Some(cond)); // no `else`: skipping is an arm
@@ -140,31 +136,31 @@ impl<'a, 'db> Walk<'a, 'db> {
                 env = Env::join(arms)?;
             }
             Stmt::For(s) => {
-                self.eval(&s.iter, &mut env);
+                self.eval(sol, &s.iter, &mut env);
                 let before = env;
                 let mut body_env = before.clone();
-                self.bind_from_ty(&s.target, &mut body_env); // the loop variable: ty's element type
-                let body = self.walk_stmts(&s.body, body_env);
+                self.bind_from_ty(sol, &s.target, &mut body_env); // the loop variable: ty's element type
+                let body = self.walk_stmts(sol, &s.body, body_env);
                 let after = Env::join(vec![Some(before), body])?; // ran zero times, or ran
-                env = self.walk_stmts(&s.orelse, after)?;
+                env = self.walk_stmts(sol, &s.orelse, after)?;
             }
             Stmt::Try(s) => {
                 let before = env;
-                let body = self.walk_stmts(&s.body, before.clone());
+                let body = self.walk_stmts(sol, &s.body, before.clone());
                 let start = Env::join(vec![Some(before), body.clone()])?;
                 let mut arms = vec![match body {
-                    Some(b) => self.walk_stmts(&s.orelse, b),
+                    Some(b) => self.walk_stmts(sol, &s.orelse, b),
                     None => None,
                 }];
                 for h in &s.handlers {
                     let h = h.as_except_handler().unwrap();
-                    arms.push(self.walk_stmts(&h.body, start.clone()));
+                    arms.push(self.walk_stmts(sol, &h.body, start.clone()));
                 }
                 let joined = Env::join(arms)?;
-                env = self.walk_stmts(&s.finalbody, joined)?;
+                env = self.walk_stmts(sol, &s.finalbody, joined)?;
             }
             Stmt::Match(s) => {
-                self.eval(&s.subject, &mut env);
+                self.eval(sol, &s.subject, &mut env);
                 let before = env;
                 let mut arms = Vec::new();
                 for case in &s.cases {
@@ -173,21 +169,21 @@ impl<'a, 'db> Walk<'a, 'db> {
                         arm.bind(name, smallvec![AbstractValue::Unknown]);
                     }
                     if let Some(guard) = &case.guard {
-                        self.eval(guard, &mut arm);
+                        self.eval(sol, guard, &mut arm);
                     }
-                    arms.push(self.walk_stmts(&case.body, arm));
+                    arms.push(self.walk_stmts(sol, &case.body, arm));
                 }
                 arms.push(Some(before)); // no case matched
                 env = Env::join(arms)?;
             }
             Stmt::With(s) => {
                 for item in &s.items {
-                    self.eval(&item.context_expr, &mut env);
+                    self.eval(sol, &item.context_expr, &mut env);
                     if let Some(target) = &item.optional_vars {
-                        self.bind_from_ty(target, &mut env);
+                        self.bind_from_ty(sol, target, &mut env);
                     }
                 }
-                env = self.walk_stmts(&s.body, env)?;
+                env = self.walk_stmts(sol, &s.body, env)?;
             }
             Stmt::Import(s) => {
                 for alias in &s.names {
@@ -195,34 +191,34 @@ impl<'a, 'db> Walk<'a, 'db> {
                         Some(as_name) => as_name.id.clone(),
                         None => Name::new(alias.name.id.split('.').next().unwrap()),
                     };
-                    let ty = self.sem.type_of_import(&self.frame.model, alias);
-                    let v = self.lift(ty);
+                    let ty = sol.sem.type_of_import(&self.frame.model, alias);
+                    let v = self.lift(sol, ty);
                     env.bind(&name, v);
                 }
             }
             Stmt::ImportFrom(s) => {
                 for alias in &s.names {
                     let name = alias.asname.as_ref().unwrap_or(&alias.name).id.clone();
-                    let ty = self.sem.type_of_import(&self.frame.model, alias);
-                    let v = self.lift(ty);
+                    let ty = sol.sem.type_of_import(&self.frame.model, alias);
+                    let v = self.lift(sol, ty);
                     env.bind(&name, v);
                 }
             }
             Stmt::Assign(s) => {
-                let v = self.eval(&s.value, &mut env);
+                let v = self.eval(sol, &s.value, &mut env);
                 for target in &s.targets {
-                    self.bind_target(target, v.clone(), &mut env);
+                    self.bind_target(sol, target, v.clone(), &mut env);
                 }
             }
             Stmt::AnnAssign(s) => {
                 if let Some(value) = &s.value {
-                    let v = self.eval(value, &mut env);
-                    self.bind_target(&s.target, v, &mut env);
+                    let v = self.eval(sol, value, &mut env);
+                    self.bind_target(sol, &s.target, v, &mut env);
                 }
             }
             other => {
                 for e in simple_stmt_exprs(other) {
-                    self.eval(e, &mut env);
+                    self.eval(sol, e, &mut env);
                 }
             }
         }
@@ -230,11 +226,11 @@ impl<'a, 'db> Walk<'a, 'db> {
     }
     /// A local of this run, else a free variable read from the run where the
     /// `def` ran (never the caller's), else `None`: ty answers.
-    pub fn lookup(&self, env: &Env<'db>, name: &Name) -> Option<Values<'db>> {
+    pub fn lookup(&self, sol: &Solver<'db>, env: &Env<'db>, name: &Name) -> Option<Values<'db>> {
         if let Some(v) = env.get(name) {
             return Some(v.clone());
         }
-        let bound_in = self.sem.free_variable_scope(env.scope?, name.as_str())?;
+        let bound_in = sol.sem.free_variable_scope(env.scope?, name.as_str())?;
         let mut cur = env.enclosing;
         while let Some(act) = cur {
             let outer = &self.activations[act];
@@ -245,70 +241,70 @@ impl<'a, 'db> Walk<'a, 'db> {
         }
         None
     }
-    pub fn none_value(&self) -> Values<'db> {
-        self.lift(self.sem.none_type(self.frame.file))
+    pub fn none_value(&self, sol: &Solver<'db>) -> Values<'db> {
+        self.lift(sol, sol.sem.none_type(self.frame.file))
     }
-    pub fn eval(&mut self, expr: &Expr, env: &mut Env<'db>) -> Values<'db> {
+    pub fn eval(&mut self, sol: &mut Solver<'db>, expr: &Expr, env: &mut Env<'db>) -> Values<'db> {
         match expr {
-            Expr::Name(n) => match self.lookup(env, &n.id) {
+            Expr::Name(n) => match self.lookup(sol, env, &n.id) {
                 Some(v) => v,
                 None => {
                     // a name bound by a decorated `def` is that def, whatever the decorator returns
-                    if let Some(defs) = self.sem.decorated_defs(&self.frame.model, n) {
+                    if let Some(defs) = sol.sem.decorated_defs(&self.frame.model, n) {
                         return defs.into_iter().map(AbstractValue::Function).collect();
                     }
-                    let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));
-                    self.lift(ty)
+                    let ty = sol.sem.type_of(&self.frame.model, ExprRef::from(expr));
+                    self.lift(sol, ty)
                 }
             },
 
             Expr::Named(n) => {
-                let v = self.eval(&n.value, env);
-                self.bind_target(&n.target, v.clone(), env);
+                let v = self.eval(sol, &n.value, env);
+                self.bind_target(sol, &n.target, v.clone(), env);
                 v
             }
-            Expr::Call(call) => self.eval_call(call, env),
-            Expr::Await(a) => self.eval(&a.value, env),
+            Expr::Call(call) => self.eval_call(sol, call, env),
+            Expr::Await(a) => self.eval(sol, &a.value, env),
             Expr::Lambda(_) => smallvec![AbstractValue::Unknown],
-            Expr::Attribute(a) => self.eval_attribute(a, env),
+            Expr::Attribute(a) => self.eval_attribute(sol, a, env),
             other => {
                 for child in direct_children(other) {
-                    self.eval(child, env);
+                    self.eval(sol, child, env);
                 }
-                let ty = self.sem.type_of(&self.frame.model, ExprRef::from(other));
-                self.lift(ty)
+                let ty = sol.sem.type_of(&self.frame.model, ExprRef::from(other));
+                self.lift(sol, ty)
             }
         }
     }
-    fn bind_target(&mut self, target: &Expr, v: Values<'db>, env: &mut Env<'db>) {
+    fn bind_target(&mut self, sol: &mut Solver<'db>, target: &Expr, v: Values<'db>, env: &mut Env<'db>) {
         match target {
             Expr::Name(n) => env.bind(&n.id, v),
             Expr::Attribute(a) => {
-                self.eval(&a.value, env); // the receiver's calls. Binding: part 03
+                self.eval(sol, &a.value, env); // the receiver's calls. Binding: part 03
             }
-            other => self.bind_from_ty(other, env), // decision 5
+            other => self.bind_from_ty(sol, other, env), // decision 5
         }
     }
-    fn bind_from_ty(&mut self, target: &Expr, env: &mut Env<'db>) {
+    fn bind_from_ty(&mut self, sol: &mut Solver<'db>, target: &Expr, env: &mut Env<'db>) {
         match target {
             Expr::Name(n) => {
-                let ty = self.sem.type_of(&self.frame.model, ExprRef::from(target));
-                let v = self.lift(ty);
+                let ty = sol.sem.type_of(&self.frame.model, ExprRef::from(target));
+                let v = self.lift(sol, ty);
                 env.bind(&n.id, v);
             }
             Expr::Tuple(t) => {
                 for e in &t.elts {
-                    self.bind_from_ty(e, env)
+                    self.bind_from_ty(sol, e, env)
                 }
             }
             Expr::List(l) => {
                 for e in &l.elts {
-                    self.bind_from_ty(e, env)
+                    self.bind_from_ty(sol, e, env)
                 }
             }
-            Expr::Starred(st) => self.bind_from_ty(&st.value, env),
+            Expr::Starred(st) => self.bind_from_ty(sol, &st.value, env),
             other => {
-                self.eval(other, env);
+                self.eval(sol, other, env);
             } // `d[k]`, `a.b`: their calls
         }
     }
