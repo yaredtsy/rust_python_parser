@@ -323,6 +323,42 @@ and the tree's children come out in source order. Each replay clears those
 edges' targets and fills them again (`call_values` takes the index of the
 edge to fill), so the edges in the final summary are the last round's.
 
+**The harness, for mode-specific blocks:** each block remembers which mode it
+is for, and a run checks only the blocks for its mode.
+
+```rust
+// src/interp/fixture.rs
+pub struct Expect {
+    pub entry: String,
+    pub tree: String,
+    pub mode: Option<Mode>,      // None: `# expect:`, every mode
+}
+
+// expectations(): the opening line picks the mode. The rest is unchanged.
+let mode = match line.trim_end() {
+    "# expect:" => None,
+    "# expect inline:" => Some(Mode::Inline),
+    "# expect summary:" => Some(Mode::Summary),
+    _ => continue,
+};
+// … collect the tree lines and the entry as before …
+out.push(Expect { entry, tree, mode });
+
+// failures(): skip the blocks written for the other mode
+for e in blocks.iter().filter(|e| e.mode.map_or(true, |m| m == opts.mode)) {
+```
+
+The loop that collects a block's lines already stops at the next line that
+starts with `# expect`, so a tagged block ends the one before it. Both summary
+runs, with and without reuse, read the `summary` blocks. The "no `# expect:`
+block" assertion stays on the unfiltered list. Add a case to `reads_blocks`:
+
+```rust
+let b = expectations("# expect inline:\n# f\n#   f [recursive]\n# expect summary:\n# f\n");
+assert_eq!((b[0].mode, b[1].mode), (Some(Mode::Inline), Some(Mode::Summary)));
+assert_eq!(b[1].entry, "f");
+```
+
 </details>
 
 ---

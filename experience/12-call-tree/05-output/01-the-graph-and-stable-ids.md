@@ -4,7 +4,7 @@
 another request, another process, or after an edit above the function:
 `StableDef` for a definition, `StableType` for a type in a key, and
 `StableContextId` for a context.
-**Fixture:** `../02-function-summaries/python/graph.py`
+**Fixtures:** `../02-function-summaries/python/graph.py`, `python/stable_ids.py`
 **Plan:** `plan/03-call-tree/14-output.md` § "The graph", § "Stable identity"
 
 ---
@@ -209,10 +209,59 @@ fn p05_01_graph() {
 
 #[test]
 fn p05_01_stable_ids_ignore_discovery_order() {
-    // main calls read_a then read_b; main2 calls them in the other order.
-    // Every context's StableContextId must be the same in both runs.
+    // main calls read_a then read_b; main2 calls them in the other order,
+    // so their ContextIds differ. Their stable ids must not.
+    check_both("05-output/python/stable_ids.py");
+    let ids = |entry: &str| -> BTreeMap<String, StableContextId> {
+        graph_for("05-output/python/stable_ids.py", entry).contexts.into_iter()
+            .filter(|c| c.qname != format!("stable_ids.{entry}"))   // the entries themselves differ
+            .map(|c| (c.qname, c.id))
+            .collect()
+    };
+    let (one, two) = (ids("main"), ids("main2"));
+    assert_eq!(one.len(), 3);          // read_a, read_b, done
+    assert_eq!(one, two);
 }
 ```
+
+`graph_for` solves the entry with `solve` (step 02.03) and builds its graph:
+
+```rust
+// src/interp/fixture.rs
+pub fn graph_for(fixture: &str, entry: &str) -> GraphOut {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let (s, root_ctx) = solve(&db, file, entry, &summary()).unwrap();
+    graph(&s, &[root_ctx])
+}
+```
+
+`GraphOut` holds no `'db` (that is the point of this step), so it can outlive
+the database the helper opened. `StableContextId` and `StableDef` derive
+`Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug`: `graph` sorts by them,
+and the test compares and prints them.
+
+The fixture, `python/stable_ids.py`:
+
+```python
+def done(): pass
+def read_a(cb): cb()
+def read_b(cb): cb()
+
+def main():
+    read_a(done)
+    read_b(done)
+
+def main2():
+    read_b(done)
+    read_a(done)
+```
+
+`read_a` and `read_b` take a function, so their keys hold a `Function`
+fingerprint, which the canonical key writes as a `StableDef`. Without an
+argument the test would only check `StableDef`, never the key encoding.
 
 ---
 

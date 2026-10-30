@@ -82,7 +82,18 @@ fn p01_13_wall() {
 ```
 
 `stats_for` opens the fixture the way `check` does and returns the stats of
-one entry.
+one entry:
+
+```rust
+// src/interp/fixture.rs
+pub fn stats_for(fixture: &str, entry: &str, opts: &Options) -> Stats {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    call_tree(&db, file, entry, opts).unwrap().1
+}
+```
 
 </details>
 

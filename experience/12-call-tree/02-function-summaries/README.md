@@ -21,8 +21,8 @@ them.
 | | step | you build | the decision |
 |---|---|---|---|
 | 1 | [`01-the-key.md`](01-the-key.md) | `Fp`, `Context`, interning | a call is its function plus a fingerprint of each argument. Literals widen to their class |
-| 2 | [`02-the-summary.md`](02-the-summary.md) | `FunctionResult`, `SVal`, `materialize`, `finish` | a walk starts from its key alone, and its result holds nothing walk-local |
-| 3 | [`03-the-solver-and-the-graph.md`](03-the-solver-and-the-graph.md) | `Solver`, slots, reuse, `render` | one walk per key. The tree is rendered from the graph. Both modes, one harness |
+| 2 | [`02-the-summary.md`](02-the-summary.md) | `FunctionResult`, `SVal`, `materialize`, `finish`, `check_both` | a walk starts from its key alone, and its result holds nothing walk-local. Every fixture runs in both modes |
+| 3 | [`03-the-solver-and-the-graph.md`](03-the-solver-and-the-graph.md) | `Solver`, slots, reuse, `render` | one walk per key. The tree is rendered from the graph. No-reuse joins the harness |
 | 4 | [`04-relevant-parameters.md`](04-relevant-parameters.md) | a taint pass | a parameter the body can't be affected by is `Unknown` in the key |
 | 5 | [`05-recursion-pending-values.md`](05-recursion-pending-values.md) | `Pending`, deferred operations, a fixpoint for one function | a recursive call is recorded, not entered. Its value is found afterwards |
 | 6 | [`06-recursion-groups.md`](06-recursion-groups.md) | groups, park, join, merge | mutual recursion is one group, solved together, the same from any entry |

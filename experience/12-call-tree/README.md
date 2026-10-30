@@ -102,8 +102,9 @@ your test passes.
 
 Once a fixture passes, it stays in the test suite and must keep passing for the
 rest of the tutorial. No later step edits an earlier fixture's expected tree.
-When summary mode joins a fixture, a step tells you to add `Summary` to that
-fixture's test, and the same expected tree must come out.
+When summary mode joins a fixture, a step tells you to switch that fixture's
+test from `check` to `check_both` (step `02.02`), and the same expected tree
+must come out.
 
 Where the two modes are allowed to differ, the fixture says so with a
 mode-specific block (`# expect inline:` / `# expect summary:`, from step

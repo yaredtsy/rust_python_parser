@@ -221,14 +221,76 @@ no walk to take children from.
 
 The recursion guard works as before, on `s.path`.
 
+### Decision 7: the harness runs every fixture in both modes
+
+`Mode` gets its second variant:
+
+```rust
+// src/interp/mod.rs
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Follow every call into the callee's body (parts 01 and 03).
+    Inline,
+    /// One walk per call, started from its key. The caller reads the summary.
+    Summary,
+}
+```
+
+And the harness gets a second entry point:
+
+```rust
+// src/interp/fixture.rs
+pub fn inline() -> Options  { Options { mode: Mode::Inline,  ..Options::default() } }
+pub fn summary() -> Options { Options { mode: Mode::Summary, ..Options::default() } }
+
+/// Inline mode only: for a fixture summary mode can't run yet.
+pub fn check(fixture: &str) {
+    check_with(fixture, &[inline()]);
+}
+
+/// Every mode. The same expected trees must come out of each.
+pub fn check_both(fixture: &str) {
+    check_with(fixture, &[inline(), summary()]);
+}
+
+/// One run per `Options`. Every failing block of every run goes in one report.
+fn check_with(fixture: &str, runs: &[Options]) {
+    let report: String = runs.iter().map(|opts| failures(fixture, opts)).collect();
+    assert!(report.is_empty(), "\n{report}");
+}
+```
+
+`failures(fixture, opts)` is step 01's `check` with two changes: it takes
+`opts` instead of `Options::default()`, and it returns its report instead of
+asserting on it. Each header also names the run, so you can tell which mode
+failed (reference below).
+
+**Why one expected tree for both modes:** inline mode is your oracle. It
+already passes every part 01 fixture, so when only the summary run fails, the
+bug is in this part's code, not in binding or returns. It is also how a
+fixture stays fixed (README, "Fixtures only ever get stricter"): summary mode
+joins a fixture by switching its test from `check` to `check_both`, and its
+expected trees stay as they are.
+
+**Why every run reports before the test fails:** "inline passes, summary
+fails" and "both fail" point at different code. If the inline run panicked
+first, you would never see the summary run's report.
+
+**Why `inline()` and not `Options::default()`:** step 04.09 makes the default
+`Mode::Summary`. `check` must stay inline after that. The `..Options::default()`
+also keeps both helpers compiling when step 03 adds a field to `Options`.
+
 ### Yours
 
 - `Mode::Summary`, and `call_project` beside `call_function`: key, a new
   `Walk` for the context, `materialize`, walk, `finish`, `resolve`.
 - `interp/summary.rs`: the types above, `finish`, `resolve`.
 - `Solver`, and the `s: &mut Solver` parameter everywhere.
-- The harness: `check_both(fixture)` runs every block in both modes. Switch
-  every part 01 test to it, except `closures.py`.
+- `call_tree` picks the mode: the entry's env comes from `env_from_bound` in
+  inline mode, from `materialize` in summary mode.
+- The harness: `inline()`, `summary()`, `check_with`, `failures`,
+  `check_both`. Switch every earlier test to `check_both`, except
+  `p01_11_closures`.
 
 <details><summary>Reference: this step's code</summary>
 
@@ -243,6 +305,7 @@ fn call_project(&mut self, s: &mut Solver<'db>, def: Definition<'db>, site: Site
         let mut node = Node::call(qname, self.site_range(site));
         node.marks.push(Mark::Recursive);
         self.frame.children.push(node);
+        s.stats.nodes += 1;
         return smallvec![AbstractValue::Unknown];
     }
 
@@ -250,6 +313,7 @@ fn call_project(&mut self, s: &mut Solver<'db>, def: Definition<'db>, site: Site
     let Some(node) = s.sem.function_node(def, &parsed) else { return smallvec![AbstractValue::Unknown] };
 
     s.path.push(qname.clone());
+    s.stats.walks += 1;
     let mut callee = Walk::new(s, def);                         // its own frame, its own activations
     let env = callee.materialize(s, ctx, node);                 // rule 1
     let end = callee.walk_stmts(s, &node.body, env);
@@ -257,9 +321,72 @@ fn call_project(&mut self, s: &mut Solver<'db>, def: Definition<'db>, site: Site
     s.path.pop();
 
     self.frame.children.push(Node { qname, site: Some(self.site_range(site)), marks: vec![], children });
+    s.stats.nodes += 1;
     self.resolve(&result.returns)
 }
 ```
+
+```rust
+// src/interp/mod.rs: the entry, in both modes
+pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, opts: &Options) -> Option<(Node, Stats)> {
+    let sem = Sem::new(db);
+    let def = sem.entry(file, entry)?;
+    let parsed = sem.parsed(def);
+    let node = sem.function_node(def, &parsed)?;
+    let mut s = Solver::new(sem, opts.clone());
+    let qname = s.sem.qname(def);
+    s.path.push(qname.clone());
+    s.stats.walks += 1;                                          // the entry
+
+    // Called with no arguments (step 01.11), and keyed like any call.
+    let mut w = Walk::new(&mut s, def);
+    let bound = w.bind_parameters(&mut s, def, node, &EvaluatedArgs::default(), None);
+    let ctx = s.key(def, &bound);
+    let env = match opts.mode {
+        Mode::Inline => {
+            let mut env = w.env_from_bound(node, &bound);
+            env.scope = Some(s.sem.body_scope(def, node));
+            env
+        }
+        Mode::Summary => w.materialize(&mut s, ctx, node),       // rule 1 holds for the entry too
+    };
+    w.walk_stmts(&mut s, &node.body, env);
+
+    s.stats.contexts = s.contexts.len() as u32;
+    let mut root = Node::root(qname);
+    root.children = w.frame.children;
+    Some((root, s.stats))
+}
+```
+
+```rust
+// src/interp/fixture.rs: step 01's `check`, as one run that reports
+fn failures(fixture: &str, opts: &Options) -> String {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let source = std::fs::read_to_string(&path).unwrap();
+    let module = path.file_stem().unwrap().to_str().unwrap();
+
+    let blocks = expectations(&source);
+    assert!(!blocks.is_empty(), "{fixture}: no `# expect:` block");
+    let mut report = String::new();
+    for e in &blocks {
+        let got = call_tree(&db, file, &e.entry, opts)
+            .map(|(t, _)| to_text(&t, module))
+            .unwrap_or_else(|| format!("(no function `{}`)\n", e.entry));
+        println!("--- {fixture}: {} ({:?})\n{got}", e.entry, opts.mode);   // --show-output
+        if got != e.tree {
+            report += &format!("--- {fixture}: {} {opts:?}\nexpected:\n{}got:\n{}\n", e.entry, e.tree, got);
+        }
+    }
+    report
+}
+```
+
+`stats_for` doesn't change: it already takes `&Options`, so
+`stats_for(fixture, "main", &summary())` gives summary mode's stats.
 
 ```rust
 // src/interp/summary.rs
@@ -314,9 +441,18 @@ fn p02_02_summaries() {
 }
 ```
 
-And every part 01 test, now through `check_both` (except `closures.py`). They
-all pass in summary mode with the same trees: nothing about the tree changed,
-only where the callee's starting env and the call's value come from.
+And every earlier test, now through `check_both`, except `p01_11_closures`,
+which stays on `check` until step 07. The `stats_for` assertions in `p01_13`
+and `p02_01` stay as they are: `Options::default()` is still inline mode.
+
+```bash
+cargo test interp::fixture -- --show-output
+```
+
+They all pass in summary mode with the same trees: nothing about the tree
+changed, only where the callee's starting env and the call's value come from.
+If one fails, the header says which run, for example
+`--- 01-functions/python/returns.py: main Options { mode: Summary }`.
 
 ---
 
@@ -327,6 +463,7 @@ Solver { sem, opts, fps, contexts, path, stats }           one per request
 Walk   { frame, activations }                              one per context (summary) or per request (inline)
 FunctionResult { calls: [CallEdge { site, targets }], returns: [SVal] }
 SVal = Plain(PlainVal)
+Mode = Inline | Summary          check_both runs every fixture in both
 ```
 
 Summary mode walks exactly as many bodies as inline mode. Every walk now

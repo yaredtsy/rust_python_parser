@@ -173,7 +173,15 @@ pub struct Options {
     pub mode: Mode,
     pub reuse: bool,     // false: a Ready slot is walked again instead of reused
 }
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { mode: Mode::Inline, reuse: true }
+    }
+}
 ```
+
+Inline mode ignores `reuse`: it has no slots.
 
 With `reuse = false`, `get` walks a `Ready` context again instead of handing
 out its summary. The output must be identical, byte for byte.
@@ -188,24 +196,28 @@ for.
 No-reuse costs as much as the exponential walk, so run it on fixtures, not on
 big projects.
 
-### Decision 5: the harness runs every mode
+### Decision 5: `check_both` gets a third run
+
+Step 02's `check_both` ran inline and summary. Add no-reuse:
 
 ```rust
-fn check_both(fixture: &str) {
-    for opts in [
-        Options { mode: Mode::Inline, reuse: true },
-        Options { mode: Mode::Summary, reuse: true },
-        Options { mode: Mode::Summary, reuse: false },
-    ] {
-        check_with(fixture, &opts);
-    }
+// src/interp/fixture.rs
+pub fn check_both(fixture: &str) {
+    check_with(fixture, &[
+        inline(),
+        summary(),
+        Options { reuse: false, ..summary() },   // decision 4
+    ]);
 }
 ```
 
-Every test from part 01 except `closures.py` now runs three times. When a step
-lets the modes differ, the fixture gets a mode-specific block
+`inline()`, `summary()` and `check_with` are unchanged: the
+`..Options::default()` in the helpers picks up `reuse: true`.
+
+Every test from part 01 except `p01_11_closures` now runs three times. When a
+step lets the modes differ, the fixture gets a mode-specific block
 (`# expect inline:` / `# expect summary:`), and the harness picks the one for
-its mode. The first one arrives in step 05.
+its mode. The first one arrives in step 05, with the harness change.
 
 ### Yours
 
@@ -214,7 +226,7 @@ its mode. The first one arrives in step 05.
 - `render.rs`: `render`, `sites_union`, `group_by_function`.
 - `call_tree` in summary mode: key the entry (no arguments), `get` it, render
   from it. The frame no longer collects child nodes in summary mode.
-- `Options.reuse`, and `check_both` with the three runs.
+- `Options.reuse` (default `true`), and the third run in `check_both`.
 
 <details><summary>Reference: this step's code</summary>
 
@@ -283,17 +295,44 @@ fn group_by_function<'db>(s: &Solver<'db>, targets: &[ContextId]) -> Vec<(Defini
 ```
 
 ```rust
-// src/interp/mod.rs: call_tree, summary mode
-Mode::Summary => {
-    let root_ctx = s.key(def, &Bound::empty_for(&s, def));   // every parameter Unknown or its default
+// src/interp/mod.rs
+pub fn call_tree(db: &ProjectDatabase, file: File, entry: &str, opts: &Options) -> Option<(Node, Stats)> {
+    match opts.mode {
+        Mode::Inline => inline_tree(db, file, entry, opts),   // step 02's call_tree, minus the Summary arm
+        Mode::Summary => {
+            let (mut s, root_ctx) = solve(db, file, entry, opts)?;
+            let qname = s.sem.qname(s.contexts[root_ctx].func);
+            let mut path = vec![qname.clone()];
+            let mut root = Node::root(qname);
+            root.children = render(&s, &[root_ctx], &mut path);
+            s.stats.contexts = s.contexts.len() as u32;
+            Some((root, s.stats))
+        }
+    }
+}
+
+/// Summary mode, stopped before rendering: the solver, with the entry solved.
+pub fn solve<'db>(db: &'db ProjectDatabase, file: File, entry: &str, opts: &Options)
+    -> Option<(Solver<'db>, ContextId)>
+{
+    let sem = Sem::new(db);
+    let def = sem.entry(file, entry)?;
+    let parsed = sem.parsed(def);
+    let node = sem.function_node(def, &parsed)?;
+    let mut s = Solver::new(sem, opts.clone());
+    // Called with no arguments (step 01.11). A walk of the entry's own frame
+    // does the binding, exactly as step 02 did.
+    let bound = Walk::new(&mut s, def).bind_parameters(&mut s, def, node, &EvaluatedArgs::default(), None);
+    let root_ctx = s.key(def, &bound);
     s.get(root_ctx);
-    let qname = s.sem.qname(def);
-    let mut path = vec![qname.clone()];
-    let mut root = Node::root(qname);
-    root.children = render(&s, &[root_ctx], &mut path);
-    Some((root, s.stats))
+    Some((s, root_ctx))
 }
 ```
+
+**Why `solve` is its own function:** some tests check the solver's state, not
+the tree: a function's returns (step 06), the graph (step 05.01). `call_tree`
+renders and drops the solver, so those tests call `solve` and read `s`
+directly.
 
 </details>
 

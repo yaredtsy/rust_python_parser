@@ -309,15 +309,54 @@ fn p02_06_groups() {
 
 #[test]
 fn p02_06_entry_independence() {
-    // parse_expr's returns, as a set, entered from parse_expr and from parse_atom
-    let from_expr = returns_of("02-function-summaries/python/groups.py", "main", "parse_expr");
+    // parse_expr's returns, entered from main and from parse_atom
+    let from_main = returns_of("02-function-summaries/python/groups.py", "main", "parse_expr");
     let from_atom = returns_of("02-function-summaries/python/groups.py", "parse_atom", "parse_expr");
-    assert_eq!(from_expr, from_atom);
+    assert_eq!(from_main, BTreeSet::from(["groups.binop", "groups.num"].map(String::from)));
+    assert_eq!(from_main, from_atom);
 }
 ```
 
-`returns_of(fixture, entry, func)` runs summary mode from `entry` and returns
-the set of qualified names in `func`'s summary returns.
+`returns_of` runs summary mode from `entry` with `solve` (step 03) and reads
+the summaries of every context of `func`:
+
+```rust
+// src/interp/fixture.rs
+/// The functions `func` can return (qualified names), over all its contexts,
+/// solved in summary mode from `entry`.
+pub fn returns_of(fixture: &str, entry: &str, func: &str) -> BTreeSet<String> {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let module = path.file_stem().unwrap().to_str().unwrap();
+
+    let (s, _) = solve(&db, file, entry, &summary()).unwrap();
+    let want = format!("{module}.{func}");
+    let mut out = BTreeSet::new();
+    for (ctx, c) in s.contexts.iter() {
+        if s.sem.qname(c.func) != want { continue }
+        let Some(res) = &s.slots[ctx].result else { continue };
+        for v in &res.returns {
+            if let SVal::Plain(PlainVal::Function(d)) = v {
+                out.insert(s.sem.qname(*d));
+            }
+        }
+    }
+    out
+}
+```
+
+`Interner` needs an iterator for this:
+`pub fn iter(&self) -> impl Iterator<Item = (I, &K)> { self.items.iter_enumerated() }`.
+
+**Why all contexts, and not "the" context:** the entry decides how
+`parse_expr` is first reached, so in principle the two runs could key it
+differently. Here they don't (step 04 makes `t` irrelevant, so it keys
+`Unknown` from both entries), but the claim being tested is about the
+function's answer, not about one key. If the sets differ, print each run's
+contexts with their keys: a key that differs is step 04's business, a
+summary that differs under the same key is this step's.
 
 ---
 
