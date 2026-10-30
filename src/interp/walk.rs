@@ -250,6 +250,10 @@ impl<'a, 'db> Walk<'a, 'db> {
             Expr::Name(n) => match self.lookup(env, &n.id) {
                 Some(v) => v,
                 None => {
+                    // a name bound by a decorated `def` is that def, whatever the decorator returns
+                    if let Some(defs) = self.sem.decorated_defs(&self.frame.model, n) {
+                        return defs.into_iter().map(AbstractValue::Function).collect();
+                    }
                     let ty = self.sem.type_of(&self.frame.model, ExprRef::from(expr));
                     self.lift(ty)
                 }

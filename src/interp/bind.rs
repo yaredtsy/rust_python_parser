@@ -7,7 +7,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::interp::env::Env;
 use crate::interp::value::{AbstractValue, ActivationId, Values};
 use crate::interp::walk::Walk;
-use crate::sem::{Definition, Name};
+use crate::sem::{Definition, Name, SIGNATURE_KEEPING, Shape};
 
 #[derive(Clone, Default)]
 pub struct EvaluatedArgs<'db> {
@@ -76,7 +76,7 @@ impl<'a, 'db> Walk<'a, 'db> {
         let params = &def.parameters;
         let unknown = || smallvec![AbstractValue::Unknown];
 
-        if args.has_splat {
+        if args.has_splat || self.decorator_changes_signature(def) {
             for p in params.iter() {
                 // [check] ruff's iterator over every parameter
                 env.bind(&p.name().id, unknown());
@@ -110,6 +110,28 @@ impl<'a, 'db> Walk<'a, 'db> {
             env.bind(&p.name.id, unknown());
         }
         env
+    }
+
+    /// Binding is only trusted for project decorators and the signature-keeping allow-list.
+    fn decorator_changes_signature(&mut self, def: &StmtFunctionDef) -> bool {
+        for dec in &def.decorator_list {
+            // `@retry` and `@functools.lru_cache(maxsize=1)` alike: look at the callee.
+            let target = match &dec.expression {
+                Expr::Call(c) => &*c.func,
+                e => e,
+            };
+            let ty = self.sem.type_of(&self.frame.model, ExprRef::from(target));
+            let trusted = match self.sem.shape(ty, self.frame.file) {
+                Shape::Function(d) => {
+                    self.sem.is_project(d) || SIGNATURE_KEEPING.contains(&self.sem.qname(d).as_str())
+                }
+                _ => false,
+            };
+            if !trusted {
+                return true;
+            }
+        }
+        false
     }
 
     fn default_value(

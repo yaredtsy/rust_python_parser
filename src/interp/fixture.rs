@@ -132,3 +132,8 @@ fn p01_10_returns() {
 fn p01_11_closures() {
     check("01-functions/python/closures.py");
 }
+
+#[test]
+fn p01_12_callbacks() {
+    check("01-functions/python/callbacks.py");
+}

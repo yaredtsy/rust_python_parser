@@ -1,6 +1,6 @@
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
-use ruff_python_ast::{Alias, ExprRef, Stmt, StmtFunctionDef};
+use ruff_python_ast::{Alias, AnyNodeRef, ExprName, ExprRef, Stmt, StmtFunctionDef};
 use ruff_text_size::{Ranged, TextSize};
 
 use ty_project::glob::IncludeResult;
@@ -9,12 +9,19 @@ use ty_python_core::ProgramFile;
 use ty_python_core::scope::{FileScopeId, NodeWithScopeRef, ScopeKind};
 use ty_python_core::semantic_index;
 use ty_python_semantic::types::vnoc;
-use ty_python_semantic::{Db as _, HasDefinition, HasType};
+use ty_python_semantic::{
+    Db as _, HasDefinition, HasType, ImportAliasResolution, ResolvedDefinition,
+    definitions_for_name,
+};
 
 pub use ruff_python_ast::name::Name;
 pub use ty_python_core::definition::{Definition, DefinitionKind};
 pub use ty_python_semantic::types::{Type, TypeDefinition};
 pub use ty_python_semantic::{ProgramEnvironment, SemanticModel};
+
+/// Decorators that keep the wrapped function's signature.
+pub const SIGNATURE_KEEPING: &[&str] =
+    &["functools.wraps", "functools.lru_cache", "functools.cache"];
 
 pub struct Sem<'db> {
     pub db: &'db ProjectDatabase,
@@ -142,6 +149,33 @@ impl<'db> Sem<'db> {
             DefinitionKind::Function(f) => Some(f.node(parsed)),
             _ => None,
         }
+    }
+
+    /// If `name` refers to `def` statements with decorators, those defs.
+    pub fn decorated_defs(
+        &self,
+        model: &SemanticModel<'db>,
+        name: &ExprName,
+    ) -> Option<Vec<Definition<'db>>> {
+        let found = definitions_for_name(
+            model,
+            name.id.as_str(),
+            AnyNodeRef::ExprName(name),
+            ImportAliasResolution::ResolveAliases,
+        );
+        let mut defs = Vec::new();
+        for r in found {
+            let ResolvedDefinition::Definition(def) = r else {
+                return None;
+            };
+            let parsed = self.parsed(def);
+            let node = self.function_node(def, &parsed)?; // not a def: not this rule
+            if node.decorator_list.is_empty() {
+                return None; // undecorated: ty's answer is the def anyway
+            }
+            defs.push(def);
+        }
+        (!defs.is_empty()).then_some(defs)
     }
 
     pub fn entry(&self, file: File, dotted: &str) -> Option<Definition<'db>> {
