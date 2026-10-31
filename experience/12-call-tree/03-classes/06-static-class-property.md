@@ -90,7 +90,7 @@ site**:
 if let Some(getter) = s.sem.property_getter(class, name) {
     // through inline_node (03.01), so a getter that reads itself is a [recursive] leaf
     // the value of `r.active` is what the getter returns
-    return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default());
+    return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default(), env);
 }
 ```
 
@@ -126,7 +126,7 @@ AbstractValue::Instance { class, origin } => {
     }
     // 2. a property: call the getter here
     if let Some(getter) = s.sem.property_getter(class, name) {
-        return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default());
+        return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default(), env);
     }
     // 3. the class side, through ty (step 02's rule, unchanged)
     let file = self.frame.file;

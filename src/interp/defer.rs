@@ -87,7 +87,7 @@ impl<'db> Walk<'db> {
                             .collect(),
                         has_splat: args.has_splat,
                     };
-                    self.call_values(sol, site, &callee, &args, None, &fallback, Some(edge), &d.before)
+                    self.call_values(sol, site, &callee, &args, None, &fallback, Some(edge), &mut d.before.clone())
                 }
             };
             let mut v = v;

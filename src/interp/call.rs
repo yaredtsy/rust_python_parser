@@ -98,7 +98,7 @@ impl<'db> Walk<'db> {
         call: Option<&ExprCall>,
         fallback: &Values<'db>,
         edge: Option<usize>,
-        env: &Env<'db>,
+        env: &mut Env<'db>,
     ) -> Values<'db> {
         // One node per function, in definition order: the join order is an accident.
         let mut targets: Vec<(Definition<'db>, Option<ActivationId>)> = Vec::new();
@@ -131,25 +131,35 @@ impl<'db> Walk<'db> {
         classes.sort_by_key(|&c| sol.sem.def_position(c));
         let mut edge_targets: SmallVec<[Target; 2]> = SmallVec::new();
         let mut out = Values::new();
+        // Callees at one site are alternatives: each starts from the state before the call.
+        let before = env.clone();
+        let mut after: Vec<Option<Env<'db>>> = Vec::new();
         for (def, enclosing) in targets {
             let v = match sol.opts.mode {
                 Mode::Inline => {
                     let range = self.site_range(site);
-                    self.call_function(sol, def, enclosing, None, range, args)
+                    let mut e = before.clone();
+                    let v = self.call_function(sol, def, enclosing, None, range, args, &mut e);
+                    after.push(Some(e));
+                    v
                 }
                 Mode::Summary => {
-                    self.call_project(sol, def, enclosing, args, &mut edge_targets, env)
+                    self.call_project(sol, def, enclosing, args, &mut edge_targets, &*env)
                 }
             };
             out.extend(v);
         }
         for (func, recv) in methods {
             let range = self.site_range(site);
-            out.extend(self.call_function(sol, func, None, Some(recv), range, args));
+            let mut e = before.clone();
+            out.extend(self.call_function(sol, func, None, Some(recv), range, args, &mut e));
+            after.push(Some(e));
         }
         for class in classes {
             let range = self.site_range(site);
-            out.extend(self.construct(sol, class, range, args));
+            let mut e = before.clone();
+            out.extend(self.construct(sol, class, range, args, &mut e));
+            after.push(Some(e));
         }
         match edge {
             Some(i) => self.frame.calls[i].targets = edge_targets,
@@ -160,6 +170,7 @@ impl<'db> Walk<'db> {
             None => {}
         }
         if ask_ty {
+            after.push(Some(before.clone())); // ty's callee: no state change you can see
             match call {
                 Some(call) => {
                     let ty = sol.sem.type_of(&self.frame.model, ExprRef::from(call));
@@ -167,6 +178,9 @@ impl<'db> Walk<'db> {
                 }
                 None => out.extend(fallback.iter().copied()),
             }
+        }
+        if let Some(joined) = Env::join(after) {
+            *env = joined;
         }
         dedup(&mut out);
         out
@@ -183,6 +197,7 @@ impl<'db> Walk<'db> {
         enclosing: Option<ActivationId>,
         receiver: Option<AbstractValue<'db>>,
         args: &EvaluatedArgs<'db>,
+        env: &mut Env<'db>,
     ) -> Option<Values<'db>> {
         if sol.path.contains(&name) {
             let mut node = Node::call(name, site);
@@ -191,7 +206,7 @@ impl<'db> Walk<'db> {
             return None;
         }
         sol.path.push(name.clone());
-        let run = self.walk_inline(sol, def, enclosing, receiver, args);
+        let run = self.walk_inline(sol, def, enclosing, receiver, args, env);
         sol.path.pop();
         let mut node = Node::call(name, site);
         node.children = run.children;
@@ -208,9 +223,10 @@ impl<'db> Walk<'db> {
         receiver: Option<AbstractValue<'db>>,
         site: TextRange,
         args: &EvaluatedArgs<'db>,
+        env: &mut Env<'db>,
     ) -> Values<'db> {
         let name = sol.sem.qname(def);
-        match self.inline_node(sol, name, site, def, enclosing, receiver, args) {
+        match self.inline_node(sol, name, site, def, enclosing, receiver, args, env) {
             None => smallvec![AbstractValue::Unknown], // recursive: not walked (step 01.10)
             Some(_) if args.has_empty() => Values::new(), // Python never makes this call
             Some(returns) => returns,
@@ -224,6 +240,7 @@ impl<'db> Walk<'db> {
         class: Definition<'db>,
         site: TextRange,
         args: &EvaluatedArgs<'db>,
+        env: &mut Env<'db>,
     ) -> Values<'db> {
         let origin = self.origins.intern(OriginKey::New { site, act: self.frame.act });
         let obj = AbstractValue::Instance { class, origin };
@@ -231,7 +248,7 @@ impl<'db> Walk<'db> {
         match sol.sem.init_of(class).filter(|&init| sol.sem.is_project(init)) {
             // `self` is the object. The guard is keyed on the class's name.
             Some(init) => {
-                self.inline_node(sol, name, site, init, None, Some(obj), args);
+                self.inline_node(sol, name, site, init, None, Some(obj), args, env);
             }
             // no body to walk, so nothing can recurse: a plain leaf
             None => self.push_leaf(sol, Node::call(name, site)),
@@ -247,6 +264,7 @@ impl<'db> Walk<'db> {
         enclosing: Option<ActivationId>,
         receiver: Option<AbstractValue<'db>>,
         args: &EvaluatedArgs<'db>,
+        env: &mut Env<'db>,
     ) -> InlineRun<'db> {
         let parsed = sol.sem.parsed(def);
         let Some(node) = sol.sem.function_node(def, &parsed) else {
@@ -257,14 +275,19 @@ impl<'db> Walk<'db> {
         let caller = std::mem::replace(&mut self.frame, new);
         let bound = self.bind_parameters(sol, def, node, receiver, args, enclosing);
         sol.key(self, def, &bound, enclosing);
-        let mut env = self.env_from_bound(node, &bound);
-        env.scope = Some(sol.sem.body_scope(def, node));
-        env.enclosing = enclosing;
-        if self.walk_stmts(sol, &node.body, env).is_some() {
+        let mut start = self.env_from_bound(node, &bound);
+        start.scope = Some(sol.sem.body_scope(def, node));
+        start.enclosing = enclosing;
+        start.attrs = env.attrs.clone(); // the callee sees every object as it is now
+        if let Some(end) = self.walk_stmts(sol, &node.body, start) {
             let none = self.none_value(sol);
             self.frame.returns.extend(none); // fell off the end
+            self.frame.exits.push(end); // and that is an exit
         }
         let callee = std::mem::replace(&mut self.frame, caller);
+        if let Some(exit) = Env::join(callee.exits.into_iter().map(Some).collect()) {
+            env.attrs = exit.attrs; // the caller continues with what the callee left
+        }
         let returns = if contains_yield(&node.body) {
             smallvec![AbstractValue::Unknown] // a generator object
         } else {

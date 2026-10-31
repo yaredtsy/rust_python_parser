@@ -45,6 +45,8 @@ pub struct Frame<'db> {
     pub model: SemanticModel<'db>,
     pub children: Vec<Node>,
     pub returns: Values<'db>,
+    /// The env at each `return` and at the end of the body.
+    pub exits: Vec<Env<'db>>,
     pub calls: Vec<CallEdge>, // one per call site with a project callee
     pub def_start: TextSize,       // where this `def` starts: sites are relative to it
     pub act: ActivationId,
@@ -58,6 +60,7 @@ fn frame_for<'db>(sol: &Solver<'db>, func: Definition<'db>, act: ActivationId) -
         model: sol.sem.model(file),
         children: Vec::new(),
         returns: Values::new(),
+        exits: Vec::new(),
         calls: Vec::new(),
         def_start: sol.sem.def_position(func).1,
         act,
@@ -100,6 +103,7 @@ impl<'db> Walk<'db> {
                     None => self.none_value(sol),
                 };
                 self.frame.returns.extend(v);
+                self.frame.exits.push(env); // the state at this `return`
                 return None;
             }
             Stmt::Raise(s) => {
@@ -325,9 +329,7 @@ impl<'db> Walk<'db> {
     fn bind_target(&mut self, sol: &mut Solver<'db>, target: &Expr, v: Values<'db>, env: &mut Env<'db>) {
         match target {
             Expr::Name(n) => env.bind(&n.id, v),
-            Expr::Attribute(a) => {
-                self.eval(sol, &a.value, env); // the receiver's calls. Binding: part 03
-            }
+            Expr::Attribute(a) => self.bind_attribute(sol, a, v, env),
             other => self.bind_from_ty(sol, other, env), // decision 5
         }
     }

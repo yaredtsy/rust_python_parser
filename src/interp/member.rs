@@ -1,13 +1,13 @@
 use ruff_python_ast::{ExprAttribute, ExprRef};
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::interp::{
     Walk,
     env::Env,
     solver::Solver,
-    value::{AbstractValue, Values, dedup},
+    value::{AbstractValue, OriginId, Values, dedup},
 };
-use crate::sem::{BoundTo, Shape};
+use crate::sem::{BoundTo, Name, Shape};
 
 // src/interp/member.rs
 impl<'db> Walk<'db> {
@@ -23,7 +23,7 @@ impl<'db> Walk<'db> {
         for recv in recvs {
             match recv {
                 AbstractValue::Instance { .. } | AbstractValue::Class(_) | AbstractValue::Module(_) => {
-                    out.extend(self.member(sol, recv, &attr.attr.id));
+                    out.extend(self.member(sol, recv, &attr.attr.id, env));
                 }
                 _ if !asked_ty => {
                     asked_ty = true;
@@ -38,10 +38,20 @@ impl<'db> Walk<'db> {
     }
 
     /// What `.name` is on one receiver. ty finds it; the receiver bound is ours.
-    fn member(&mut self, sol: &mut Solver<'db>, recv: AbstractValue<'db>, name: &str) -> Values<'db> {
+    /// Its own state comes first, then the class (through ty).
+    fn member(
+        &mut self,
+        sol: &mut Solver<'db>,
+        recv: AbstractValue<'db>,
+        name: &str,
+        env: &mut Env<'db>,
+    ) -> Values<'db> {
         let file = self.frame.file;
         match recv {
-            AbstractValue::Instance { class, .. } => {
+            AbstractValue::Instance { class, origin } => {
+                if let Some(v) = env.attrs.get(&(origin, Name::from(name))) {
+                    return v.clone(); // 1. this object, on this path
+                }
                 let t = sol.sem.member(sol.sem.instance_type(class), name, file);
                 match t.map(|t| (t, sol.sem.shape(t, file))) {
                     Some((t, Shape::BoundMethod(func))) => {
@@ -66,6 +76,28 @@ impl<'db> Walk<'db> {
                 None => smallvec![AbstractValue::Unknown],
             },
             _ => unreachable!("member is only called for Instance, Class and Module"),
+        }
+    }
+
+    /// `a.b = v`: the value goes to every object `a` may be.
+    pub fn bind_attribute(
+        &mut self,
+        sol: &mut Solver<'db>,
+        attr: &ExprAttribute,
+        v: Values<'db>,
+        env: &mut Env<'db>,
+    ) {
+        let recvs = self.eval(sol, &attr.value, env);
+        let targets: SmallVec<[OriginId; 2]> = recvs
+            .iter()
+            .filter_map(|r| match r {
+                AbstractValue::Instance { origin, .. } => Some(*origin),
+                _ => None,
+            })
+            .collect();
+        let strong = targets.len() == 1; // exactly one object: replace
+        for origin in targets {
+            env.bind_attr(origin, &attr.attr.id, v.clone(), strong);
         }
     }
 }

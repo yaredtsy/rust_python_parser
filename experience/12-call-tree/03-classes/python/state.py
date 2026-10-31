@@ -47,7 +47,7 @@ def either(c):
         p = Pipeline(JsonHandler())
     else:
         p = Pipeline(CsvHandler())
-    p.run(1)  # two objects, one call site: one Pipeline.run node
+    p.run(1)  # two objects, one call site: a Pipeline.run node for each
 
 
 # expect:
@@ -77,4 +77,5 @@ def either(c):
 #   Pipeline
 #   Pipeline.run
 #     JsonHandler.process
+#   Pipeline.run
 #     CsvHandler.process
