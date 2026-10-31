@@ -62,6 +62,7 @@ pub struct Stats {
     pub reuse_hits: u32, // calls answered from a Ready slot
     pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
     pub cuts: Cuts,         // calls cut by a cost limit, by kind
+    pub lifted_subclass_of: u32, // `lift` reached a `type[X]` (tests: the arm runs)
 }
 #[derive(Clone, Debug)]
 pub struct Options {

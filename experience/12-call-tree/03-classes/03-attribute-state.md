@@ -113,10 +113,10 @@ hits step 1: `__init__` wrote it. `.process` is a second `member` call, on the
 pub fn bind_attribute(&mut self, sol: &mut Solver<'db>, attr: &ExprAttribute,
                       v: Values<'db>, env: &mut Env<'db>) {
     let recvs = self.eval(sol, &attr.value, env);       // `a.b.c = v`: the receiver is `a.b`
+    let strong = recvs.len() == 1;                      // exactly one receiver: replace
     let targets: SmallVec<[OriginId; 2]> = recvs.iter()
         .filter_map(|r| match r { AbstractValue::Instance { origin, .. } => Some(*origin), _ => None })
         .collect();
-    let strong = targets.len() == 1;                    // exactly one object: replace
     for origin in targets {
         env.bind_attr(origin, &attr.attr.id, v.clone(), strong);
     }
@@ -130,9 +130,11 @@ Expr::Attribute(a) => self.bind_attribute(sol, a, v, env),   // was: eval the re
 
 - **Only the last name is written.** `a.b.c = X()` evaluates `a.b` (two reads)
   and writes `c` on whatever `a.b` is.
-- **One object: replace. Several: add.** If the receiver may be two objects,
+- **One receiver: replace. Several: add.** If the receiver may be two objects,
   Python wrote only one of them, so each gets "old value or new value". This
-  is a **weak** write. Step 05 tests it.
+  is a **weak** write. Step 05 tests it. Count the receivers before keeping
+  only the objects: `{a, Unknown}` may be the unknown one, so `a` only *may*
+  have changed.
 - **No object: nothing is written.** A write to `Unknown` or to `ty`'s answer
   is dropped. Guessing which object changed would corrupt unrelated paths.
 - **Not covered:** an attribute inside an unpacked target (`a, self.x = …`)

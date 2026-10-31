@@ -145,8 +145,8 @@ fn apply(&mut self, plan: &Plan<'db>, strong_ok: bool, env: &mut Env<'db>) {
         }
     }
     for (targets, attr, v, strong) in &plan.effects {
+        let strong = *strong && targets.len() == 1 && strong_ok;      // counted before the filter (03.04)
         let targets: SmallVec<[OriginId; 2]> = targets.iter().copied().filter(|&o| self.holds_state(o)).collect();
-        let strong = *strong && targets.len() == 1 && strong_ok;
         for &t in &targets {
             env.bind_attr(t, attr, v.clone(), strong);
         }

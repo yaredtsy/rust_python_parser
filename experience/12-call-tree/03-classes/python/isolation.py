@@ -43,6 +43,16 @@ class Greeter:
 LOG_A = Logger()
 LOG_B = Logger()
 GREET = Greeter().greet
+PIPE = Pipeline(CsvHandler())
+KIND: type[Logger] = Logger  # ty: type[Logger], a SubclassOf
+type H = JsonHandler
+
+
+class Holder:
+    handler: H  # declared through the alias
+
+
+HOLDER = Holder()
 
 
 def two_alive():
@@ -75,6 +85,24 @@ def global_write():
 
 def global_method():
     GREET(on_ok)  # ty's bound method, given a receiver of its own
+
+
+def maybe_opaque(c):
+    a = Pipeline(JsonHandler())
+    if c:
+        p = a
+    else:
+        p = PIPE
+    p.handler = CsvHandler()  # p may be PIPE: a weak write, `a` keeps JsonHandler too
+    a.run(1)
+
+
+def subclass_of():
+    KIND()  # type[Logger] lifts to Class(Logger): a construction
+
+
+def via_alias():
+    HOLDER.handler.process(1)  # declared through an alias: ty expands it to JsonHandler
 
 
 # expect:
@@ -111,3 +139,17 @@ def global_method():
 # global_method
 #   Greeter.greet
 #     on_ok
+# expect:
+# maybe_opaque
+#   JsonHandler
+#   Pipeline
+#   CsvHandler
+#   Pipeline.run
+#     JsonHandler.process
+#     CsvHandler.process
+# expect:
+# subclass_of
+#   Logger
+# expect:
+# via_alias
+#   JsonHandler.process

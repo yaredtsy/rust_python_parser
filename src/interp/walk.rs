@@ -71,10 +71,13 @@ impl<'db> Walk<'db> {
     pub fn new(sol: &Solver<'db>, func: Definition<'db>) -> Self {
         let mut activations = IndexVec::new();
         let act = activations.push(Env::default());
+        let mut origins = Interner::default();
+        let opaque = origins.intern(OriginKey::Opaque);
+        debug_assert_eq!(opaque, OriginId::OPAQUE); // interned first, in every walk
         Walk {
             frame: frame_for(sol, func, act),
             activations,
-            origins: Interner::default(),
+            origins,
             values: Interner::default(),
             defaults: FxHashMap::default(),
             deferred: IndexVec::new(),
@@ -291,8 +294,9 @@ impl<'db> Walk<'db> {
         };
         self.lookup(sol, &probe, name).unwrap_or_default()
     }
-    pub fn none_value(&self, sol: &Solver<'db>) -> Values<'db> {
-        self.lift(sol, sol.sem.none_type(self.frame.file))
+    pub fn none_value(&mut self, sol: &mut Solver<'db>) -> Values<'db> {
+        let none = sol.sem.none_type(self.frame.file);
+        self.lift(sol, none)
     }
     pub fn eval(&mut self, sol: &mut Solver<'db>, expr: &Expr, env: &mut Env<'db>) -> Values<'db> {
         match expr {

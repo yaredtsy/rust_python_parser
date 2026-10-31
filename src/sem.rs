@@ -46,7 +46,13 @@ pub enum BoundTo {
 pub enum Shape<'db> {
     Function(Definition<'db>), // a `def`, as ty sees it
     Class(Definition<'db>),
-    BoundMethod(Definition<'db>), // a method ty bound to some receiver
+    Instance(Definition<'db>), // an object of this class, whichever one
+    BoundMethod {
+        func: Definition<'db>,
+        receiver: Option<Type<'db>>, // what ty bound it to
+    },
+    SubclassOf(Option<Definition<'db>>), // `type[X]`; `None` for `type[Any]`, `type[T]`
+    Alias(Type<'db>),                    // a type alias: what it stands for
     Union(Vec<Type<'db>>), // keep the alternatives
     Module,
     Unknown, // Any, Unknown, Never: nothing to go on
@@ -210,10 +216,28 @@ impl<'db> Sem<'db> {
             Type::BoundMethod(_) => {
                 let env = ProgramEnvironment::from_file(file);
                 match ty.definition(self.db, &env) {
-                    Some(TypeDefinition::Function(d)) => Shape::BoundMethod(d),
+                    Some(TypeDefinition::Function(d)) => Shape::BoundMethod {
+                        func: d,
+                        receiver: vnoc::bound_method_self(self.db, ty),
+                    },
                     _ => Shape::Other,
                 }
             }
+            Type::NominalInstance(_) => {
+                let env = ProgramEnvironment::from_file(file);
+                match ty.definition(self.db, &env) {
+                    Some(TypeDefinition::StaticClass(d)) => Shape::Instance(d),
+                    _ => Shape::Other,
+                }
+            }
+            Type::SubclassOf(_) => {
+                let env = ProgramEnvironment::from_file(file);
+                match ty.definition(self.db, &env) {
+                    Some(TypeDefinition::StaticClass(d)) => Shape::SubclassOf(Some(d)),
+                    _ => Shape::SubclassOf(None),
+                }
+            }
+            Type::TypeAlias(alias) => Shape::Alias(alias.value_type(self.db)),
             Type::ClassLiteral(_) | Type::GenericAlias(_) => {
                 let env = ProgramEnvironment::from_file(file);
                 match ty.definition(self.db, &env) {

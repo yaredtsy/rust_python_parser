@@ -2,9 +2,11 @@
 
 **You build:** nothing new for two objects: origins already keep them apart,
 and this step proves it. Then the objects you didn't build: a module global,
-a stdlib return, an annotated parameter. ty knows their class but not which
+a stdlib return, a bound method ty made. ty knows their class but not which
 object they are, so they share one reserved origin, `OPAQUE`, which never
-holds state.
+holds state. A parameter is not one of these: it holds what its caller
+passed, and with no caller it is `Unknown` until step 07 gives it an origin
+of its own.
 **Fixture:** `python/isolation.py`
 **Plan:** `plan/03-call-tree/04-values.md` § "`OriginId::OPAQUE`",
 § "`lift`", `15-checks-and-build-order.md` § "Writes to module globals are dropped"
@@ -30,6 +32,12 @@ def one_site():
 LOG_A = Logger()
 LOG_B = Logger()
 GREET = Greeter().greet
+PIPE = Pipeline(CsvHandler())
+KIND: type[Logger] = Logger
+type H = JsonHandler
+class Holder:
+    handler: H
+HOLDER = Holder()
 
 def opaque():
     LOG_A.handler = FileHandler()
@@ -39,6 +47,17 @@ def global_write():
     LOG_A.emit()                    # Python finds FileHandler.write; here, nothing
 def global_method():
     GREET(on_ok)                    # Greeter.greet > on_ok
+
+def maybe_opaque(c):
+    a = Pipeline(JsonHandler())
+    if c: p = a
+    else: p = PIPE
+    p.handler = CsvHandler()        # p may be PIPE: a weak write
+    a.run(1)                        # JsonHandler.process and CsvHandler.process
+def subclass_of():
+    KIND()                          # Logger: type[Logger] is a class
+def via_alias():
+    HOLDER.handler.process(1)       # JsonHandler.process
 ```
 
 ## Predict
@@ -78,14 +97,46 @@ fn holds_state(&self, origin: OriginId) -> bool { origin != OriginId::OPAQUE }
 
 | ty's type | value |
 |---|---|
-| an instance of a class (`Logger`) | `Instance { class: Logger, origin: OPAQUE }` |
-| a bound method ty made (`Greeter().greet` at module level) | `BoundMethod { func, receiver: Instance { Greeter, OPAQUE } }` |
+| an instance of a **project** class (`Logger`) | `Instance { class: Logger, origin: OPAQUE }` |
+| a bound method of a **project** function (`Greeter().greet` at module level) | `BoundMethod { func, receiver: Instance { Greeter, OPAQUE } }` |
 | `type[Base]` | `Class(Base)` |
 | a type alias (`type H = A \| B`) | what it stands for, lifted |
+| an instance or bound method from anywhere else (`int`, `s.upper`) | `Ty`, as before |
+
+**Why only project classes and functions:** keys still turn `Instance` and
+`BoundMethod` into `Fp::Unknown` until part 04. Lifting `int` or `s.upper`
+would make calls that differ only in those arguments share one context,
+where `Ty` keeps them apart (`Fp::Data`). And nothing is gained: a call on a
+non-project method goes to ty either way, and a stdlib object holds no
+project state.
+
+**The alias arm is a fallback.** ty expands an alias in a declared global or
+attribute type before you see it, so `via_alias` passes through the
+`Instance` arm. `Type::TypeAlias` only reaches `lift` in rarer spots, such as
+recursive aliases. `type[X]`, on the other hand, really arrives as
+`SubclassOf`: `p03_04_subclass_of_arm_runs` counts it
+(`Stats.lifted_subclass_of`), because `subclass_of`'s tree would look the same
+coming from a plain class literal.
 
 And the rule: **writes to an `OPAQUE` receiver are dropped, and reads skip the
 state for it.** `member` goes straight to the class side; `bind_attribute`
 filters on `holds_state`.
+
+**Count the receivers before the filter.** In `maybe_opaque`, `p` is `{a,
+OPAQUE}`. After the filter only `a` is left, and counting then would make the
+write strong: `a.handler` would be replaced with `CsvHandler`, and `a.run`
+would lose `JsonHandler.process`. But Python may have written to `PIPE`
+instead. So `strong` is `recvs.len() == 1`, counted on every receiver,
+`OPAQUE`, `Unknown` and `Ty` included:
+
+```rust
+let recvs = self.eval(sol, &attr.value, env);
+let strong = recvs.len() == 1;                       // before the filter
+let targets = recvs.iter().filter_map(|r| match r {
+    AbstractValue::Instance { origin, .. } if origin.holds_state() => Some(*origin),
+    _ => None,
+});
+```
 
 **Why one shared origin:** ty says "some `Logger`". It doesn't say which one.
 `LOG_A` and `LOG_B` are two, `get_logger()` might return either or a third.
@@ -127,20 +178,30 @@ carries that type, and `lift` lifts it.
   `bind_attribute`.
 - `Shape::Instance(class)`, `Shape::BoundMethod` with its receiver type,
   `Shape::SubclassOf(class)`, `Shape::Alias(value)`, and the `lift` arms.
+- `strong` counted before the filter in `bind_attribute`.
+- `lift` and `none_value` take `&mut Solver` (the counter), and `&mut self`
+  (`lift` interns the receiver).
 
 <details><summary>Reference: this step's code</summary>
 
 ```rust
 // src/interp/value.rs: lift, the new arms
 match s.sem.shape(ty, file) {
-    Shape::Instance(class) => smallvec![AbstractValue::Instance { class, origin: OriginId::OPAQUE }],
-    Shape::BoundMethod { func, receiver } => {
+    Shape::Instance(class) if s.sem.is_project(class) => {
+        smallvec![AbstractValue::Instance { class, origin: OriginId::OPAQUE }]
+    }
+    Shape::Instance(_) => smallvec![AbstractValue::Ty(ty)],
+    Shape::BoundMethod { func, receiver } if s.sem.is_project(func) => {
         let recvs = match receiver { Some(r) => self.lift(s, r), None => smallvec![AbstractValue::Unknown] };
         recvs.into_iter()
             .map(|r| AbstractValue::BoundMethod { func, receiver: self.values.intern(r) })
             .collect()
     }
-    Shape::SubclassOf(Some(class)) => smallvec![AbstractValue::Class(class)],
+    Shape::BoundMethod { .. } => smallvec![AbstractValue::Ty(ty)],
+    Shape::SubclassOf(Some(class)) => {
+        s.stats.lifted_subclass_of += 1;
+        smallvec![AbstractValue::Class(class)]
+    }
     Shape::SubclassOf(None) => smallvec![AbstractValue::Unknown],      // type[Any], type[T]
     Shape::Alias(value) => self.lift(s, value),
     // … the arms from earlier steps …
@@ -162,6 +223,12 @@ reach the walk without going through `member`.
 fn p03_04_isolation() {
     check("03-classes/python/isolation.py");
 }
+
+#[test]
+fn p03_04_subclass_of_arm_runs() {
+    let st = stats_for("03-classes/python/isolation.py", "subclass_of", &inline());
+    assert!(st.lifted_subclass_of > 0, "ty gave something other than type[Logger]");
+}
 ```
 
 ---
@@ -170,7 +237,8 @@ fn p03_04_isolation() {
 
 ```
 OriginId::OPAQUE    every object ty hands you. Holds no state
-lift: instances, bound methods, type[X], aliases
+lift: project instances and bound methods → OPAQUE; type[X] → Class; aliases expanded
+bind_attribute: strong only for one receiver, counted before the OPAQUE filter
 ```
 
 ---

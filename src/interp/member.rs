@@ -49,12 +49,14 @@ impl<'db> Walk<'db> {
         let file = self.frame.file;
         match recv {
             AbstractValue::Instance { class, origin } => {
-                if let Some(v) = env.attrs.get(&(origin, Name::from(name))) {
-                    return v.clone(); // 1. this object, on this path
+                if origin.holds_state() {
+                    if let Some(v) = env.attrs.get(&(origin, Name::from(name))) {
+                        return v.clone(); // 1. this object, on this path
+                    }
                 }
                 let t = sol.sem.member(sol.sem.instance_type(class), name, file);
                 match t.map(|t| (t, sol.sem.shape(t, file))) {
-                    Some((t, Shape::BoundMethod(func))) => {
+                    Some((t, Shape::BoundMethod { func, .. })) => {
                         let receiver = match sol.sem.bound_to(t) {
                             BoundTo::Object => recv, // a plain method: OUR object
                             BoundTo::Class => AbstractValue::Class(class), // a classmethod: the object's class
@@ -88,14 +90,16 @@ impl<'db> Walk<'db> {
         env: &mut Env<'db>,
     ) {
         let recvs = self.eval(sol, &attr.value, env);
+        // Counted before the filter: `{a, OPAQUE}` or `{a, Unknown}` may be the
+        // other one, so `a` only may have changed.
+        let strong = recvs.len() == 1; // exactly one receiver: replace
         let targets: SmallVec<[OriginId; 2]> = recvs
             .iter()
             .filter_map(|r| match r {
-                AbstractValue::Instance { origin, .. } => Some(*origin),
+                AbstractValue::Instance { origin, .. } if origin.holds_state() => Some(*origin),
                 _ => None,
             })
             .collect();
-        let strong = targets.len() == 1; // exactly one object: replace
         for origin in targets {
             env.bind_attr(origin, &attr.attr.id, v.clone(), strong);
         }

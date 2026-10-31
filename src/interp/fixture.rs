@@ -454,3 +454,16 @@ fn p03_02_methods() {
 fn p03_03_state() {
     check("03-classes/python/state.py");
 }
+
+#[test]
+fn p03_04_isolation() {
+    check("03-classes/python/isolation.py");
+}
+
+/// `subclass_of`'s tree would also come out right from a plain class literal.
+/// This checks the `type[X]` arm itself ran.
+#[test]
+fn p03_04_subclass_of_arm_runs() {
+    let st = stats_for("03-classes/python/isolation.py", "subclass_of", &inline());
+    assert!(st.lifted_subclass_of > 0, "ty gave something other than type[Logger]");
+}
