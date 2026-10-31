@@ -465,5 +465,12 @@ fn p03_04_isolation() {
 #[test]
 fn p03_04_subclass_of_arm_runs() {
     let st = stats_for("03-classes/python/isolation.py", "subclass_of", &inline());
-    assert!(st.lifted_subclass_of > 0, "ty gave something other than type[Logger]");
+    assert!(
+        st.lifted_subclass_of > 0,
+        "ty gave something other than type[Logger]"
+    );
+}
+#[test]
+fn p03_05_writes() {
+    check("03-classes/python/writes.py");
 }

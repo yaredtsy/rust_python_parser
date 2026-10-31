@@ -9,7 +9,7 @@ use crate::interp::value::AbstractValue::Unknown;
 use crate::interp::defer::Deferred;
 use crate::interp::key::Interner;
 use crate::interp::value::{
-    AbstractValue, ActivationId, DeferId, OriginId, OriginKey, ValueArena, Values,
+    dedup, AbstractValue, ActivationId, DeferId, OriginId, OriginKey, ValueArena, Values,
 };
 use crate::sem::{Definition, SemanticModel};
 use ruff_index::IndexVec;
@@ -321,6 +321,21 @@ impl<'db> Walk<'db> {
             Expr::Await(a) => self.eval(sol, &a.value, env),
             Expr::Lambda(_) => smallvec![AbstractValue::Unknown],
             Expr::Attribute(a) => self.eval_attribute(sol, a, env),
+            Expr::If(e) => {
+                self.eval(sol, &e.test, env); // evaluated, ignored
+                let mut v = self.eval(sol, &e.body, env);
+                v.extend(self.eval(sol, &e.orelse, env)); // both possible
+                dedup(&mut v);
+                v
+            }
+            Expr::BoolOp(b) => {
+                let mut v = Values::new();
+                for e in &b.values {
+                    v.extend(self.eval(sol, e, env)); // `a or b`: either operand
+                }
+                dedup(&mut v);
+                v
+            }
             other => {
                 for child in direct_children(other) {
                     self.eval(sol, child, env);
