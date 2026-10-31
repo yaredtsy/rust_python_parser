@@ -474,3 +474,7 @@ fn p03_04_subclass_of_arm_runs() {
 fn p03_05_writes() {
     check("03-classes/python/writes.py");
 }
+#[test]
+fn p03_06_special() {
+    check("03-classes/python/special.py");
+}

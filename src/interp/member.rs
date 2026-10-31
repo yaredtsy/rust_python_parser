@@ -1,11 +1,13 @@
 use ruff_python_ast::{ExprAttribute, ExprRef};
-use smallvec::{SmallVec, smallvec};
+use ruff_text_size::{Ranged, TextRange};
+use smallvec::smallvec;
 
 use crate::interp::{
-    Walk,
+    Mode, Walk,
+    bind::EvaluatedArgs,
     env::Env,
     solver::Solver,
-    value::{AbstractValue, OriginId, Values, dedup},
+    value::{AbstractValue, Values, dedup},
 };
 use crate::sem::{BoundTo, Name, Shape};
 
@@ -23,7 +25,7 @@ impl<'db> Walk<'db> {
         for recv in recvs {
             match recv {
                 AbstractValue::Instance { .. } | AbstractValue::Class(_) | AbstractValue::Module(_) => {
-                    out.extend(self.member(sol, recv, &attr.attr.id, env));
+                    out.extend(self.member(sol, recv, &attr.attr.id, attr.range(), env));
                 }
                 _ if !asked_ty => {
                     asked_ty = true;
@@ -44,6 +46,7 @@ impl<'db> Walk<'db> {
         sol: &mut Solver<'db>,
         recv: AbstractValue<'db>,
         name: &str,
+        site: TextRange,
         env: &mut Env<'db>,
     ) -> Values<'db> {
         let file = self.frame.file;
@@ -54,6 +57,14 @@ impl<'db> Walk<'db> {
                         return v.clone(); // 1. this object, on this path
                     }
                 }
+                // 2. a property: its getter runs here (inline mode only)
+                if sol.opts.mode == Mode::Inline {
+                    if let Some(getter) = sol.sem.property_parts(class, name).and_then(|p| p.getter) {
+                        let args = EvaluatedArgs::default();
+                        return self.call_function(sol, getter, None, Some(recv), site, &args, env);
+                    }
+                }
+                // 3. the class side, through ty
                 let t = sol.sem.member(sol.sem.instance_type(class), name, file);
                 match t.map(|t| (t, sol.sem.shape(t, file))) {
                     Some((t, Shape::BoundMethod { func, .. })) => {
@@ -93,15 +104,19 @@ impl<'db> Walk<'db> {
         // Counted before the filter: `{a, OPAQUE}` or `{a, Unknown}` may be the
         // other one, so `a` only may have changed.
         let strong = recvs.len() == 1; // exactly one receiver: replace
-        let targets: SmallVec<[OriginId; 2]> = recvs
-            .iter()
-            .filter_map(|r| match r {
-                AbstractValue::Instance { origin, .. } if origin.holds_state() => Some(*origin),
-                _ => None,
-            })
-            .collect();
-        for origin in targets {
-            env.bind_attr(origin, &attr.attr.id, v.clone(), strong);
+        for r in recvs.iter().copied() {
+            let AbstractValue::Instance { class, origin } = r else { continue };
+            match sol.sem.property_parts(class, &attr.attr.id) {
+                // a property: its setter runs, and nothing is stored under its name
+                Some(parts) => {
+                    if let (Some(setter), Mode::Inline) = (parts.setter, sol.opts.mode) {
+                        let args = EvaluatedArgs { positional: smallvec![v.clone()], ..Default::default() };
+                        self.call_function(sol, setter, None, Some(r), attr.range(), &args, env);
+                    }
+                }
+                None if origin.holds_state() => env.bind_attr(origin, &attr.attr.id, v.clone(), strong),
+                None => {}
+            }
         }
     }
 }

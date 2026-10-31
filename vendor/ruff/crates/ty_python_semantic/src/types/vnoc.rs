@@ -113,6 +113,19 @@ pub fn widen<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>)
     ty.promote(db, env)
 }
 
+/// The function a callable type was made from, when ty kept it: `property(get_h)`
+/// holds `get_h` as a `Callable`. `Signature::definition` (`signatures.rs:1133`), pub(crate).
+/// Overloads: no single function to walk.
+pub fn callable_definition<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Definition<'db>> {
+    match ty {
+        Type::Callable(c) => match c.signatures(db).overloads.as_slice() {
+            [sig] => sig.definition(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// What a bound method is bound to: its `__self__`. `BoundMethodType::self_instance`
 /// (`types/method.rs:29`), pub(super). Not a bound method → `None`.
 pub fn bound_method_self<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {

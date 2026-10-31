@@ -162,6 +162,9 @@ impl<'db> Walk<'db> {
                 Shape::Function(d) => {
                     sol.sem.is_project(d) || SIGNATURE_KEEPING.contains(&sol.sem.qname(d).as_str())
                 }
+                Shape::BoundMethod { func, .. } => {
+                    SIGNATURE_KEEPING.contains(&sol.sem.qname(func).as_str())
+                }
                 Shape::Class(d) => SIGNATURE_KEEPING.contains(&sol.sem.qname(d).as_str()),
                 _ => false,
             };

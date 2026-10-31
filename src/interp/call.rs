@@ -215,7 +215,7 @@ impl<'db> Walk<'db> {
     }
 
     /// Inline mode: a call to a function.
-    fn call_function(
+    pub(crate) fn call_function(
         &mut self,
         sol: &mut Solver<'db>,
         def: Definition<'db>,

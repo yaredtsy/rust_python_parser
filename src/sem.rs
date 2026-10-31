@@ -26,6 +26,7 @@ pub const SIGNATURE_KEEPING: &[&str] = &[
     "functools.cache",
     "builtins.classmethod",
     "builtins.staticmethod",
+    "builtins.property.setter",
 ];
 
 pub struct Sem<'db> {
@@ -37,6 +38,12 @@ pub struct BodyScope<'db> {
     pub file: ProgramFile<'db>,
     pub scope: FileScopeId,
 }
+/// A property's project accessors. A library accessor is a stub: not walked.
+pub struct PropertyParts<'db> {
+    pub getter: Option<Definition<'db>>,
+    pub setter: Option<Definition<'db>>,
+}
+
 /// What a bound method is bound to.
 pub enum BoundTo {
     Object,
@@ -78,6 +85,29 @@ impl<'db> Sem<'db> {
     pub fn class_type(&self, class: Definition<'db>) -> Type<'db> {
         vnoc::type_of_definition(self.db, class)
     }
+    /// `None` when `name` isn't a property on `class`. Asked on the class: on an
+    /// instance ty applies the descriptor and the property itself is gone.
+    pub fn property_parts(&self, class: Definition<'db>, name: &str) -> Option<PropertyParts<'db>> {
+        let file = class.program_file(self.db);
+        let Type::PropertyInstance(p) = self.member(self.class_type(class), name, file)? else {
+            return None;
+        };
+        // `property(get_h)` holds `get_h` as a `Callable`. Kept local: `shape` must not
+        // turn every Callable that has a definition into a Function.
+        let project = |t: Option<Type<'db>>| {
+            let t = t?;
+            let d = match self.shape(t, file) {
+                Shape::Function(d) => d,
+                _ => vnoc::callable_definition(self.db, t)?,
+            };
+            self.is_project(d).then_some(d)
+        };
+        Some(PropertyParts {
+            getter: project(p.getter(self.db)),
+            setter: project(p.setter(self.db)),
+        })
+    }
+
     /// An instance of the class, for looking up attributes on an object.
     pub fn instance_type(&self, class: Definition<'db>) -> Type<'db> {
         let env = ProgramEnvironment::from_file(class.program_file(self.db));
