@@ -20,8 +20,13 @@ pub use ty_python_semantic::types::{Type, TypeDefinition};
 pub use ty_python_semantic::{ProgramEnvironment, SemanticModel};
 
 /// Decorators that keep the wrapped function's signature.
-pub const SIGNATURE_KEEPING: &[&str] =
-    &["functools.wraps", "functools.lru_cache", "functools.cache"];
+pub const SIGNATURE_KEEPING: &[&str] = &[
+    "functools.wraps",
+    "functools.lru_cache",
+    "functools.cache",
+    "builtins.classmethod",
+    "builtins.staticmethod",
+];
 
 pub struct Sem<'db> {
     pub db: &'db ProjectDatabase,
@@ -32,9 +37,17 @@ pub struct BodyScope<'db> {
     pub file: ProgramFile<'db>,
     pub scope: FileScopeId,
 }
+/// What a bound method is bound to.
+pub enum BoundTo {
+    Object,
+    Class,
+    Other,
+}
 pub enum Shape<'db> {
     Function(Definition<'db>), // a `def`, as ty sees it
-    Union(Vec<Type<'db>>),     // keep the alternatives
+    Class(Definition<'db>),
+    BoundMethod(Definition<'db>), // a method ty bound to some receiver
+    Union(Vec<Type<'db>>), // keep the alternatives
     Module,
     Unknown, // Any, Unknown, Never: nothing to go on
     Other,   // keep as `Ty`
@@ -54,6 +67,36 @@ impl<'db> Sem<'db> {
         BodyScope {
             file,
             scope: index.node_scope(NodeWithScopeRef::Function(node)),
+        }
+    }
+    pub fn class_type(&self, class: Definition<'db>) -> Type<'db> {
+        vnoc::type_of_definition(self.db, class)
+    }
+    /// An instance of the class, for looking up attributes on an object.
+    pub fn instance_type(&self, class: Definition<'db>) -> Type<'db> {
+        let env = ProgramEnvironment::from_file(class.program_file(self.db));
+        vnoc::instance_of(self.db, &env, self.class_type(class)).unwrap_or(Type::unknown())
+    }
+
+    /// What ty bound a method to, by kind only. Matches the variant of `__self__`,
+    /// never compares it with a type built here: `Box[int]` and `Box` must both count.
+    pub fn bound_to(&self, method: Type<'db>) -> BoundTo {
+        match vnoc::bound_method_self(self.db, method) {
+            Some(Type::NominalInstance(_)) => BoundTo::Object,
+            Some(Type::ClassLiteral(_) | Type::GenericAlias(_) | Type::SubclassOf(_)) => {
+                BoundTo::Class
+            }
+            _ => BoundTo::Other,
+        }
+    }
+
+    /// `__init__` as found through the MRO, if it is a `def` somewhere.
+    pub fn init_of(&self, class: Definition<'db>) -> Option<Definition<'db>> {
+        let file = class.program_file(self.db);
+        let t = self.member(self.class_type(class), "__init__", file)?;
+        match self.shape(t, file) {
+            Shape::Function(d) => Some(d),
+            _ => None,
         }
     }
     /// If `name` is a free variable of `scope`, the enclosing FUNCTION scope
@@ -117,7 +160,10 @@ impl<'db> Sem<'db> {
                 };
                 if let Some(bound) = self.free_variable_scope(at, symbol.name().as_str()) {
                     // free in `scope`, and bound outside `func`
-                    if !index.ancestor_scopes(bound.scope).any(|(id, _)| id == own.scope) {
+                    if !index
+                        .ancestor_scopes(bound.scope)
+                        .any(|(id, _)| id == own.scope)
+                    {
                         out.push(symbol.name().clone());
                     }
                 }
@@ -158,6 +204,20 @@ impl<'db> Sem<'db> {
                 let env = ProgramEnvironment::from_file(file);
                 match ty.definition(self.db, &env) {
                     Some(TypeDefinition::Function(d)) => Shape::Function(d),
+                    _ => Shape::Other,
+                }
+            }
+            Type::BoundMethod(_) => {
+                let env = ProgramEnvironment::from_file(file);
+                match ty.definition(self.db, &env) {
+                    Some(TypeDefinition::Function(d)) => Shape::BoundMethod(d),
+                    _ => Shape::Other,
+                }
+            }
+            Type::ClassLiteral(_) | Type::GenericAlias(_) => {
+                let env = ProgramEnvironment::from_file(file);
+                match ty.definition(self.db, &env) {
+                    Some(TypeDefinition::StaticClass(d)) => Shape::Class(d),
                     _ => Shape::Other,
                 }
             }

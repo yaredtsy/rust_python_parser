@@ -69,15 +69,11 @@ and `cls` is the class. `cls(h)` is then a call on a `Class` value: a
 construction (step 01), node `Registry` under `Registry.create`, and the value
 is the new object.
 
-Through an instance, step 02's `member` arm would bind the object. Check the
-decorator first:
-
-```rust
-Some((_, Shape::BoundMethod { func, .. })) if s.sem.is_classmethod(func) => {
-    let receiver = self.values.intern(AbstractValue::Class(class));   // the object's class
-    smallvec![AbstractValue::BoundMethod { func, receiver }]
-}
-```
+Through an instance, step 02 already gets it right. ty binds the classmethod
+to the class, and `sem.bound_to` reads that from the variant of `__self__`
+(`BoundTo::Class`), so the receiver is the object's class. Nothing new here,
+and no decorator check: an earlier plan read the `def`'s decorator list
+(`is_classmethod`), and step 02's rule replaces it.
 
 ### Decision 3: a property read is a call
 
@@ -92,9 +88,9 @@ site**:
 
 ```rust
 if let Some(getter) = s.sem.property_getter(class, name) {
-    let run = self.walk_inline(s, getter, None, Some(recv), &EvaluatedArgs::default(), env);
-    self.push_node(s, getter, attr.range(), run.children);
-    return run.returns;                       // the value of `r.active` is what the getter returns
+    // through inline_node (03.01), so a getter that reads itself is a [recursive] leaf
+    // the value of `r.active` is what the getter returns
+    return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default());
 }
 ```
 
@@ -113,9 +109,9 @@ the edge and skip the node at render.
 
 ### Yours
 
-- `sem.is_classmethod(func)`, `sem.property_getter(class, name)`, and the
-  `vnoc` wrapper for the getter.
-- The two checks in `member`'s instance arm, before step 02's rule.
+- `sem.property_getter(class, name)`, and the `vnoc` wrapper for the getter.
+- The property check in `member`'s instance arm, before step 02's rule.
+  Class methods need nothing new (Decision 2).
 
 <details><summary>Reference: this step's code</summary>
 
@@ -130,18 +126,16 @@ AbstractValue::Instance { class, origin } => {
     }
     // 2. a property: call the getter here
     if let Some(getter) = s.sem.property_getter(class, name) {
-        let run = self.walk_inline(s, getter, None, Some(recv), &EvaluatedArgs::default(), env);
-        self.push_node(s, getter, attr.range(), run.children);
-        return run.returns;
+        return self.call_function(s, getter, None, Some(recv), attr.range(), &EvaluatedArgs::default());
     }
-    // 3. the class side, through ty
+    // 3. the class side, through ty (step 02's rule, unchanged)
     let file = self.frame.file;
     match s.sem.member(s.sem.instance_type(class), name, file).map(|t| (t, s.sem.shape(t, file))) {
-        Some((_, Shape::BoundMethod { func, .. })) => {
-            let receiver = if s.sem.is_classmethod(func) {
-                AbstractValue::Class(class)
-            } else {
-                recv
+        Some((t, Shape::BoundMethod { func, .. })) => {
+            let receiver = match s.sem.bound_to(t) {
+                BoundTo::Object => recv,
+                BoundTo::Class => AbstractValue::Class(class), // a classmethod
+                BoundTo::Other => return self.lift(s, t),
             };
             let receiver = self.values.intern(receiver);
             smallvec![AbstractValue::BoundMethod { func, receiver }]
@@ -151,9 +145,6 @@ AbstractValue::Instance { class, origin } => {
     }
 }
 ```
-
-`is_classmethod` reads the `def`'s decorator list: a decorator whose type is
-the builtin `classmethod`.
 
 </details>
 
@@ -172,8 +163,8 @@ fn p03_06_special() {
 
 ## Where you are
 
-The receiver rule is complete: none, the object, or its class, decided by the
-decorator. And an attribute read can be a call.
+The receiver rule is complete: none, the object, or its class, decided by
+what ty bound the method to. And an attribute read can be a call.
 
 ---
 
@@ -192,8 +183,9 @@ decorator. And an attribute read can be a call.
 1. `cls` is `Special`: ty binds a class method to the class it was looked up
    on. `cls(h)` constructs `Special`: a `Special` node, with
    `Registry.__init__`'s calls under it (inherited, step 01).
-2. Yes. The getter is walked with `walk_inline`, so its exits carry its state
-   back to the caller like any other call (step 03, decision 4).
+2. Yes. The getter is walked like any call (`call_function`, then
+   `walk_inline`), so its exits carry its state back to the caller (step 03,
+   decision 4).
 3. Only when the code assigns to the property's name, which needs a setter:
    `r.active = X` makes `bind_attribute` store `(r, active) = X`, and a later
    `r.active` returns `X` from state without calling the getter. The tree

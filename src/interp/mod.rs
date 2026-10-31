@@ -151,7 +151,7 @@ pub fn solve<'db>(
     // Called with no arguments (step 01.11). A walk of the entry's own frame
     // does the binding, exactly as step 02 did.
     let mut w = Walk::new(&s, def);
-    let bound = w.bind_parameters(&mut s, def, node, &bind::EvaluatedArgs::default(), None);
+    let bound = w.bind_parameters(&mut s, def, node, None, &bind::EvaluatedArgs::default(), None);
     let root_ctx = s.key(&w, def, &bound, None);
     s.get(root_ctx);
     Some((s, root_ctx))
@@ -174,7 +174,7 @@ fn inline_tree(
 
     // Called with no arguments (step 01.11), and keyed like any call.
     let mut w = Walk::new(&s, def);
-    let bound = w.bind_parameters(&mut s, def, node, &bind::EvaluatedArgs::default(), None);
+    let bound = w.bind_parameters(&mut s, def, node, None, &bind::EvaluatedArgs::default(), None);
     s.key(&w, def, &bound, None);
     let mut env = w.env_from_bound(node, &bound);
     env.scope = Some(s.sem.body_scope(def, node));

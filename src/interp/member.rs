@@ -1,11 +1,13 @@
 use ruff_python_ast::{ExprAttribute, ExprRef};
+use smallvec::smallvec;
 
 use crate::interp::{
     Walk,
-    solver::Solver,
     env::Env,
+    solver::Solver,
     value::{AbstractValue, Values, dedup},
 };
+use crate::sem::{BoundTo, Shape};
 
 // src/interp/member.rs
 impl<'db> Walk<'db> {
@@ -20,11 +22,8 @@ impl<'db> Walk<'db> {
         let mut asked_ty = false;
         for recv in recvs {
             match recv {
-                AbstractValue::Module(m) => {
-                    match sol.sem.member(m, &attr.attr.id, self.frame.file) {
-                        Some(t) => out.extend(self.lift(sol, t)),
-                        None => out.push(AbstractValue::Unknown),
-                    }
+                AbstractValue::Instance { .. } | AbstractValue::Class(_) | AbstractValue::Module(_) => {
+                    out.extend(self.member(sol, recv, &attr.attr.id));
                 }
                 _ if !asked_ty => {
                     asked_ty = true;
@@ -36,5 +35,37 @@ impl<'db> Walk<'db> {
         }
         dedup(&mut out);
         out
+    }
+
+    /// What `.name` is on one receiver. ty finds it; the receiver bound is ours.
+    fn member(&mut self, sol: &mut Solver<'db>, recv: AbstractValue<'db>, name: &str) -> Values<'db> {
+        let file = self.frame.file;
+        match recv {
+            AbstractValue::Instance { class, .. } => {
+                let t = sol.sem.member(sol.sem.instance_type(class), name, file);
+                match t.map(|t| (t, sol.sem.shape(t, file))) {
+                    Some((t, Shape::BoundMethod(func))) => {
+                        let receiver = match sol.sem.bound_to(t) {
+                            BoundTo::Object => recv, // a plain method: OUR object
+                            BoundTo::Class => AbstractValue::Class(class), // a classmethod: the object's class
+                            BoundTo::Other => return self.lift(sol, t),
+                        };
+                        let receiver = self.values.intern(receiver);
+                        smallvec![AbstractValue::BoundMethod { func, receiver }]
+                    }
+                    Some((t, _)) => self.lift(sol, t), // a class variable, a declared attribute
+                    None => smallvec![AbstractValue::Unknown],
+                }
+            }
+            AbstractValue::Class(c) => match sol.sem.member(sol.sem.class_type(c), name, file) {
+                Some(t) => self.lift(sol, t), // a method stays an unbound Function
+                None => smallvec![AbstractValue::Unknown],
+            },
+            AbstractValue::Module(m) => match sol.sem.member(m, name, file) {
+                Some(t) => self.lift(sol, t),
+                None => smallvec![AbstractValue::Unknown],
+            },
+            _ => unreachable!("member is only called for Instance, Class and Module"),
+        }
     }
 }

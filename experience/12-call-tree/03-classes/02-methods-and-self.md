@@ -18,6 +18,10 @@ class Greeter:
     def twice(self, cb):
         self.greet(cb)
         self.greet(cb)
+    @classmethod
+    def make(cls, cb):
+        cb()
+        return cls()
 class Loud(Greeter): pass
 class Quiet(Greeter):
     def greet(self, cb): pass
@@ -31,6 +35,7 @@ def main():
     Quiet().greet(on_ok)        # Quiet, then Quiet.greet
     m = g.greet
     m(on_err)                   # Greeter.greet > on_err
+    g.make(on_ok)               # Greeter.make > on_ok, Greeter   (cls is the class)
 ```
 
 ## Predict
@@ -74,18 +79,51 @@ the object: "some `Greeter`", a type. Lifting that would lose which object
 the method was called on, and inside the method `self` would be an object you
 know nothing about. In step 03 that means `self.handler` finds nothing.
 
-So keep only the function, and bind the object `member` was called on:
+So keep only the function, and bind your own value in place of ty's. Which
+value is decided by **what kind of thing** ty bound the method to:
 
 ```rust
-match t.map(|t| s.sem.shape(t, self.frame.file)) {
-    Some(Shape::BoundMethod(func)) => {
-        let receiver = self.values.intern(recv);        // OUR object
+match t.map(|t| (t, s.sem.shape(t, self.frame.file))) {
+    Some((t, Shape::BoundMethod(func))) => {
+        let receiver = match s.sem.bound_to(t) {
+            BoundTo::Object => recv,                        // a plain method: OUR object
+            BoundTo::Class => AbstractValue::Class(class),  // a classmethod: the object's class
+            BoundTo::Other => return self.lift(s, t),       // bound to something else: ty's answer
+        };
+        let receiver = self.values.intern(receiver);
         smallvec![AbstractValue::BoundMethod { func, receiver }]
     }
-    Some(_) => self.lift(s, t.unwrap()),                // a class variable, a declared attribute
+    Some((t, _)) => self.lift(s, t),                   // a class variable, a declared attribute
     None => smallvec![AbstractValue::Unknown],          // no such attribute
 }
 ```
+
+`bound_to` reads ty's `__self__` for the method (`vnoc::bound_method_self`)
+and looks only at its variant: an instance type is `Object`, a class literal,
+generic alias or `type[…]` is `Class`, anything else is `Other`.
+
+**Why match on the variant, not compare with the object's type:** comparing
+`__self__` for equality with `instance_type(class)` fails where it should
+match. For a generic class, one side is `Box[int]` and the other plain `Box`.
+The variant answers the question that matters here, "the object or its
+class?", and doesn't care about specialisation.
+
+**Why a classmethod is handled here, not in step 06:** through an instance,
+ty binds a classmethod to the class. Binding the object instead would put an
+`Instance` in `cls`, and `cls()` would look for `__call__` instead of
+constructing. Reading the variant gets it right with no decorator check.
+`Loud().make(...)` binds `cls = Loud`: `class` is the object's own class,
+not the one that defines `make`.
+
+**Known gap:** a `__getattr__` or custom descriptor that hands back a method
+bound to a *different* object of some class still reads as `Object`, and gets
+your object as receiver. The variant can't tell the two apart. That's rare,
+and it's left for now.
+
+`@classmethod` and `@staticmethod` join `SIGNATURE_KEEPING`, and
+`decorator_changes_signature` trusts a `Shape::Class` decorator on that list
+as it does a function. They're classes, not functions, and without this every
+parameter after `cls` binds `Unknown`.
 
 ```rust
 pub enum AbstractValue<'db> {
@@ -138,7 +176,15 @@ receiver rule is about position, never about the name `self`.
 
 - `BoundMethod`, `ValueId`, `ValueArena` in the walk.
 - `Shape::BoundMethod(func)` in `sem::shape`.
+- The `vnoc::bound_method_self` wrapper, and `sem.bound_to` with its
+  `BoundTo` enum.
 - `member` for `Instance` and `Class` values.
+- `builtins.classmethod` and `builtins.staticmethod` in `SIGNATURE_KEEPING`,
+  and a `Shape::Class` arm in `decorator_changes_signature`.
+- A stand-in in `fp_one`: `BoundMethod` → `Fp::Unknown`. Inline mode keys
+  every call, and `use(g.greet)` passes one as an argument. Part 04 replaces
+  it with `Fp::Bound { func, recv }`. `ValueId` is per walk and means nothing
+  in a key or a summary, so part 04 converts the receiver itself.
 - `call_values`: a `BoundMethod` callee goes to `call_function` with its
   receiver, in inline mode. `call_function` passes the receiver on to
   `inline_node` (03.01), which keeps the recursion guard in one place.
@@ -156,8 +202,13 @@ fn member(&mut self, s: &mut Solver<'db>, recv: AbstractValue<'db>, name: &Name,
         AbstractValue::Instance { class, .. } => {
             let t = s.sem.member(s.sem.instance_type(class), name, file);
             match t.map(|t| (t, s.sem.shape(t, file))) {
-                Some((_, Shape::BoundMethod(func))) => {
-                    let receiver = self.values.intern(recv);
+                Some((t, Shape::BoundMethod(func))) => {
+                    let receiver = match s.sem.bound_to(t) {
+                        BoundTo::Object => recv,
+                        BoundTo::Class => AbstractValue::Class(class),
+                        BoundTo::Other => return self.lift(s, t),
+                    };
+                    let receiver = self.values.intern(receiver);
                     smallvec![AbstractValue::BoundMethod { func, receiver }]
                 }
                 Some((t, _)) => self.lift(s, t),
@@ -189,6 +240,43 @@ pub fn instance_type(&self, class: Definition<'db>) -> Type<'db> {
 //     Some(TypeDefinition::Function(d)) => Shape::BoundMethod(d),
 //     _ => Shape::Other,
 // },
+
+/// What ty bound a method to, by kind only.
+pub enum BoundTo { Object, Class, Other }
+
+/// Matches the variant of `__self__`, never compares it with a type you built:
+/// `Box[int]` and `Box` must both count.
+pub fn bound_to(&self, method: Type<'db>) -> BoundTo {
+    match vnoc::bound_method_self(self.db, method) {
+        Some(Type::NominalInstance(_)) => BoundTo::Object,
+        Some(Type::ClassLiteral(_) | Type::GenericAlias(_) | Type::SubclassOf(_)) => BoundTo::Class,
+        _ => BoundTo::Other,
+    }
+}
+
+// SIGNATURE_KEEPING gains "builtins.classmethod", "builtins.staticmethod".  [check] the qnames
+// decorator_changes_signature, next to the Function arm:
+//     Shape::Class(d) => SIGNATURE_KEEPING.contains(&sol.sem.qname(d).as_str()),
+```
+
+```rust
+// vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs (one more wrapper)
+/// What a bound method is bound to: its `__self__`. `BoundMethodType::self_instance`
+/// (`types/method.rs:29`), pub(super). Not a bound method → `None`.
+pub fn bound_method_self<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
+    match ty {
+        Type::BoundMethod(m) => Some(m.self_instance(db)),
+        _ => None,
+    }
+}
+```
+
+The variant match lives in `sem.rs`, not in the wrapper: `vnoc.rs` rule 2 is
+one internal call, no logic.
+
+```rust
+// src/interp/key.rs, fp_one
+AbstractValue::BoundMethod { .. } => Fp::Unknown, // part 04: Fp::Bound { func, recv }
 ```
 
 ```rust
@@ -210,6 +298,10 @@ for (func, recv) in methods {
 // inline_node, so a method that calls itself is a `[recursive]` leaf like
 // any other function. The existing call in the targets loop passes `None`.
 ```
+
+One node per (method, receiver): if `g` is two objects after an `if`/`else`,
+`g.greet(cb)` gives two `Greeter.greet` nodes at that site. The walker
+doesn't merge them. Merging nodes for one function is done at a later layer.
 
 </details>
 
@@ -256,7 +348,7 @@ member(Instance) → ty finds the function; you bind the receiver
    `self = o`, and `log()` is a plain call.
 2. Because Python does the same: `Greeter.greet` is the plain function. Its
    first parameter is filled by whatever the call passes first. Only an
-   instance binds a receiver (and a classmethod binds the class, step 06).
+   instance binds a receiver (and a classmethod binds the class, Decision 2).
 3. ty: `f` is a module global. ty's type is a bound method with its own
    receiver, which `lift` keeps as `Ty` for now, so `f(on_ok)` has no edge.
    Step 04 lifts it to a `BoundMethod` over an object that holds no state,

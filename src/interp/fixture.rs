@@ -83,7 +83,10 @@ pub fn contexts_of(fixture: &str, entry: &str, func: &str) -> usize {
     let module = path.file_stem().unwrap().to_str().unwrap();
     let (s, _) = solve(&db, file, entry, &summary()).unwrap();
     let want = format!("{module}.{func}");
-    s.contexts.iter().filter(|(_, c)| s.sem.qname(c.func) == want).count()
+    s.contexts
+        .iter()
+        .filter(|(_, c)| s.sem.qname(c.func) == want)
+        .count()
 }
 
 pub fn relevant_names(fixture: &str, func: &str) -> Vec<String> {
@@ -397,9 +400,17 @@ fn p02_06_capped_group_is_incomplete() {
         },
         ..summary()
     };
-    let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &opts);
+    let st = stats_for(
+        "02-function-summaries/python/groups.py",
+        "ping_entry",
+        &opts,
+    );
     assert_eq!(st.rounds_capped, 1);
-    let st = stats_for("02-function-summaries/python/groups.py", "ping_entry", &summary());
+    let st = stats_for(
+        "02-function-summaries/python/groups.py",
+        "ping_entry",
+        &summary(),
+    );
     assert_eq!(st.rounds_capped, 0);
 }
 
@@ -428,4 +439,18 @@ fn p02_08_cuts() {
     };
     let st = stats_for("02-function-summaries/python/cuts.py", "main", &opts);
     assert_eq!(st.cuts.stack, 1); // mid under main > a > b > top
+}
+
+#[test]
+fn p03_01_construct() {
+    check("03-classes/python/construct.py"); // inline mode only, until part 04
+}
+
+#[test]
+fn p03_02_methods() {
+    check("03-classes/python/methods.py");
+}
+#[test]
+fn p03_03_state() {
+    check("03-classes/python/state.py");
 }

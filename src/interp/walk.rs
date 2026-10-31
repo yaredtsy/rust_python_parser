@@ -7,7 +7,10 @@ use crate::interp::env::Env;
 use crate::interp::tree::Node;
 use crate::interp::value::AbstractValue::Unknown;
 use crate::interp::defer::Deferred;
-use crate::interp::value::{AbstractValue, ActivationId, DeferId, Values};
+use crate::interp::key::Interner;
+use crate::interp::value::{
+    AbstractValue, ActivationId, DeferId, OriginId, OriginKey, ValueArena, Values,
+};
 use crate::sem::{Definition, SemanticModel};
 use ruff_index::IndexVec;
 use ruff_python_ast::visitor::{Visitor, walk_expr, walk_pattern, walk_stmt};
@@ -19,6 +22,10 @@ use ty_python_core::ProgramFile;
 pub struct Walk<'db> {
     pub frame: Frame<'db>,
     pub activations: IndexVec<ActivationId, Env<'db>>,
+    /// Which object is which: where it was built, and in which run.
+    pub origins: Interner<OriginKey, OriginId>,
+    /// Receivers held by `BoundMethod`s.
+    pub values: ValueArena<'db>,
     /// A nested def's defaults, as computed when its `def` ran. Per run.
     pub defaults: FxHashMap<(Definition<'db>, ActivationId), Vec<(Name, Values<'db>)>>,
     /// Operations that waited on a pending value, in the order the walk met them.
@@ -64,6 +71,8 @@ impl<'db> Walk<'db> {
         Walk {
             frame: frame_for(sol, func, act),
             activations,
+            origins: Interner::default(),
+            values: Interner::default(),
             defaults: FxHashMap::default(),
             deferred: IndexVec::new(),
             resolved: IndexVec::new(),

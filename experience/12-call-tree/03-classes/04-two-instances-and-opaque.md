@@ -117,8 +117,9 @@ commit.
 OPAQUE } }`, and calling it walks `greet` with that receiver. You get the edge.
 `greet` just can't read state on `self`. (This answers step 02's exercise 3.)
 
-The receiver's class comes from ty: `vnoc::bound_method_self`, a new wrapper
-over `BoundMethodType::self_instance` (`pub(super)`, `types/method.rs:29`).
+The receiver's class comes from ty: `vnoc::bound_method_self`, step 02's
+wrapper over `BoundMethodType::self_instance`. `Shape::BoundMethod` now
+carries that type, and `lift` lifts it.
 
 ### Yours
 
@@ -126,20 +127,8 @@ over `BoundMethodType::self_instance` (`pub(super)`, `types/method.rs:29`).
   `bind_attribute`.
 - `Shape::Instance(class)`, `Shape::BoundMethod` with its receiver type,
   `Shape::SubclassOf(class)`, `Shape::Alias(value)`, and the `lift` arms.
-- The `vnoc::bound_method_self` wrapper.
 
 <details><summary>Reference: this step's code</summary>
-
-```rust
-// vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs (one more wrapper)
-/// The receiver ty bound into a bound method. [check] the accessor and its visibility.
-pub fn bound_method_self<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
-    match ty {
-        Type::BoundMethod(m) => Some(m.self_instance(db)),
-        _ => None,
-    }
-}
-```
 
 ```rust
 // src/interp/value.rs: lift, the new arms

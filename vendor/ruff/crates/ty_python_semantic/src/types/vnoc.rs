@@ -29,7 +29,7 @@
 //! signature change on rebase, only a test catches a *behaviour* change.
 
 use super::{ClassBase, ProgramEnvironment, Type};
-use crate::Db;
+use crate::{Db, types::binding_type};
 use ty_python_core::definition::Definition;
 
 /// The MRO of `ty`, without the class itself, as definitions.
@@ -77,7 +77,12 @@ pub fn class_mro<'db>(db: &'db dyn Db, ty: Type<'db>) -> Vec<Option<Definition<'
 /// `None` for "no such attribute" or "could not be determined" — callers
 /// should treat both the same way object 5's quirk 13 treats a bad parse:
 /// skip, do not panic.
-pub fn member<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>, name: &str) -> Option<Type<'db>> {
+pub fn member<'db>(
+    db: &'db dyn Db,
+    env: &ProgramEnvironment<'db>,
+    ty: Type<'db>,
+    name: &str,
+) -> Option<Type<'db>> {
     ty.member(db, env, name).ignore_possibly_undefined()
 }
 
@@ -91,7 +96,11 @@ pub fn member<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>
 /// `.handle` is looked up on an *instance* of `LoudHandler`, not on the
 /// class object itself. Not a class literal → `None`, same posture as
 /// `class_mro`.
-pub fn instance_of<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Option<Type<'db>> {
+pub fn instance_of<'db>(
+    db: &'db dyn Db,
+    env: &ProgramEnvironment<'db>,
+    ty: Type<'db>,
+) -> Option<Type<'db>> {
     let class = ty.to_class_type(db)?;
     Some(Type::instance(db, env, class))
 }
@@ -102,4 +111,19 @@ pub fn instance_of<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type
 /// two calls that differ only in a literal share one key.
 pub fn widen<'db>(db: &'db dyn Db, env: &ProgramEnvironment<'db>, ty: Type<'db>) -> Type<'db> {
     ty.promote(db, env)
+}
+
+/// What a bound method is bound to: its `__self__`. `BoundMethodType::self_instance`
+/// (`types/method.rs:29`), pub(super). Not a bound method → `None`.
+pub fn bound_method_self<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db>> {
+    match ty {
+        Type::BoundMethod(m) => Some(m.self_instance(db)),
+        _ => None,
+    }
+}
+
+/// The type a definition binds: a class's own type for a `class` statement.
+/// `binding_type` (`types.rs:235`), pub(crate).   [check] the path
+pub fn type_of_definition<'db>(db: &'db dyn Db, def: Definition<'db>) -> Type<'db> {
+    binding_type(db, def)
 }

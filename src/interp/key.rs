@@ -27,6 +27,7 @@ pub enum Fp<'db> {
     Unknown,
     Data(Type<'db>),
     Function(Definition<'db>),
+    Class(Definition<'db>),
     Module(Type<'db>),
     Union(SmallVec<[FpId; 4]>),
     Closure {
@@ -132,6 +133,9 @@ impl<'db> Solver<'db> {
     ) -> FpId {
         let fp = match v {
             AbstractValue::Function(d) => Fp::Function(d),
+            AbstractValue::BoundMethod { .. } => Fp::Unknown, // part 04: Fp::Bound { func, recv }
+            AbstractValue::Class(d) => Fp::Class(d), // a class is a constant, like a function
+            AbstractValue::Instance { .. } => Fp::Unknown, // part 04: Fp::Instance { class, attrs }
             AbstractValue::Module(t) => Fp::Module(t),
             AbstractValue::Ty(t) => Fp::Data(self.sem.widen(t, file)),
             AbstractValue::Unknown => Fp::Unknown,
@@ -251,6 +255,7 @@ impl<'db> Walk<'db> {
     ) -> Values<'db> {
         match &sol.fps[fp] {
             Fp::Function(d) => smallvec![AbstractValue::Function(*d)],
+            Fp::Class(d) => smallvec![AbstractValue::Class(*d)],
             Fp::Module(t) => smallvec![AbstractValue::Module(*t)],
             Fp::Data(t) => smallvec![AbstractValue::Ty(*t)],
             Fp::Unknown => smallvec![AbstractValue::Unknown],

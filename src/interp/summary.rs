@@ -103,6 +103,7 @@ pub enum SVal<'db> {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PlainVal<'db> {
     Function(Definition<'db>),
+    Class(Definition<'db>),
     Module(Type<'db>),
     Ty(Type<'db>),
     Unknown,
@@ -220,6 +221,7 @@ impl<'db> Walk<'db> {
         for sv in vals {
             out.push(match sv {
                 SVal::Plain(PlainVal::Function(d)) => AbstractValue::Function(*d),
+                SVal::Plain(PlainVal::Class(d)) => AbstractValue::Class(*d),
                 SVal::Plain(PlainVal::Module(t)) => AbstractValue::Module(*t),
                 SVal::Plain(PlainVal::Ty(t)) => AbstractValue::Ty(*t),
                 SVal::Plain(PlainVal::Unknown) => AbstractValue::Unknown,
@@ -252,6 +254,7 @@ impl<'db> Walk<'db> {
 fn plain(v: AbstractValue<'_>) -> PlainVal<'_> {
     match v {
         AbstractValue::Function(d) => PlainVal::Function(d),
+        AbstractValue::Class(d) => PlainVal::Class(d),
         AbstractValue::Module(t) => PlainVal::Module(t),
         AbstractValue::Ty(t) => PlainVal::Ty(t),
         _ => PlainVal::Unknown, // Closure and Pending are handled by `to_svals`

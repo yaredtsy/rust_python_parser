@@ -88,6 +88,7 @@ impl<'db> Walk<'db> {
         sol: &mut Solver<'db>,
         func: Definition<'db>,
         def: &StmtFunctionDef,
+        receiver: Option<AbstractValue<'db>>,
         args: &EvaluatedArgs<'db>,
         enclosing: Option<ActivationId>,
     ) -> Bound<'db> {
@@ -97,14 +98,21 @@ impl<'db> Walk<'db> {
         let unknown = || smallvec![AbstractValue::Unknown];
         let mut slots: SmallVec<[Values<'db>; 4]> = SmallVec::new();
 
+        // `self` is the first parameter, whatever it is called.
+        let has_first = params.posonlyargs.first().or(params.args.first()).is_some();
+        if let (Some(recv), true) = (receiver, has_first) {
+            slots.push(smallvec![recv]); // even when the rest can't be matched
+        }
+        let skip = slots.len(); // 0 or 1: parameters already bound
+
         if args.has_splat || self.decorator_changes_signature(sol, def) {
-            for _ in param_names(def) {
+            for _ in param_names(def).skip(skip) {
                 slots.push(unknown());
             }
             return Bound { slots };
         }
 
-        for p in params.posonlyargs.iter().chain(&params.args) {
+        for p in params.posonlyargs.iter().chain(&params.args).skip(skip) {
             let name = &p.parameter.name.id;
             let v = args
                 .keyword(name)
@@ -154,6 +162,7 @@ impl<'db> Walk<'db> {
                 Shape::Function(d) => {
                     sol.sem.is_project(d) || SIGNATURE_KEEPING.contains(&sol.sem.qname(d).as_str())
                 }
+                Shape::Class(d) => SIGNATURE_KEEPING.contains(&sol.sem.qname(d).as_str()),
                 _ => false,
             };
             if !trusted {

@@ -18,6 +18,11 @@ class Greeter:
         self.greet(cb)
         self.greet(cb)
 
+    @classmethod
+    def make(cls, cb):
+        cb()
+        return cls()  # cls is the class, so this constructs
+
 
 class Loud(Greeter):
     pass  # greet is inherited
@@ -37,6 +42,7 @@ def main():
     Quiet().greet(on_ok)
     m = g.greet
     m(on_err)  # a bound method is a value
+    g.make(on_ok)  # a classmethod through an instance: cls is Greeter, not g
 
 
 # expect:
@@ -58,3 +64,6 @@ def main():
 #   Quiet.greet
 #   Greeter.greet
 #     on_err
+#   Greeter.make
+#     on_ok
+#     Greeter
