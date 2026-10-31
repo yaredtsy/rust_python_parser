@@ -38,6 +38,24 @@ def inherited():
 def annotated(h: Handler):
     h.handle()                            # Handler.handle
 
+def f(h: Handler): h.x = A()
+def g(k: Handler): k.x.go()
+def separate(u, v):
+    f(u)                                  # f > A
+    g(v)                                  # g, and no A.go: k is not h
+
+class Maker:
+    @classmethod
+    def build(cls): cls()
+class Special(Maker):
+    def make(self): super().build()       # cls is Special, the object's class
+def via_super():
+    Special().make()                      # Special; Special.make > Maker.build > Special
+
+def fanout(c):                            # nine branches, b = Box(H9()) … Box(H1())
+    …
+    b.h.handle()                          # H1.handle … H8.handle: H9 is cut
+
 # and the entry `Service.call`: Service.call > Handler.handle
 ```
 
@@ -70,6 +88,29 @@ hits state, `member(that, handle)` goes to the class side. A write at depth,
   hop multiplies. Cap the values carried per hop at `max_chain_fanout` (8),
   after deduplication, and count each time it fires. Two paths to one object
   cost nothing.
+- **Sort before cutting.** Which 8 survive must not depend on the order the
+  values were joined in: that order is an accident of the walk, like the
+  callee order `call_values` sorts away. The walk is deterministic, so this
+  isn't about runs differing; it's about a harmless refactor silently changing
+  which objects are kept. Sort by where the value's class or function is
+  defined, then by origin, and keep the first 8:
+
+```rust
+// eval_attribute, after dedup
+if out.len() > sol.opts.limits.max_chain_fanout {
+    out.sort_by_key(|v| cut_order(sol, v));     // only when cutting: otherwise order is untouched
+    out.truncate(sol.opts.limits.max_chain_fanout);
+    sol.stats.chain_fanout_hits += 1;
+}
+```
+
+  `fanout` tests it: its nine branches join `H9` first, so an unsorted cut
+  keeps `H2`…`H9`. Sorted, it keeps `H1`…`H8`.
+
+  This needs `sem.def_position` to work for classes. It used to give offset
+  0 for anything that isn't a `def`, so every class in a file tied, and
+  sorting classes did nothing (including `call_values`' sort of
+  constructors). It now falls back to the definition's own range for a class.
 
 ### Decision 2: `super()` binds the same receiver
 
@@ -91,15 +132,31 @@ dropped, and `go` finds nothing.
 ```rust
 // eval_attribute, before evaluating the receiver
 if is_zero_arg_super(&attr.value) {
-    let t = s.sem.type_of(&self.frame.model, ExprRef::from(attr));   // ty: which function
-    if let Shape::BoundMethod { func, .. } = s.sem.shape(t, self.frame.file) {
-        let me = self.first_parameter_value(s, env);                   // this method's `self`
-        return me.into_iter()
+    let t = sol.sem.type_of(&self.frame.model, ExprRef::from(attr));   // ty: which function
+    if let Shape::BoundMethod { func, .. } = sol.sem.shape(t, self.frame.file) {
+        let me = self.first_parameter_value(sol, env);                   // this method's `self` or `cls`
+        let recvs: Values<'db> = match sol.sem.bound_to(t) {
+            BoundTo::Object => me,                                       // a plain method: the same object
+            BoundTo::Class => me.iter().map(|r| match *r {               // a classmethod: its class
+                AbstractValue::Instance { class, .. } => AbstractValue::Class(class),
+                other => other,                                          // already a Class: `cls`
+            }).collect(),
+            BoundTo::Other => return self.lift(sol, t),
+        };
+        return recvs.into_iter()
             .map(|r| AbstractValue::BoundMethod { func, receiver: self.values.intern(r) })
             .collect();
     }
 }
 ```
+
+**Same rule as step 02.** ty says what the parent method is bound to; you
+pick your value of that kind. `via_super` is the case that needs it: an
+instance method calling `super().build()`, a classmethod. Binding the object
+would put an `Instance` in `cls`, and `cls()` would look for `__call__`
+instead of constructing. A classmethod calling `super()` was already right
+(its first parameter is `cls`), and a static method comes back from ty as a
+plain function, not a `BoundMethod`, so it doesn't take this path.
 
 **Why syntax here, when step 01.12 said dispatch on values:** zero-argument
 `super()` means "the class this method is written in, and this method's first
@@ -121,22 +178,42 @@ from the annotation instead, lifted:
 ```rust
 if v == [Unknown] {
     if let Some(ann) = &param.annotation {
-        let t = s.sem.type_of(&self.frame.model, ExprRef::from(&**ann));   // [check] annotation type, not value
-        v = self.reorigin(self.lift(s, t), OriginKey::Entry(i));
-        s.stats.annotation_fallbacks += 1;
+        let t = sol.sem.type_of(&self.frame.model, ExprRef::from(&**ann)); // the class `Handler`…
+        let t = sol.sem.instance_of(t);                                    // …an object of it   [check]
+        let key = OriginKey::Entry { act: self.frame.act, param: i as u8 };
+        v = self.reorigin(self.lift(sol, t), key);
+        sol.stats.annotation_fallbacks += 1;
     }
 }
 ```
 
+`bind_parameters` runs in the callee's new frame, so `self.frame.act` is this
+run of the callee.
+
 And an unannotated `self` or `cls` of an entry method uses the enclosing
 class: `Service.call`'s `self` is a `Service`.
 
-**Why `Entry(i)` and not `OPAQUE`:** `lift` gives an annotated parameter an
+**Why `Entry` and not `OPAQUE`:** `lift` gives an annotated parameter an
 `OPAQUE` instance, which holds no state. But it is one specific object, the
 one passed as parameter `i`, so writes to it inside this walk should be
-tracked. `OriginKey::Entry(i)` gives it an origin of its own. Part 04 builds
-on exactly this: every object a summary receives from its caller is named by
-where it sits among the inputs.
+tracked. `OriginKey::Entry` gives it an origin of its own.
+
+**Why the run is in the key:** the fallback runs for any parameter that is
+`[Unknown]`, not only an entry's: a caller that passed an unknown value
+counts too. Inline mode has one set of origins for the whole tree, so a key
+of just the position, `Entry(0)`, would make every such parameter, in every
+function and every call, one object. In `separate`, `f`'s write to `h.x`
+would be read through `g`'s `k`, and the tree would show `A.go`. `u` and `v`
+may be different objects, so that edge is invented. With `Entry { act,
+param }`, each run's parameter is its own object, like `New { site, act }`.
+
+The other direction is a loss, and an accepted one: `f(u); g(u)` passes the
+same object twice, and Python does connect them. The walker can't know two
+`Unknown`s are one object, so it keeps them apart. It loses an edge rather
+than inventing one, the same trade as dropping a write to `Unknown` (step 03).
+
+Part 04 names summary inputs `Entry(Param(i))` without a run. That is fine
+there: each summary walk has its own origins.
 
 **Why it is counted:** an annotation is a claim, not a proof.
 `def process(h: Handler)` may be called with a `LoudHandler`, and the edge
@@ -152,11 +229,14 @@ object built with a `LoudHandler` finds the state first, and the edge is
 
 ### Yours
 
-- `max_chain_fanout` in `eval_attribute`, with a counter.
-- The `super()` case.
-- `OriginKey::Entry(u8)`, the annotation fallback in binding, the enclosing
-  class for an unannotated entry `self` / `cls`, and
+- `Limits.max_chain_fanout` (8) in `eval_attribute`, the sort before the cut
+  (`cut_order`), and `Stats.chain_fanout_hits`.
+- The `super()` case, with step 02's `bound_to` rule.
+- `OriginKey::Entry { act, param }`, the annotation fallback in binding, the
+  enclosing class for an unannotated entry `self` / `cls`, and
   `Stats.annotation_fallbacks`.
+- `sem.def_position` for classes (done: it falls back to the definition's
+  range).
 
 <details><summary>Reference: this step's code</summary>
 
@@ -169,9 +249,9 @@ fn is_zero_arg_super(e: &Expr) -> bool {
 }
 
 /// The value of this method's first parameter, from the env.
-fn first_parameter_value(&self, s: &Solver<'db>, env: &Env<'db>) -> Values<'db> {
-    let parsed = s.sem.parsed(self.frame.func);
-    let Some(node) = s.sem.function_node(self.frame.func, &parsed) else { return Values::new() };
+fn first_parameter_value(&self, sol: &Solver<'db>, env: &Env<'db>) -> Values<'db> {
+    let parsed = sol.sem.parsed(self.frame.func);
+    let Some(node) = sol.sem.function_node(self.frame.func, &parsed) else { return Values::new() };
     let Some(first) = node.parameters.iter_non_variadic_params().next() else { return Values::new() };
     env.get(&first.parameter.name.id).cloned().unwrap_or_default()
 }
@@ -185,12 +265,29 @@ fn reorigin(&mut self, vals: Values<'db>, key: OriginKey) -> Values<'db> {
         other => other,
     }).collect()
 }
+
+/// The order a fan-out cut keeps: where the value's class or function is
+/// defined, then which object. Values with neither go last, in their order.
+fn cut_order<'db>(sol: &Solver<'db>, v: &AbstractValue<'db>) -> (bool, Option<(String, TextSize)>, Option<OriginId>) {
+    let def = match *v {
+        AbstractValue::Instance { class, .. } | AbstractValue::Class(class) => Some(class),
+        AbstractValue::Function(d) | AbstractValue::Closure { func: d, .. }
+        | AbstractValue::BoundMethod { func: d, .. } => Some(d),
+        _ => None,
+    };
+    let origin = match *v { AbstractValue::Instance { origin, .. } => Some(origin), _ => None };
+    // `false` sorts first: values with a definition before those without
+    (def.is_none(), def.map(|d| sol.sem.def_position(d)), origin)
+}
 ```
 
 The annotation is a type expression, so `type_of` on it gives the type of the
-*expression* `Handler`, which is the class, not an instance. **[check]** the
-right accessor: ty's declared type of the parameter (its `Definition`'s
-declared type), or `instance_of` on the class.
+*expression* `Handler`, which is the class, not an instance. Lifted as is, the
+parameter would be `Class(Handler)`, and `h.handle()` an unbound call.
+`sem.instance_of(ty)` is new: a thin call to `vnoc::instance_of`, like
+`instance_type` but from a `Type`. **[check]** it against a union annotation
+(`A | B`): `instance_of` only handles a class-ish type, so a union may need
+ty's declared type of the parameter instead.
 
 </details>
 
@@ -203,7 +300,16 @@ declared type), or `instance_of` on the class.
 fn p03_07_chains() {
     check("03-classes/python/chains.py");
 }
+
+#[test]
+fn p03_07_fanout_counted() {
+    let st = stats_for("03-classes/python/chains.py", "fanout", &inline());
+    assert_eq!(st.chain_fanout_hits, 1); // `b.h` is cut once; `.handle` on 8 values is under the cap
+}
 ```
+
+`fanout`'s tree checks *which* values survive the cut; the counter checks
+the cut happened.
 
 ---
 
@@ -212,11 +318,13 @@ fn p03_07_chains() {
 ```
 AbstractValue = Function | Closure | Class | Instance { class, origin } | BoundMethod
               | Module | Ty | Pending | Unknown
-OriginKey     = New { site, act } | Entry(param)          OriginId::OPAQUE reserved
+OriginKey     = Opaque | New { site, act } | Entry { act, param }   (Opaque is OriginId::OPAQUE)
 Walk          { frame, activations, origins, values }
-Env           { locals, attrs, scope, enclosing }
+Env           { locals, attrs, scope, enclosing, flat }
 member(Instance): state → property → class side (ty), binding your receiver
-bind_attribute:   strong for one object, weak for several, dropped for none or OPAQUE
+bind_attribute:   a property runs its setter; otherwise strong for one receiver
+                  (counted before the filter), weak for several, dropped for
+                  none or OPAQUE
 ```
 
 Inline mode now handles the object-oriented code real projects are made of.
@@ -232,7 +340,7 @@ brings summary mode to the same trees.
 2. A grandchild class: `class G(Child): def __init__(self, h): super().__init__(h)`.
    Trace `G(x).go()`: which `__init__`s run, on which object?
 3. `def f(h: Handler): h.handler2 = X(); h.handler2.go()`. With `OPAQUE` for
-   `h`, what is lost? With `Entry(0)`?
+   `h`, what is lost? With `Entry { act, param: 0 }`?
 
 <details><summary>Answers</summary>
 
@@ -244,8 +352,9 @@ brings summary mode to the same trees.
    `super().__init__` is `Base.__init__`, again on the same object. `self.h`
    lands on the `G` object, and `go` finds it.
 3. With `OPAQUE`, the write is dropped, and `h.handler2.go()` falls to the
-   class side, which probably knows no `handler2`: no edge. With `Entry(0)`,
-   the write is kept on `h`'s origin, and `X.go` is found.
+   class side, which probably knows no `handler2`: no edge. With `Entry {
+   act, param: 0 }`, the write is kept on `h`'s origin for this run of `f`,
+   and `X.go` is found.
 
 </details>
 

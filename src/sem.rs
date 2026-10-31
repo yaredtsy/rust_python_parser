@@ -367,9 +367,13 @@ impl<'db> Sem<'db> {
     pub fn def_position(&self, def: Definition<'db>) -> (String, TextSize) {
         let path = def.file(self.db).path(self.db).to_string();
         let parsed = self.parsed(def);
-        let start = self
-            .function_node(def, &parsed)
-            .map_or(TextSize::default(), |f| f.range().start());
+        // A `def` keeps its node's start: call sites are stored relative to it.
+        // Anything else (a class) by its definition's range: it used to be 0 for
+        // every class, so sorting classes by position did nothing.
+        let start = match self.function_node(def, &parsed) {
+            Some(f) => f.range().start(),
+            None => def.full_range(self.db, &parsed).range().start(),
+        };
         (path, start)
     }
 

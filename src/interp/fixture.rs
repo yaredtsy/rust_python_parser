@@ -478,3 +478,8 @@ fn p03_05_writes() {
 fn p03_06_special() {
     check("03-classes/python/special.py");
 }
+
+#[test]
+fn p03_07_chains() {
+    check("03-classes/python/chains.py");
+}
