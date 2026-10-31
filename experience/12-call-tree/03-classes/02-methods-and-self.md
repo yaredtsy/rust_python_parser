@@ -139,8 +139,9 @@ receiver rule is about position, never about the name `self`.
 - `BoundMethod`, `ValueId`, `ValueArena` in the walk.
 - `Shape::BoundMethod(func)` in `sem::shape`.
 - `member` for `Instance` and `Class` values.
-- `eval_call`: a `BoundMethod` callee is `walk_inline` with the receiver, plus
-  a node for the method.
+- `call_values`: a `BoundMethod` callee goes to `call_function` with its
+  receiver, in inline mode. `call_function` passes the receiver on to
+  `inline_node` (03.01), which keeps the recursion guard in one place.
 - `lift` keeps a bound method ty hands you (one you didn't get through
   `member`) as `Ty` for now. Step 04 gives it a receiver.
 
@@ -191,13 +192,23 @@ pub fn instance_type(&self, class: Definition<'db>) -> Type<'db> {
 ```
 
 ```rust
-// src/interp/call.rs, in the callee loop of call_values
-AbstractValue::BoundMethod { func, receiver } if s.sem.is_project(func) => {
-    let recv = self.values[receiver];
-    let run = self.walk_inline(s, func, None, Some(recv), args, env);
-    self.push_node(s, func, site, run.children);
-    out.extend(run.returns);
+// src/interp/call.rs, call_values: collected like `classes` in 03.01
+// (inline mode only; summary mode asks ty until part 04)
+AbstractValue::BoundMethod { func, receiver }
+    if sol.opts.mode == Mode::Inline && sol.sem.is_project(func) => {
+    methods.push((func, self.values[receiver]))
 }
+
+// after the functions, before the classes
+methods.sort_by_key(|(d, _)| sol.sem.def_position(*d));
+for (func, recv) in methods {
+    let range = self.site_range(site);
+    out.extend(self.call_function(sol, func, None, Some(recv), range, args));
+}
+
+// call_function gains `receiver: Option<AbstractValue<'db>>` and hands it to
+// inline_node, so a method that calls itself is a `[recursive]` leaf like
+// any other function. The existing call in the targets loop passes `None`.
 ```
 
 </details>

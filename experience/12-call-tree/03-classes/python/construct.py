@@ -34,6 +34,11 @@ class Child(Base):
     pass  # __init__ inherited from Base
 
 
+class Tree:
+    def __init__(self):
+        Tree()  # constructs itself: a [recursive] leaf, keyed on the class
+
+
 def make():
     return Pipeline()
 
@@ -44,6 +49,7 @@ def main():
     Wrapper(Pipeline())
     Child()
     make()
+    Tree()
     dict()  # not project code: no node
 
 
@@ -61,3 +67,5 @@ def main():
 #   make
 #     Pipeline
 #       setup
+#   Tree
+#     Tree [recursive]
