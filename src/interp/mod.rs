@@ -62,6 +62,8 @@ pub struct Stats {
     pub reuse_hits: u32, // calls answered from a Ready slot
     pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
     pub cuts: Cuts,         // calls cut by a cost limit, by kind
+    pub chain_fanout_hits: u32, // an attribute hop cut to `max_chain_fanout` values
+    pub annotation_fallbacks: u32, // a parameter that started from its annotation
     pub lifted_subclass_of: u32, // `lift` reached a `type[X]` (tests: the arm runs)
 }
 #[derive(Clone, Debug)]
@@ -76,6 +78,7 @@ pub struct Limits {
     pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
     pub fp_depth: u8,    // closures nest at most this deep, in keys and in summaries
     // cost (each one cuts, is marked, and is never reused)
+    pub max_chain_fanout: usize, // 8: values carried per attribute hop
     pub max_stack: usize,       // 256
     pub max_contexts: u32,      // 50_000
     pub contexts_per_func: u32, // 64, counted in this request only
@@ -89,6 +92,7 @@ impl Default for Limits {
         Limits {
             max_rounds: 32,
             fp_depth: 2,
+            max_chain_fanout: 8,
             max_stack: 256,
             max_contexts: 50_000,
             contexts_per_func: 64,

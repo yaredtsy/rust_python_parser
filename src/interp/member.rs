@@ -1,5 +1,5 @@
-use ruff_python_ast::{ExprAttribute, ExprRef};
-use ruff_text_size::{Ranged, TextRange};
+use ruff_python_ast::{Expr, ExprAttribute, ExprRef};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 use smallvec::smallvec;
 
 use crate::interp::{
@@ -7,7 +7,7 @@ use crate::interp::{
     bind::EvaluatedArgs,
     env::Env,
     solver::Solver,
-    value::{AbstractValue, Values, dedup},
+    value::{AbstractValue, OriginId, OriginKey, Values, dedup},
 };
 use crate::sem::{BoundTo, Name, Shape};
 
@@ -19,6 +19,11 @@ impl<'db> Walk<'db> {
         attr: &ExprAttribute,
         env: &mut Env<'db>,
     ) -> Values<'db> {
+        if is_zero_arg_super(&attr.value) {
+            if let Some(v) = self.super_member(sol, attr, env) {
+                return v;
+            }
+        }
         let recvs = self.eval(sol, &attr.value, env);
         let mut out = Values::new();
         let mut asked_ty = false;
@@ -36,7 +41,70 @@ impl<'db> Walk<'db> {
             }
         }
         dedup(&mut out);
+        if out.len() > sol.opts.limits.max_chain_fanout {
+            // Which ones survive must not depend on the order they were joined in.
+            out.sort_by_key(|v| cut_order(sol, v));
+            out.truncate(sol.opts.limits.max_chain_fanout);
+            sol.stats.chain_fanout_hits += 1;
+        }
         out
+    }
+
+    /// `super().name`: ty says which parent method; the receiver is this method's own
+    /// `self` (or its class, for a classmethod). `None`: not a method ty bound.
+    fn super_member(
+        &mut self,
+        sol: &mut Solver<'db>,
+        attr: &ExprAttribute,
+        env: &Env<'db>,
+    ) -> Option<Values<'db>> {
+        let t = sol.sem.type_of(&self.frame.model, ExprRef::from(attr));
+        let Shape::BoundMethod { func, .. } = sol.sem.shape(t, self.frame.file) else {
+            return None;
+        };
+        let me = self.first_parameter_value(sol, env);
+        let recvs: Values<'db> = match sol.sem.bound_to(t) {
+            BoundTo::Object => me, // a plain method: the same object
+            BoundTo::Class => me
+                .iter()
+                .map(|r| match *r {
+                    AbstractValue::Instance { class, .. } => AbstractValue::Class(class),
+                    other => other, // already a Class: `cls`
+                })
+                .collect(),
+            BoundTo::Other => return Some(self.lift(sol, t)),
+        };
+        Some(
+            recvs
+                .into_iter()
+                .map(|r| AbstractValue::BoundMethod { func, receiver: self.values.intern(r) })
+                .collect(),
+        )
+    }
+
+    /// The value of this method's first parameter, from the env.
+    fn first_parameter_value(&self, sol: &Solver<'db>, env: &Env<'db>) -> Values<'db> {
+        let parsed = sol.sem.parsed(self.frame.func);
+        let Some(node) = sol.sem.function_node(self.frame.func, &parsed) else {
+            return Values::new();
+        };
+        let Some(first) = node.parameters.iter_non_variadic_params().next() else {
+            return Values::new();
+        };
+        env.get(&first.parameter.name.id).cloned().unwrap_or_default()
+    }
+
+    /// Give every `OPAQUE` instance in `vals` the origin named by `key`.
+    pub fn reorigin(&mut self, vals: Values<'db>, key: OriginKey) -> Values<'db> {
+        let origin = self.origins.intern(key);
+        vals.into_iter()
+            .map(|v| match v {
+                AbstractValue::Instance { class, origin: o } if o == OriginId::OPAQUE => {
+                    AbstractValue::Instance { class, origin }
+                }
+                other => other,
+            })
+            .collect()
     }
 
     /// What `.name` is on one receiver. ty finds it; the receiver bound is ours.
@@ -119,4 +187,32 @@ impl<'db> Walk<'db> {
             }
         }
     }
+}
+
+/// `super()` with no arguments: its meaning is lexical, so it is read from syntax.
+fn is_zero_arg_super(e: &Expr) -> bool {
+    matches!(e, Expr::Call(c)
+        if c.arguments.is_empty()
+        && matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "super"))
+}
+
+/// The order a fan-out cut keeps: where the value's class or function is
+/// defined, then which object. Values with neither go last, in their order.
+fn cut_order<'db>(
+    sol: &Solver<'db>,
+    v: &AbstractValue<'db>,
+) -> (bool, Option<(String, TextSize)>, Option<OriginId>) {
+    let def = match *v {
+        AbstractValue::Instance { class, .. } | AbstractValue::Class(class) => Some(class),
+        AbstractValue::Function(d)
+        | AbstractValue::Closure { func: d, .. }
+        | AbstractValue::BoundMethod { func: d, .. } => Some(d),
+        _ => None,
+    };
+    let origin = match *v {
+        AbstractValue::Instance { origin, .. } => Some(origin),
+        _ => None,
+    };
+    // `false` sorts first: values with a definition before those without
+    (def.is_none(), def.map(|d| sol.sem.def_position(d)), origin)
 }

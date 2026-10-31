@@ -23,6 +23,7 @@ pub type ValueArena<'db> = Interner<AbstractValue<'db>, ValueId>;
 
 /// One object, named by where it was built. Walk-local, like `ActivationId`.
 #[newtype_index]
+#[derive(Ord, PartialOrd)] // `cut_order` sorts by origin
 pub struct OriginId;
 
 impl OriginId {
@@ -38,6 +39,8 @@ impl OriginId {
 pub enum OriginKey {
     /// An object ty gave us, not built in this walk: `OriginId::OPAQUE`.
     Opaque,
+    /// A parameter nobody gave a value: one object per parameter per run of its function.
+    Entry { act: ActivationId, param: u8 },
     /// An object built in this walk, at this site, in this run of its body.
     New { site: TextRange, act: ActivationId },
 }

@@ -108,6 +108,27 @@ impl<'db> Sem<'db> {
         })
     }
 
+    /// An object of the class a type expression names (`Handler` → a `Handler`).
+    /// Only a class-ish type; a union is the caller's to split (`shape`).
+    pub fn instance_of(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Option<Type<'db>> {
+        let env = ProgramEnvironment::from_file(file);
+        vnoc::instance_of(self.db, &env, ty)
+    }
+
+    /// The class a method is written in, if it is written in one.
+    pub fn enclosing_class(&self, def: Definition<'db>) -> Option<Definition<'db>> {
+        let file = def.program_file(self.db);
+        let index = semantic_index(self.db, file);
+        let (_, scope) = index
+            .ancestor_scopes(def.scope(self.db).file_scope_id(self.db))
+            .next()?;
+        let ty_python_core::scope::NodeWithScopeKind::Class(c) = scope.node() else {
+            return None;
+        };
+        let parsed = self.parsed(def);
+        Some(c.node(&parsed).definition(&self.model(file)))
+    }
+
     /// An instance of the class, for looking up attributes on an object.
     pub fn instance_type(&self, class: Definition<'db>) -> Type<'db> {
         let env = ProgramEnvironment::from_file(class.program_file(self.db));
@@ -118,7 +139,8 @@ impl<'db> Sem<'db> {
     /// never compares it with a type built here: `Box[int]` and `Box` must both count.
     pub fn bound_to(&self, method: Type<'db>) -> BoundTo {
         match vnoc::bound_method_self(self.db, method) {
-            Some(Type::NominalInstance(_)) => BoundTo::Object,
+            // `super().m` is bound to the synthesized `Self` type variable: an object
+            Some(Type::NominalInstance(_) | Type::TypeVar(_)) => BoundTo::Object,
             Some(Type::ClassLiteral(_) | Type::GenericAlias(_) | Type::SubclassOf(_)) => {
                 BoundTo::Class
             }

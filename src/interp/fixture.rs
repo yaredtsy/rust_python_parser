@@ -480,6 +480,12 @@ fn p03_06_special() {
 }
 
 #[test]
+fn p03_07_fanout_counted() {
+    let st = stats_for("03-classes/python/chains.py", "fanout", &inline());
+    assert_eq!(st.chain_fanout_hits, 1); // `b.h` is cut once; `.handle` on 8 values is under the cap
+}
+
+#[test]
 fn p03_07_chains() {
     check("03-classes/python/chains.py");
 }
