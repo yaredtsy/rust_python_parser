@@ -128,8 +128,29 @@ from `eval_attribute`.
 *instance* applies the descriptor and returns the getter's return type, so the
 property itself is only visible on the *class*. Ask ty for the attribute on the
 class, and if it is a `Type::PropertyInstance`, take its getter and setter.
-ty builds that same type for `property(get_h)` without the decorator
-(`types/call/bind.rs:3161`), so `current` needs nothing extra.
+
+**`property(get_h)` is the same property, with a different getter.** ty builds
+a `PropertyInstance` for it too (`types/call/bind.rs:3161`). But for
+`@property def active` the getter is a `FunctionLiteral`, and for
+`property(get_h)` it is a `Callable`: `get_h` converted to a signature type,
+which `Type::definition` has no arm for. `shape` gives `Other`, so without
+help `current` has no getter, and the tree loses `Registry.get_h` and the
+`JsonHandler.handle` after it.
+
+ty does keep the function: a `Callable` made from a `def` carries its
+definition in its signature (`Signature::definition`, `signatures.rs:601`).
+One wrapper reads it, `vnoc::callable_definition`, and `property_parts` tries
+it when `shape` doesn't give a `Function`.
+
+**Why only in `property_parts`, not in `shape`:** `shape` feeds `lift`
+everywhere. A decorator that returns a `Callable` typed with the original
+signature would then lift to the undecorated `def`, and the walker would walk
+a body the program never calls directly. Here the context is known: a
+property's getter is called as the getter.
+
+**Rejected: read the class body.** Finding `current = property(get_h)` in the
+AST and evaluating `get_h` is syntax-level logic that ty already did. It also
+only covers that one spelling.
 
 **Only project accessors.** A project class can inherit a property from a
 library class. Its getter is a stub (`...`): walking it would put a library
@@ -211,8 +232,10 @@ on purpose, in the same commit.
 ### Yours
 
 - `sem.property_parts(class, name)`: the project getter and setter.
-  `PropertyInstanceType`'s `getter` and `setter` accessors are `pub`, so this
-  may need no `vnoc` wrapper. **[check]** that `sem.rs` can call them.
+  `PropertyInstanceType`'s `getter` and `setter` accessors are `pub`, so
+  reading them needs no wrapper.
+- `vnoc::callable_definition`, for a getter that arrives as a `Callable`
+  (`property(get_h)`).
 - The property check in `member`'s instance arm, inline mode only, and
   `site` on `member`.
 - The setter in `bind_attribute` (Decision 4), and `builtins.property.setter`
@@ -235,12 +258,34 @@ pub fn property_parts(&self, class: Definition<'db>, name: &str) -> Option<Prope
     let Type::PropertyInstance(p) = self.member(self.class_type(class), name, file)? else {
         return None;
     };
-    // a library accessor (a stub) is not walked: `member` falls through to ty
-    let project = |t: Option<Type<'db>>| match t.map(|t| self.shape(t, file)) {
-        Some(Shape::Function(d)) if self.is_project(d) => Some(d),
-        _ => None,
+    // `property(get_h)` holds `get_h` as a `Callable`. Kept local: `shape` must not
+    // turn every Callable that has a definition into a Function.
+    let project = |t: Option<Type<'db>>| {
+        let t = t?;
+        let d = match self.shape(t, file) {
+            Shape::Function(d) => d,
+            _ => vnoc::callable_definition(self.db, t)?,
+        };
+        // a library accessor (a stub) is not walked: `member` falls through to ty
+        self.is_project(d).then_some(d)
     };
     Some(PropertyParts { getter: project(p.getter(self.db)), setter: project(p.setter(self.db)) })
+}
+```
+
+```rust
+// vendor/ruff/crates/ty_python_semantic/src/types/vnoc.rs (one more wrapper)
+/// The function a callable type was made from, when ty kept it: `property(get_h)`
+/// holds `get_h` as a `Callable`. `Signature::definition` (`signatures.rs:1133`), pub(crate).
+/// Overloads: no single function to walk.
+pub fn callable_definition<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Definition<'db>> {
+    match ty {
+        Type::Callable(c) => match c.signatures(db).overloads.as_slice() {
+            [sig] => sig.definition(),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 ```
 
@@ -340,6 +385,9 @@ so can an attribute write (the setter). `cached_property` is a pinned gap.
 3. `member` checks the object's own state before the property. Python does
    the opposite: a property beats the instance's attributes. When does the
    order make a difference, and what does the tree lose?
+4. `current = property(get_h)` and `@property def active` are both
+   `PropertyInstance`s to ty. Why did `current` need `callable_definition`,
+   and why does that fallback live in `property_parts` and not in `shape`?
 
 <details><summary>Answers</summary>
 
@@ -355,6 +403,15 @@ so can an attribute write (the setter). `cached_property` is a pinned gap.
    `r.active` returned `X` from state: the `Registry.active` node and anything
    the getter calls were lost. **[check]** setter nodes against the golden
    files.
+4. The decorator form stores the getter as a `FunctionLiteral`, which `shape`
+   turns into `Function(def)`. Through `property(get_h)`, ty stores `get_h`
+   as a `Callable` (a signature type), and `Type::definition` has no arm for
+   that, so `shape` says `Other`. The definition survives inside the
+   callable's signature, which the wrapper reads. In `shape` the same rule
+   would apply to every `Callable` the walker lifts, including a decorator's
+   result typed with the wrapped function's signature. That would walk the
+   undecorated body, where Python calls the wrapper. Inside `property_parts`
+   the callable is known to be the getter.
 
 </details>
 
