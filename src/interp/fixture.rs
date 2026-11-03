@@ -3,7 +3,7 @@ use crate::db::{open, open_project};
 use crate::interp::bind::param_names;
 use crate::interp::relevant::relevant_params;
 use crate::interp::summary::{PlainVal, SVal};
-use crate::interp::{Limits, Mode, Options, Stats, call_tree, solve, to_text};
+use crate::interp::{GraphOut, Limits, Mode, Options, Stats, call_graph, call_tree, solve, to_text};
 use crate::sem::Sem;
 use ruff_db::system::SystemPath;
 use std::collections::BTreeSet;
@@ -111,6 +111,15 @@ pub fn stats_for(fixture: &str, entry: &str, opts: &Options) -> Stats {
     let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
     let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
     call_tree(&db, file, entry, opts).unwrap().1
+}
+
+/// The context graph of one entry in `fixture`, in summary mode.
+pub fn graph_for(fixture: &str, entry: &str) -> GraphOut {
+    let path = std::fs::canonicalize(format!("experience/12-call-tree/{fixture}")).unwrap();
+    let root = path.parent().unwrap();
+    let db = open_project(SystemPath::from_std_path(root).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    call_graph(&db, file, entry, &summary()).unwrap()
 }
 
 pub fn inline() -> Options {
@@ -520,4 +529,30 @@ fn p04_01_in_keys() {
     check_both("04-class-summaries/python/in_keys.py");
     let st = stats_for("04-class-summaries/python/in_keys.py", "shared", &summary());
     assert_eq!((st.walks, st.reuse_hits), (3, 1));
+}
+
+#[test]
+fn p05_01_graph() {
+    let g = graph_for("02-function-summaries/python/graph.py", "main");
+    assert_eq!((g.contexts.len(), g.edges.len()), (8, 9));
+}
+
+#[test]
+fn p05_01_stable_ids_ignore_discovery_order() {
+    use crate::interp::StableContextId;
+    use std::collections::BTreeMap;
+    // main calls read_a then read_b; main2 calls them in the other order,
+    // so their ContextIds differ. Their stable ids must not.
+    check_both("05-output/python/stable_ids.py");
+    let ids = |entry: &str| -> BTreeMap<String, StableContextId> {
+        graph_for("05-output/python/stable_ids.py", entry)
+            .contexts
+            .into_iter()
+            .filter(|c| c.qname != format!("stable_ids.{entry}")) // the entries themselves differ
+            .map(|c| (c.qname, c.id))
+            .collect()
+    };
+    let (one, two) = (ids("main"), ids("main2"));
+    assert_eq!(one.len(), 3); // read_a, read_b, done
+    assert_eq!(one, two);
 }

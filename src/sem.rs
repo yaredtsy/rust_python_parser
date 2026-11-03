@@ -1,6 +1,13 @@
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
+use ruff_db::source::{line_index, source_text};
+use crate::stable::{StableDef, StableType};
+use ty_module_resolver::file_to_module;
+use ruff_python_ast::visitor::{Visitor, walk_stmt};
 use ruff_python_ast::{Alias, AnyNodeRef, ExprName, ExprRef, Stmt, StmtFunctionDef};
+use rustc_hash::FxHashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use ty_project::glob::IncludeResult;
@@ -31,6 +38,8 @@ pub const SIGNATURE_KEEPING: &[&str] = &[
 
 pub struct Sem<'db> {
     pub db: &'db ProjectDatabase,
+    /// Per file: a def's start offset to its `nth` among the defs with its qname.
+    nth: RefCell<FxHashMap<File, Rc<FxHashMap<TextSize, u16>>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -108,11 +117,7 @@ impl<'db> Sem<'db> {
         // `property(get_h)` holds `get_h` as a `Callable`. Kept local: `shape` must not
         // turn every Callable that has a definition into a Function.
         let project = |t: Option<Type<'db>>| {
-            let t = t?;
-            let d = match self.shape(t, file) {
-                Shape::Function(d) => d,
-                _ => vnoc::callable_definition(self.db, t)?,
-            };
+            let d = self.function_definition(t?, file)?;
             self.is_project(d).then_some(d)
         };
         Some(PropertyParts {
@@ -284,7 +289,7 @@ impl<'db> Sem<'db> {
         out
     }
     pub fn new(db: &'db ProjectDatabase) -> Self {
-        Sem { db }
+        Sem { db, nth: RefCell::default() }
     }
     pub fn model(&self, file: ProgramFile<'db>) -> SemanticModel<'db> {
         SemanticModel::new(self.db, file)
@@ -352,6 +357,137 @@ impl<'db> Sem<'db> {
             _ => Shape::Other,
         }
     }
+
+    /// The `def` behind a function type: ty's own function, else the one a `Callable` kept.
+    /// Kept apart from `callee_definition`: `shape` must not turn every Callable into a Function.
+    fn function_definition(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Option<Definition<'db>> {
+        match self.shape(ty, file) {
+            Shape::Function(d) => Some(d),
+            _ => vnoc::callable_definition(self.db, ty),
+        }
+    }
+
+    /// The definition behind a callable type: its function, its class, or the
+    /// function of its bound method.
+    pub fn callee_definition(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Option<Definition<'db>> {
+        match self.shape(ty, file) {
+            Shape::Class(d) | Shape::BoundMethod { func: d, .. } => Some(d),
+            _ => self.function_definition(ty, file),
+        }
+    }
+
+    /// A definition's identity outside this request: its docstring `ID:` when it
+    /// is project code that has one, else where it is (module, qualified name, nth).
+    pub fn stable_def(&self, def: Definition<'db>) -> StableDef {
+        let parsed = self.parsed(def);
+        let (start, body) = match def.kind(self.db) {
+            DefinitionKind::Function(f) => {
+                let n = f.node(&parsed);
+                (n.range().start(), Some(&n.body))
+            }
+            DefinitionKind::Class(c) => {
+                let n = c.node(&parsed);
+                (n.range().start(), Some(&n.body))
+            }
+            _ => (self.def_position(def).1, None),
+        };
+        if self.is_project(def) {
+            if let Some(id) = body.and_then(|b| crate::scan::id_from_body(b)) {
+                return StableDef::Node(id);
+            }
+        }
+        let module = file_to_module(self.db, def.program_file(self.db).resolver_file(self.db))
+            .map(|m| m.name(self.db).to_string())
+            .unwrap_or_default();
+        let full = self.qname(def);
+        let qname = full.strip_prefix(&format!("{module}.")).unwrap_or(&full).to_string();
+        let nth = self.nth_of(def.file(self.db), &parsed).get(&start).copied().unwrap_or(0);
+        StableDef::Path { module, qname, nth }
+    }
+
+    /// `nth` of every `def` and `class` in a file, by start offset: its place
+    /// among the defs with the same qualified name, in source order.
+    fn nth_of(&self, file: File, parsed: &ParsedModuleRef) -> Rc<FxHashMap<TextSize, u16>> {
+        if let Some(found) = self.nth.borrow().get(&file) {
+            return found.clone();
+        }
+        struct Walker {
+            path: Vec<String>,
+            seen: FxHashMap<String, u16>,
+            out: FxHashMap<TextSize, u16>,
+        }
+        impl<'a> Visitor<'a> for Walker {
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                let name = match stmt {
+                    Stmt::FunctionDef(f) => Some(f.name.to_string()),
+                    Stmt::ClassDef(c) => Some(c.name.to_string()),
+                    _ => None,
+                };
+                let Some(name) = name else {
+                    return walk_stmt(self, stmt);
+                };
+                self.path.push(name);
+                let n = self.seen.entry(self.path.join(".")).or_insert(0);
+                self.out.insert(stmt.range().start(), *n);
+                *n += 1;
+                walk_stmt(self, stmt);
+                self.path.pop();
+            }
+        }
+        let mut w = Walker { path: Vec::new(), seen: FxHashMap::default(), out: FxHashMap::default() };
+        w.visit_body(&parsed.syntax().body);
+        let out = Rc::new(w.out);
+        self.nth.borrow_mut().insert(file, out.clone());
+        out
+    }
+
+    /// A type's identity by structure, or `None` when it can't be written
+    /// one-to-one (then the key must not hold it).
+    pub fn stable_type(&self, ty: Type<'db>, file: ProgramFile<'db>) -> Option<StableType> {
+        let env = ProgramEnvironment::from_file(file);
+        match ty {
+            Type::NominalInstance(_) => {
+                let Shape::Instance(class) = self.shape(ty, file) else {
+                    return None;
+                };
+                let args = vnoc::type_args(self.db, &env, ty)?
+                    .into_iter()
+                    .map(|a| self.stable_type(a, file))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(StableType::Instance { class: self.stable_def(class), args })
+            }
+            Type::Callable(_) => {
+                let (params, ret) = vnoc::callable_parts(self.db, ty)?;
+                let params = match params {
+                    Some(ps) => Some(
+                        ps.into_iter()
+                            .map(|p| self.stable_type(p, file))
+                            .collect::<Option<Vec<_>>>()?,
+                    ),
+                    None => None,
+                };
+                Some(StableType::Callable { params, ret: Box::new(self.stable_type(ret, file)?) })
+            }
+            _ => None,
+        }
+    }
+
+    /// One-based (line, column) of `offset` in the def's file.
+    pub fn line_col(&self, def: Definition<'db>, offset: TextSize) -> (u32, u32) {
+        let file = def.file(self.db);
+        let source = source_text(self.db, file);
+        let lc = line_index(self.db, file).line_column(offset, source.as_str());
+        (lc.line.get() as u32, lc.column.get() as u32)
+    }
+
+    /// The name of a module literal type.
+    pub fn module_name(&self, ty: Type<'db>) -> String {
+        match ty {
+            Type::ModuleLiteral(m) => m.module(self.db).name(self.db).to_string(),
+            _ => String::new(),
+        }
+    }
+
 
     pub fn none_type(&self, file: ProgramFile<'db>) -> Type<'db> {
         Type::none(self.db, &ProgramEnvironment::from_file(file))

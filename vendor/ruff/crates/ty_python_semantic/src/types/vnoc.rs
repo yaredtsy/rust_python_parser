@@ -28,7 +28,7 @@
 //! `pylspt` owns one test per wrapper (not here): the compiler catches a
 //! signature change on rebase, only a test catches a *behaviour* change.
 
-use super::{ClassBase, ProgramEnvironment, Type};
+use super::{ClassBase, ClassType, KnownClass, ProgramEnvironment, Type};
 use crate::{Db, types::binding_type};
 use ty_python_core::definition::Definition;
 
@@ -139,4 +139,65 @@ pub fn bound_method_self<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Type<'db
 /// `binding_type` (`types.rs:235`), pub(crate).   [check] the path
 pub fn type_of_definition<'db>(db: &'db dyn Db, def: Definition<'db>) -> Type<'db> {
     binding_type(db, def)
+}
+
+/// The type arguments of a nominal instance, in order: `Box[int]` gives `[int]`, a
+/// non-generic class gives `[]`. `None` when they can't stand for the type alone:
+/// not a nominal instance, a tuple (its elements aren't its arguments), or a
+/// materialized specialization. `GenericAlias::specialization` (`class.rs:407`), pub(crate).
+pub fn type_args<'db>(
+    db: &'db dyn Db,
+    env: &ProgramEnvironment<'db>,
+    ty: Type<'db>,
+) -> Option<Vec<Type<'db>>> {
+    let Type::NominalInstance(n) = ty else {
+        return None;
+    };
+    if n.known_class(db) == Some(KnownClass::Tuple) {
+        return None;
+    }
+    match n.class(db, env) {
+        ClassType::NonGeneric(_) => Some(Vec::new()),
+        ClassType::Generic(alias) => {
+            let spec = alias.specialization(db);
+            if spec.materialization_kind(db).is_some() {
+                return None;
+            }
+            Some(spec.types(db).to_vec())
+        }
+    }
+}
+
+/// A `Callable` of one signature, as `(positional parameter types, return type)`.
+/// The parameters are `None` for `...`. `None` for anything with another shape:
+/// overloads, named or keyword-only or variadic parameters, `ParamSpec`, `Concatenate`.
+/// `Signature::parameters` (`signatures.rs:1072`), `Parameters::kind`, pub(crate).
+pub fn callable_parts<'db>(
+    db: &'db dyn Db,
+    ty: Type<'db>,
+) -> Option<(Option<Vec<Type<'db>>>, Type<'db>)> {
+    use super::signatures::{ParameterKind, ParametersKind};
+    let Type::Callable(c) = ty else {
+        return None;
+    };
+    let [sig] = c.signatures(db).overloads.as_slice() else {
+        return None;
+    };
+    let ret = sig.return_ty;
+    match sig.parameters().kind() {
+        ParametersKind::Gradual => Some((None, ret)),
+        ParametersKind::Standard => {
+            let mut out = Vec::new();
+            for p in sig.parameters().as_slice() {
+                match p.kind() {
+                    ParameterKind::PositionalOnly { name: None, default_type: None } => {
+                        out.push(p.annotated_type())
+                    }
+                    _ => return None,
+                }
+            }
+            Some((Some(out), ret))
+        }
+        _ => None,
+    }
 }

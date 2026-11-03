@@ -57,6 +57,9 @@ fn sites_union<'db>(
                 }
             };
             for t in &edge.targets {
+                if matches!(t, Target::External(_) | Target::Unresolved) {
+                    continue; // the graph shows them, the tree never does
+                }
                 if !out[i].1.contains(t) {
                     out[i].1.push(t.clone())
                 }
@@ -71,6 +74,7 @@ fn callee_of<'db>(s: &Solver<'db>, t: &Target<'db>) -> (Definition<'db>, Option<
     match *t {
         Target::Call(ctx) => (s.contexts[ctx].func, Some(ctx)),
         Target::Construct { class, init } => (class, init),
+        Target::External(_) | Target::Unresolved => unreachable!("`sites_union` drops them"),
     }
 }
 

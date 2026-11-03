@@ -20,14 +20,14 @@ pub struct FunctionResult<'db> {
 }
 
 /// What a caller must know about how far to trust a summary .
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
 pub struct Status {
     pub gaps: Gaps,
     /// A cost limit fired somewhere this summary was computed from.
     pub cut: Option<Cut>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 pub enum Cut {
     Stack,
     Contexts,
@@ -46,7 +46,7 @@ impl<'db> FunctionResult<'db> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize)]
 pub struct Gaps(u8);
 
 impl Gaps {
@@ -67,14 +67,35 @@ pub struct CallEdge<'db> {
 pub enum Target<'db> {
     Call(ContextId),
     /// A new object. `init`: the `__init__` context, if the MRO has a body.
-    Construct { class: Definition<'db>, init: Option<ContextId> }, // External arrives with part 05
+    Construct { class: Definition<'db>, init: Option<ContextId> },
+    /// Code outside the project: nothing is walked. The graph shows it, the tree does not.
+    External(Definition<'db>),
+    /// A call nothing could be said about: the graph shows it, the tree does not.
+    Unresolved,
+}
+
+impl<'db> Target<'db> {
+    /// The contexts this target leads to: what the graph walks next.
+    pub fn contexts(&self) -> SmallVec<[ContextId; 1]> {
+        match *self {
+            Target::Call(ctx) => smallvec![ctx],
+            Target::Construct { init, .. } => init.into_iter().collect(),
+            Target::External(_) | Target::Unresolved => SmallVec::new(),
+        }
+    }
 }
 
 /// The call expression's range, relative to the start of the enclosing `def`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SiteId {
     pub start: TextSize,
     pub end: TextSize,
+}
+
+impl serde::Serialize for SiteId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (u32::from(self.start), u32::from(self.end)).serialize(s)
+    }
 }
 
 impl SiteId {

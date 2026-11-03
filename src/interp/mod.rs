@@ -2,10 +2,12 @@ mod env;
 
 mod bind;
 mod call;
+mod canon;
 mod defer;
 mod entry;
 #[cfg(test)]
 mod fixture;
+mod graph;
 mod key;
 mod member;
 mod relevant;
@@ -15,6 +17,8 @@ mod summary;
 mod tree;
 mod value;
 mod walk;
+pub use canon::StableContextId;
+pub use graph::{ContextOut, EdgeOut, EdgeTo, GraphOut, Span};
 pub use tree::{Mark, Node, to_text};
 
 use std::time::Duration;
@@ -24,7 +28,7 @@ use summary::Cut;
 use ty_project::ProjectDatabase;
 
 use crate::{
-    interp::{key::ContextId, render::render, solver::Solver, walk::Walk},
+    interp::{graph::graph, key::ContextId, render::render, solver::Solver, walk::Walk},
     sem::Sem,
 };
 
@@ -36,7 +40,7 @@ pub enum Mode {
     Summary,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Cuts {
     pub stack: u32,
     pub contexts: u32,
@@ -55,18 +59,19 @@ impl Cuts {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Stats {
-    pub walks: u32,    // bodies walked, the entry included
-    pub nodes: u32,    // tree nodes produced
-    pub contexts: u32, // distinct keys interned
-    pub reuse_hits: u32, // calls answered from a Ready slot
-    pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
-    pub cuts: Cuts,         // calls cut by a cost limit, by kind
-    pub chain_fanout_hits: u32, // an attribute hop cut to `max_chain_fanout` values
-    pub prologue_walks: u32, // functions run, and objects built, to start an entry
+    pub walks: u32,                // bodies walked, the entry included
+    pub nodes: u32,                // tree nodes produced
+    pub contexts: u32,             // distinct keys interned
+    pub reuse_hits: u32,           // calls answered from a Ready slot
+    pub rounds_capped: u32,        // group fixpoints stopped by `max_rounds`
+    pub cuts: Cuts,                // calls cut by a cost limit, by kind
+    pub chain_fanout_hits: u32,    // an attribute hop cut to `max_chain_fanout` values
+    pub prologue_walks: u32,       // functions run, and objects built, to start an entry
     pub annotation_fallbacks: u32, // a parameter that started from its annotation
-    pub lifted_subclass_of: u32, // `lift` reached a `type[X]` (tests: the arm runs)
+    pub types_dropped: u32,        // a type left out of a key: no one-to-one stable form
+    pub lifted_subclass_of: u32,   // `lift` reached a `type[X]` (tests: the arm runs)
 }
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -78,12 +83,12 @@ pub struct Options {
 pub struct Limits {
     // precision (rule 3: decided by the key and the code)
     pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
-    pub fp_depth: u8,    // steps from a parameter (attribute, receiver, free value, default), in keys and in summaries
+    pub fp_depth: u8, // steps from a parameter (attribute, receiver, free value, default), in keys and in summaries
     // cost (each one cuts, is marked, and is never reused)
     pub max_chain_fanout: usize, // 8: values carried per attribute hop
-    pub max_stack: usize,       // 256
-    pub max_contexts: u32,      // 50_000
-    pub contexts_per_func: u32, // 64, counted in this request only
+    pub max_stack: usize,        // 256
+    pub max_contexts: u32,       // 50_000
+    pub contexts_per_func: u32,  // 64, counted in this request only
     pub deadline: Option<Duration>,
     // checks
     pub reuse: bool,
@@ -139,6 +144,13 @@ pub fn call_tree(
     }
 }
 
+/// The context graph of `entry`: what the server's `resolve_calls` returns as `graph`.
+pub fn call_graph(db: &ProjectDatabase, file: File, entry: &str, opts: &Options) -> Option<GraphOut> {
+    let (mut s, root) = solve(db, file, entry, opts)?;
+    s.stats.contexts = s.contexts.len() as u32;
+    Some(graph(&s, &[root]))
+}
+
 fn count_nodes(n: &Node) -> u32 {
     1 + n.children.iter().map(count_nodes).sum::<u32>()
 }
@@ -158,7 +170,14 @@ pub fn solve<'db>(
     // Called with no arguments (step 01.11). A walk of the entry's own frame
     // does the binding, exactly as step 02 did.
     let mut w = Walk::new(&s, def);
-    let bound = w.bind_parameters(&mut s, def, node, None, &bind::EvaluatedArgs::default(), None);
+    let bound = w.bind_parameters(
+        &mut s,
+        def,
+        node,
+        None,
+        &bind::EvaluatedArgs::default(),
+        None,
+    );
     let root_ctx = s.key(&w, def, &bound, None, &env::Env::default());
     s.get(root_ctx);
     Some((s, root_ctx))

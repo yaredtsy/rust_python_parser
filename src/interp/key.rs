@@ -163,7 +163,16 @@ impl<'db> Solver<'db> {
                     .collect(),
             },
             AbstractValue::Module(t) => Fp::Module(t),
-            AbstractValue::Ty(t) => Fp::Data(self.sem.widen(t, file)),
+            AbstractValue::Ty(t) => {
+                let widened = self.sem.widen(t, file);
+                // a key holds only a type that has one stable form (step 05.01)
+                if self.sem.stable_type(widened, file).is_some() {
+                    Fp::Data(widened)
+                } else {
+                    self.stats.types_dropped += 1;
+                    Fp::Unknown
+                }
+            }
             AbstractValue::Unknown => Fp::Unknown,
             AbstractValue::Closure { func, activation } => match cl.position(func, activation) {
                 Some(k) => Fp::Back(k),

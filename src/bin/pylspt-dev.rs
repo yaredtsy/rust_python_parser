@@ -1,9 +1,13 @@
 //! `pylspt-dev parse <dir> <file> [--pretty]` — the real entry point: resolves
 //! the file through the ty project database, then scans it.
+//! `pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty]` — the call
+//! tree as text, or with `--graph` the context graph as JSON: the same functions
+//! the server calls.
 //!
 //! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md`.
 
 use pylspt::db::{open, open_project};
+use pylspt::interp::{Mode, Options, call_graph, call_tree, to_text};
 use pylspt::nodes::Node;
 use pylspt::scan::{Ctx, scan_module};
 use ruff_db::parsed::parsed_module;
@@ -16,8 +20,72 @@ struct Output<'a> {
     nodes: &'a [Node],
 }
 
+const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty]";
+
 fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        anyhow::bail!(USAGE);
+    }
+    let command = args.remove(0);
+    match command.as_str() {
+        "parse" => parse(args),
+        "calls" => calls(args),
+        _ => anyhow::bail!(USAGE),
+    }
+}
+
+fn json<T: serde::Serialize>(out: &T, pretty: bool) -> anyhow::Result<String> {
+    Ok(if pretty {
+        serde_json::to_string_pretty(out)?
+    } else {
+        serde_json::to_string(out)?
+    })
+}
+
+fn calls(args: Vec<String>) -> anyhow::Result<()> {
+    let pretty = args.iter().any(|a| a == "--pretty");
+    let graph = args.iter().any(|a| a == "--graph");
+    let entry = args
+        .iter()
+        .position(|a| a == "--entry")
+        .and_then(|i| args.get(i + 1))
+        .ok_or_else(|| anyhow::anyhow!("--entry <name> is required\n{USAGE}"))?;
+    let positional: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--entry"))
+        .map(|(_, a)| a)
+        .collect();
+    let [dir, file_arg] = positional[..] else {
+        anyhow::bail!(USAGE);
+    };
+
+    let dir = std::fs::canonicalize(dir)?;
+    let dir = SystemPath::from_std_path(&dir)
+        .ok_or_else(|| anyhow::anyhow!("project root is not valid UTF-8: {dir:?}"))?;
+    let db = open_project(dir)?;
+    let file_path = std::fs::canonicalize(file_arg)?;
+    let file_path = SystemPath::from_std_path(&file_path)
+        .ok_or_else(|| anyhow::anyhow!("file path is not valid UTF-8: {file_path:?}"))?;
+    let (file, _) = open(&db, file_path)?;
+
+    let opts = Options { mode: Mode::Summary, ..Options::default() };
+    let no_entry = || anyhow::anyhow!("no function `{entry}` in {file_arg}");
+    if graph {
+        let g = call_graph(&db, file, entry, &opts).ok_or_else(no_entry)?;
+        println!("{}", json(&g, pretty)?);
+    } else {
+        let (tree, _) = call_tree(&db, file, entry, &opts).ok_or_else(no_entry)?;
+        let module = file_path.file_stem().unwrap_or_default();
+        print!("{}", to_text(&tree, module));
+    }
+    Ok(())
+}
+
+fn parse(args: Vec<String>) -> anyhow::Result<()> {
+    let mut args = args.into_iter();
+
     let dir = args
         .next()
         .ok_or_else(|| anyhow::anyhow!("usage: pylspt-dev <dir> <file> [--pretty]"))?;

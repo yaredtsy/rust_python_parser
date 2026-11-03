@@ -155,6 +155,8 @@ impl<'db> Walk<'db> {
         let mut methods: Vec<(Definition<'db>, AbstractValue<'db>)> = Vec::new();
         let mut classes: Vec<Definition<'db>> = Vec::new();
         let mut ask_ty = false;
+        let mut externals: Vec<Definition<'db>> = Vec::new();
+        let mut unresolved = callees.is_empty();
         for c in callees {
             match *c {
                 AbstractValue::Function(def) if sol.sem.is_project(def) => {
@@ -167,12 +169,33 @@ impl<'db> Walk<'db> {
                     methods.push((func, self.values[receiver]))
                 }
                 AbstractValue::Class(class) if sol.sem.is_project(class) => classes.push(class),
-                _ => ask_ty = true, // `dict`, and the classes and methods that aren't project code
+                // `dict`, and the classes and methods that aren't project code
+                AbstractValue::Function(d) | AbstractValue::Class(d) => {
+                    ask_ty = true;
+                    externals.push(d);
+                }
+                AbstractValue::Closure { func, .. } | AbstractValue::BoundMethod { func, .. } => {
+                    ask_ty = true;
+                    externals.push(func);
+                }
+                AbstractValue::Ty(t) => {
+                    ask_ty = true;
+                    match sol.sem.callee_definition(t, self.frame.file) {
+                        Some(d) => externals.push(d),
+                        None => unresolved = true,
+                    }
+                }
+                _ => {
+                    ask_ty = true;
+                    unresolved = true;
+                }
             }
         }
         targets.sort_by_key(|(d, _)| sol.sem.def_position(*d));
         methods.sort_by_key(|(d, _)| sol.sem.def_position(*d));
         classes.sort_by_key(|&c| sol.sem.def_position(c));
+        externals.sort_by_key(|&d| sol.sem.def_position(d));
+        externals.dedup();
         let mut edge_targets: SmallVec<[Target<'db>; 2]> = SmallVec::new();
         let mut out = Values::new();
         // Callees at one site are alternatives: each starts from the state before the call.
@@ -228,6 +251,13 @@ impl<'db> Walk<'db> {
                     &mut edge_targets,
                     &*env,
                 )),
+            }
+        }
+        if sol.opts.mode == Mode::Summary {
+            // every call site gets an edge, even when nothing is walked
+            edge_targets.extend(externals.into_iter().map(Target::External));
+            if unresolved {
+                edge_targets.push(Target::Unresolved);
             }
         }
         match edge {

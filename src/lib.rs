@@ -10,5 +10,6 @@ pub mod nodes;
 pub mod positions;
 pub mod qname;
 pub mod sem;
+pub mod stable;
 // …one line per file, added as you write it
 pub mod scan;

@@ -50,6 +50,8 @@ smallvec = { version = "1.13.2", features = [
     "const_new",
 ] }
 rpds = "1.2.1"
+# a fixed 128-bit hash: stable ids must not change across Rust versions or platforms
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 # Only `#[cfg(test)]` modules parse directly (`parse_unchecked`) rather than
