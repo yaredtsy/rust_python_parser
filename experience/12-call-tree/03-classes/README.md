@@ -23,6 +23,7 @@ doesn't handle objects yet; these fixtures run in inline mode only until part
 | 5 | [`05-writes-from-anywhere.md`](05-writes-from-anywhere.md) | writes outside `__init__`, outside the class, on one path | one write rule for every receiver. Several candidates: a weak write |
 | 6 | [`06-static-class-property.md`](06-static-class-property.md) | `@staticmethod`, `@classmethod`, `@property` | the decorator decides the receiver. A property is a call |
 | 7 | [`07-chains-super-and-annotations.md`](07-chains-super-and-annotations.md) | `a.b.c.f()`, `super()`, `def f(h: Handler)` | one `member` per hop. `super()` is the same receiver. An annotation is a claim, and is counted |
+| 8 | [`08-entries.md`](08-entries.md) | an entry that is a method or a closure | every function is its own system, started like `main`: construct its object, or run its parent, first. That setup is hidden |
 
 **Steps 1, 2 and 3 are the core.** 1 introduces identity, 2 the receiver
 rule, 3 state. The rest are those three applied to more shapes.
@@ -56,7 +57,7 @@ within the one walk of the request.
 
 ## Done when
 
-- [ ] every test from steps 1–7 passes in inline mode
+- [ ] every test from steps 1–8 passes in inline mode
 - [ ] every part 01 and 02 test still passes in both modes
 - [ ] you can say, for each step, which fixture line breaks without its
       decision

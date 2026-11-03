@@ -156,6 +156,32 @@ mode now. If one doesn't, it is one of the four conversions: print the key
 what the caller made of it (`resolve`). The bug is at the first one that looks
 wrong.
 
+`entries.py` (step 03.08) needs one more thing first: the entry prologue in
+`solve`, not only in `inline_tree`. It is the same `prologue` call, made on the
+root walk before the entry is keyed:
+
+```rust
+// src/interp/mod.rs, solve
+let mut w = Walk::new(&s, def);
+let mut objects = Env::default();
+let start = w.prologue(&mut s, def, &mut objects);        // same as inline_tree
+let bound = w.bind_parameters(&mut s, def, node, start.receiver, &EvaluatedArgs::default(), start.enclosing);
+let root_ctx = s.key(&w, def, &bound, start.enclosing);  // self with __init__'s state, in the key
+```
+
+The prologue's body is walked directly, in the root walk; the calls inside it
+are summary calls like any other. Two things follow:
+
+- The key is the prologue's values: `self` fingerprints to
+  `Fp::Instance { class, attrs }` with what `__init__` wrote, a closure's
+  `free` to what its parent's run holds. The entry's walk materializes them
+  (step 01), so it sees the same objects the prologue built.
+- A write `__init__`'s *callee* makes (`__init__` calling `self.setup()`)
+  reaches the object as an effect. That is this step, which is why the
+  summary-mode prologue comes here and not earlier.
+
+`plan/03-call-tree/16-entries.md` § "Both modes" has the rule.
+
 ### Yours
 
 - `Write`, `Env.written`, recording in `bind_attr`, and the join rule.
@@ -213,7 +239,7 @@ fn p04_03_effects() {
 }
 ```
 
-and every `p03_*` test switched to `check_both`.
+and every `p03_*` test switched to `check_both`, `p03_08_entries` included.
 
 ---
 

@@ -445,4 +445,4 @@ after the syntax layer, IDs and MRO, and before transport.
 
 ---
 
-→ Next: [`04-build/00-dev-cli.md`](../04-build/00-dev-cli.md)
+→ Next: [`16-entries.md`](16-entries.md), then [`04-build/00-dev-cli.md`](../04-build/00-dev-cli.md)

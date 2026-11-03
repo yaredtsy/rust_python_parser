@@ -191,7 +191,9 @@ if v == [Unknown] {
 run of the callee.
 
 And an unannotated `self` or `cls` of an entry method uses the enclosing
-class: `Service.call`'s `self` is a `Service`.
+class: `Service.call`'s `self` is a `Service`. This is the simplest version
+that works, and step 08 replaces it: an entry method's `self` will be an object
+built by running `__init__`, and this rule is retired.
 
 **Why `Entry` and not `OPAQUE`:** `lift` gives an annotated parameter an
 `OPAQUE` instance, which holds no state. But it is one specific object, the
@@ -313,7 +315,7 @@ the cut happened.
 
 ---
 
-## Where you are: the end of part 03
+## Where you are
 
 ```
 AbstractValue = Function | Closure | Class | Instance { class, origin } | BoundMethod
@@ -360,4 +362,4 @@ brings summary mode to the same trees.
 
 ---
 
-→ Next part: [`../04-class-summaries/README.md`](../04-class-summaries/README.md)
+→ Next: [`08-entries.md`](08-entries.md)

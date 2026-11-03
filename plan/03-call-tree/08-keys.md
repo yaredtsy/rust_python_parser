@@ -186,9 +186,11 @@ tracked and reported as effects. Only instances that ty hands the walk use
 ### The annotation fallback
 
 A parameter whose fingerprint is `Unknown` starts from its annotation, lifted,
-with each `OPAQUE` instance given the parameter's `Entry` origin. An unannotated
-`self` or `cls` uses the enclosing class. `Stats.annotation_fallbacks` counts
-each use.
+with each `OPAQUE` instance given the parameter's `Entry` origin.
+`Stats.annotation_fallbacks` counts each use. An unannotated `self` or `cls` is
+not filled from the enclosing class any more: at an entry the prologue supplies
+it ([`16`](16-entries.md)), and elsewhere an unknown first parameter stays
+unknown.
 
 ```python
 def process(h: Handler):
@@ -204,9 +206,10 @@ a leaf that came from an annotation should be explainable as such.
 
 ### Entry contexts
 
-An entry is one requested function. Its context has every parameter `Unknown`,
-so materializing gives each parameter its annotation. An entry context is the
-same context as a call that passes nothing known, and shares its summary.
+Replaced by [`16-entries.md`](16-entries.md). An entry is one requested
+function, started like `main`, after a prologue that constructs its object (a
+method) or runs its parent (a closure). Its context is keyed with the
+prologue's values, not "every parameter `Unknown`".
 
 ---
 

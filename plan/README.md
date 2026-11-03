@@ -77,7 +77,8 @@ plan/
 │   ├── 12-recursion.md ............................ pending values, groups, the fixpoint
 │   ├── 13-solver-and-limits.md .................... Solver, cuts, Limits, Stats
 │   ├── 14-output.md ............................... the graph, stable IDs, the rendered tree
-│   └── 15-checks-and-build-order.md ............... known limits, checks, S1–S11, growth path
+│   ├── 15-checks-and-build-order.md ............... known limits, checks, S1–S11, growth path
+│   └── 16-entries.md .............................. each function its own system: the prologue for methods and closures
 │
 ├── 04-build/ ...................................... shipping it
 │   ├── 00-dev-cli.md .............................. ★ file in, JSON out. build this first
