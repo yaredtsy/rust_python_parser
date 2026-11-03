@@ -8,7 +8,8 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Mark {
     Recursive,
     Cut,

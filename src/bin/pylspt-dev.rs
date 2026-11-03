@@ -1,13 +1,13 @@
 //! `pylspt-dev parse <dir> <file> [--pretty]` — the real entry point: resolves
 //! the file through the ty project database, then scans it.
-//! `pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty]` — the call
+//! `pylspt-dev calls <dir> <file> --entry <name> [--graph | --wire] [--merged] [--ids] [--pretty]` — the call
 //! tree as text, or with `--graph` the context graph as JSON: the same functions
 //! the server calls.
 //!
 //! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md`.
 
 use pylspt::db::{open, open_project};
-use pylspt::interp::{Mode, Options, call_graph, call_tree, to_text};
+use pylspt::interp::{Mode, Options, call_graph, call_wire, merge_for_output, to_text};
 use pylspt::nodes::Node;
 use pylspt::scan::{Ctx, scan_module};
 use ruff_db::parsed::parsed_module;
@@ -20,7 +20,7 @@ struct Output<'a> {
     nodes: &'a [Node],
 }
 
-const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty]";
+const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph | --wire] [--merged] [--ids] [--pretty]";
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -70,15 +70,24 @@ fn calls(args: Vec<String>) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("file path is not valid UTF-8: {file_path:?}"))?;
     let (file, _) = open(&db, file_path)?;
 
-    let opts = Options { mode: Mode::Summary, ..Options::default() };
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    // `--ids`: the request path's filter (only functions with a docstring `ID:`)
+    let opts = Options { mode: Mode::Summary, require_ids: has("--ids"), ..Options::default() };
     let no_entry = || anyhow::anyhow!("no function `{entry}` in {file_arg}");
     if graph {
         let g = call_graph(&db, file, entry, &opts).ok_or_else(no_entry)?;
         println!("{}", json(&g, pretty)?);
     } else {
-        let (tree, _) = call_tree(&db, file, entry, &opts).ok_or_else(no_entry)?;
-        let module = file_path.file_stem().unwrap_or_default();
-        print!("{}", to_text(&tree, module));
+        let (mut wire, _) = call_wire(&db, file, entry, &opts).ok_or_else(no_entry)?;
+        if has("--merged") {
+            wire = merge_for_output(&wire); // the spec of v-noc's merge: never on the response path
+        }
+        if has("--wire") {
+            println!("{}", json(&wire, pretty)?);
+        } else {
+            let module = file_path.file_stem().unwrap_or_default();
+            print!("{}", to_text(&wire.to_node(), module));
+        }
     }
     Ok(())
 }

@@ -376,25 +376,35 @@ impl<'db> Sem<'db> {
         }
     }
 
+    /// The docstring `ID:` of a project `def` or `class`. The one reader `scan` uses.
+    pub fn docstring_id(&self, def: Definition<'db>) -> Option<String> {
+        if !self.is_project(def) {
+            return None;
+        }
+        let parsed = self.parsed(def);
+        let body = match def.kind(self.db) {
+            DefinitionKind::Function(f) => &f.node(&parsed).body,
+            DefinitionKind::Class(c) => &c.node(&parsed).body,
+            _ => return None,
+        };
+        crate::scan::id_from_body(body)
+    }
+
+    pub fn is_class(&self, def: Definition<'db>) -> bool {
+        matches!(def.kind(self.db), DefinitionKind::Class(_))
+    }
+
     /// A definition's identity outside this request: its docstring `ID:` when it
     /// is project code that has one, else where it is (module, qualified name, nth).
     pub fn stable_def(&self, def: Definition<'db>) -> StableDef {
         let parsed = self.parsed(def);
-        let (start, body) = match def.kind(self.db) {
-            DefinitionKind::Function(f) => {
-                let n = f.node(&parsed);
-                (n.range().start(), Some(&n.body))
-            }
-            DefinitionKind::Class(c) => {
-                let n = c.node(&parsed);
-                (n.range().start(), Some(&n.body))
-            }
-            _ => (self.def_position(def).1, None),
+        let start = match def.kind(self.db) {
+            DefinitionKind::Function(f) => f.node(&parsed).range().start(),
+            DefinitionKind::Class(c) => c.node(&parsed).range().start(),
+            _ => self.def_position(def).1,
         };
-        if self.is_project(def) {
-            if let Some(id) = body.and_then(|b| crate::scan::id_from_body(b)) {
-                return StableDef::Node(id);
-            }
+        if let Some(id) = self.docstring_id(def) {
+            return StableDef::Node(id);
         }
         let module = file_to_module(self.db, def.program_file(self.db).resolver_file(self.db))
             .map(|m| m.name(self.db).to_string())

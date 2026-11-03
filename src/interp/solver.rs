@@ -12,7 +12,11 @@ use crate::interp::defer::{DeferredOp, no_values};
 use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status, Cut, same_svals};
 use crate::interp::walk::{Walk, contains_yield};
 use crate::interp::{Options, Stats};
+use crate::interp::graph::Span;
+use crate::interp::wire::FrameJson;
 use crate::sem::{Definition, Sem};
+use crate::stable::StableDef;
+use ruff_text_size::Ranged;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum State {
@@ -467,6 +471,44 @@ impl<'db> Solver<'db> {
     }
 
     /// Its summary is missing what later rounds would have added.
+    /// Is this function part of the view? Project code, and with `require_ids` one
+    /// that has a docstring `ID:`.
+    pub fn shown(&self, def: Definition<'db>) -> bool {
+        self.sem.is_project(def) && (!self.opts.require_ids || self.sem.docstring_id(def).is_some())
+    }
+
+    /// `FunctionSchema/<id>` or `ClassSchema/<id>`; empty when there is no ID.
+    pub fn target_id(&self, def: Definition<'db>) -> String {
+        let kind = if self.sem.is_class(def) { "ClassSchema" } else { "FunctionSchema" };
+        match self.sem.stable_def(def) {
+            StableDef::Node(id) => format!("{kind}/{id}"),
+            StableDef::Path { .. } => String::new(),
+        }
+    }
+
+    /// The wire node for `callee`, called at `site` in `caller`, shown by `ctxs`.
+    pub fn frame_json(
+        &self,
+        callee: Definition<'db>,
+        caller: Definition<'db>,
+        site: SiteId,
+        ctxs: &[ContextId],
+    ) -> FrameJson {
+        let range = self.site_range(caller, site);
+        FrameJson {
+            target_qname: self.sem.qname(callee),
+            target_id: self.target_id(callee),
+            call_count: 0,
+            call_site: Some(Span {
+                start: self.sem.line_col(caller, range.start()),
+                end: self.sem.line_col(caller, range.end()),
+            }),
+            contexts: ctxs.iter().map(|&c| self.stable_id(c)).collect(),
+            marks: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
     pub fn is_incomplete(&self, ctx: ContextId) -> bool {
         // no result: it was cut before it was walked
         self.slots[ctx]

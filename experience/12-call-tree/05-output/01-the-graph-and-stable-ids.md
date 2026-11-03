@@ -279,11 +279,31 @@ first argument a command:
 
 ```
 pylspt-dev parse <dir> <file> [--pretty]             # what it does today
-pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty]
+pylspt-dev calls <dir> <file> --entry <name> [--graph] [--pretty] [-o <path>]
 ```
 
 `calls` prints `to_text` of `call_tree`, or with `--graph` the JSON of
-`call_graph`. It calls the same functions the server will
+`call_graph`. `-o <path>` (or `--out <path>`) writes it to that file instead
+of stdout, as the plan's flag list says; `parse` takes it too:
+
+```rust
+// src/bin/pylspt-dev.rs
+let text = if graph {
+    let g = call_graph(&db, file, &entry, &Options::default()).context("no such entry")?;
+    if pretty { serde_json::to_string_pretty(&g)? } else { serde_json::to_string(&g)? }
+} else {
+    let (tree, _) = call_tree(&db, file, &entry, &Options::default()).context("no such entry")?;
+    to_text(&tree, &module)
+};
+match out {
+    Some(path) => std::fs::write(path, text)?,   // `-o out.json`
+    None => println!("{text}"),
+}
+```
+
+Without `--graph` the file holds the text tree until step 02 makes the tree
+JSON (`FrameJson`). From then on both outputs are JSON, through the same
+flag. It calls the same functions the server will
 (`plan/04-build/00-dev-cli.md`: "the CLI must call the exact same functions
 the RPC layer calls"). `--entry` is required for now: the module body is not
 run (a known gap), so the plan's default of "module level" has nothing to
@@ -301,7 +321,7 @@ start from. `--project` with walk-up comes with the rest of that plan.
 - `src/interp/graph.rs`: the output types and `graph`; `call_graph` in
   `interp/mod.rs`.
 - The derives of decision 6.
-- `pylspt-dev calls`.
+- `pylspt-dev calls`, with `-o/--out`.
 
 <details><summary>Reference: this step's code</summary>
 

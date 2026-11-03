@@ -291,6 +291,7 @@ impl<'db> Walk<'db> {
         &mut self,
         sol: &mut Solver<'db>,
         name: String,
+        shown: Definition<'db>, // what the node is named by: hidden with its subtree when not shown
         site: TextRange,
         def: Definition<'db>,
         enclosing: Option<ActivationId>,
@@ -301,15 +302,19 @@ impl<'db> Walk<'db> {
         if sol.path.contains(&name) {
             let mut node = Node::call(name, site);
             node.marks.push(Mark::Recursive);
-            self.push_leaf(sol, node);
+            if sol.shown(shown) {
+                self.push_leaf(sol, node);
+            }
             return None;
         }
         sol.path.push(name.clone());
         let run = self.walk_inline(sol, def, enclosing, receiver, args, env);
         sol.path.pop();
-        let mut node = Node::call(name, site);
-        node.children = run.children;
-        self.push_leaf(sol, node);
+        if sol.shown(shown) {
+            let mut node = Node::call(name, site);
+            node.children = run.children;
+            self.push_leaf(sol, node);
+        } // else: values flowed through it, the view drops it and what is under it
         Some(run.returns)
     }
 
@@ -325,7 +330,7 @@ impl<'db> Walk<'db> {
         env: &mut Env<'db>,
     ) -> Values<'db> {
         let name = sol.sem.qname(def);
-        match self.inline_node(sol, name, site, def, enclosing, receiver, args, env) {
+        match self.inline_node(sol, name, def, site, def, enclosing, receiver, args, env) {
             None => smallvec![AbstractValue::Unknown], // recursive: not walked (step 01.10)
             Some(_) if args.has_empty() => Values::new(), // Python never makes this call
             Some(returns) => returns,
@@ -347,10 +352,11 @@ impl<'db> Walk<'db> {
         match sol.sem.init_of(class).filter(|&init| sol.sem.is_project(init)) {
             // `self` is the object. The guard is keyed on the class's name.
             Some(init) => {
-                self.inline_node(sol, name, site, init, None, Some(obj), args, env);
+                self.inline_node(sol, name, class, site, init, None, Some(obj), args, env);
             }
             // no body to walk, so nothing can recurse: a plain leaf
-            None => self.push_leaf(sol, Node::call(name, site)),
+            None if sol.shown(class) => self.push_leaf(sol, Node::call(name, site)),
+            None => {}
         }
         if args.has_empty() { Values::new() } else { smallvec![obj] }
     }

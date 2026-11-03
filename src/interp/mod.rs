@@ -17,9 +17,11 @@ mod summary;
 mod tree;
 mod value;
 mod walk;
+mod wire;
 pub use canon::StableContextId;
 pub use graph::{ContextOut, EdgeOut, EdgeTo, GraphOut, Span};
 pub use tree::{Mark, Node, to_text};
+pub use wire::{FrameJson, merge_for_output};
 
 use std::time::Duration;
 
@@ -28,7 +30,7 @@ use summary::Cut;
 use ty_project::ProjectDatabase;
 
 use crate::{
-    interp::{graph::graph, key::ContextId, render::render, solver::Solver, walk::Walk},
+    interp::{graph::graph, key::ContextId, render::render_root, solver::Solver, walk::Walk},
     sem::Sem,
 };
 
@@ -77,6 +79,9 @@ pub struct Stats {
 pub struct Options {
     pub mode: Mode,
     pub limits: Limits,
+    /// Show only functions with a docstring `ID:` (and what is under them).
+    /// The harness runs with it off; the request path turns it on.
+    pub require_ids: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,9 @@ pub struct Limits {
     pub max_contexts: u32,       // 50_000
     pub contexts_per_func: u32,  // 64, counted in this request only
     pub deadline: Option<Duration>,
+    // the view: what the tree shows
+    pub render_nodes: u32,          // 100_000: the tree stops here, and says where
+    pub render_depth: Option<u32>,  // no depth limit by default: the budget is the guard
     // checks
     pub reuse: bool,
 }
@@ -104,6 +112,8 @@ impl Default for Limits {
             max_contexts: 50_000,
             contexts_per_func: 64,
             deadline: Some(Duration::from_secs(10)),
+            render_nodes: 100_000,
+            render_depth: None,
             reuse: true,
         }
     }
@@ -114,6 +124,7 @@ impl Default for Options {
         Options {
             mode: Mode::Inline,
             limits: Limits::default(),
+            require_ids: false, // the harness; requests set it
         }
     }
 }
@@ -129,17 +140,8 @@ pub fn call_tree(
     match opts.mode {
         Mode::Inline => inline_tree(db, file, entry, opts),
         Mode::Summary => {
-            let (mut s, root_ctx) = solve(db, file, entry, opts)?;
-            let qname = s.sem.qname(s.contexts[root_ctx].func);
-            let mut path = vec![qname.clone()];
-            let mut root = Node::root(qname);
-            root.children = render(&s, &[root_ctx], &mut path);
-            if s.is_incomplete(root_ctx) {
-                root.marks.push(Mark::Incomplete);
-            }
-            s.stats.contexts = s.contexts.len() as u32;
-            s.stats.nodes = root.children.iter().map(count_nodes).sum();
-            Some((root, s.stats))
+            let (wire, stats) = call_wire(db, file, entry, opts)?;
+            Some((wire.to_node(), stats))
         }
     }
 }
@@ -151,8 +153,18 @@ pub fn call_graph(db: &ProjectDatabase, file: File, entry: &str, opts: &Options)
     Some(graph(&s, &[root]))
 }
 
-fn count_nodes(n: &Node) -> u32 {
-    1 + n.children.iter().map(count_nodes).sum::<u32>()
+/// The tree v-noc stores: summary mode, rendered with the ID filter and the node budget.
+pub fn call_wire(
+    db: &ProjectDatabase,
+    file: File,
+    entry: &str,
+    opts: &Options,
+) -> Option<(FrameJson, Stats)> {
+    let (mut s, root_ctx) = solve(db, file, entry, opts)?;
+    let wire = render_root(&s, root_ctx);
+    s.stats.contexts = s.contexts.len() as u32;
+    s.stats.nodes = wire.children.iter().map(FrameJson::count).sum();
+    Some((wire, s.stats))
 }
 
 /// Summary mode, stopped before rendering: the solver, with the entry solved.

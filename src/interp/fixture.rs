@@ -140,33 +140,43 @@ pub fn check(fixture: &str) {
     check_with(fixture, &[inline()]);
 }
 
-/// The `# limits: k=v,…` line of a fixture: limits for summary mode.
-pub fn fixture_limits(source: &str) -> Option<Limits> {
+/// The `# limits: k=v,…` line of a fixture: limits for summary mode, and `ids=on`
+/// (the ID filter, every mode).
+pub fn fixture_limits(source: &str) -> Option<(Limits, bool)> {
     let line = source.lines().find_map(|l| l.strip_prefix("# limits:"))?;
     let mut limits = Limits::default();
+    let mut ids = false;
     for kv in line.split(',') {
         let (k, v) = kv.trim().split_once('=').expect("limits are `key=value`");
-        let n: u64 = v.trim().parse().expect("limits are numbers");
-        match k.trim() {
+        let (k, v) = (k.trim(), v.trim());
+        if k == "ids" {
+            ids = v == "on";
+            continue;
+        }
+        let n: u64 = v.parse().expect("limits are numbers");
+        match k {
             "max_rounds" => limits.max_rounds = n as u32,
             "fp_depth" => limits.fp_depth = n as u8,
             "max_stack" => limits.max_stack = n as usize,
             "max_contexts" => limits.max_contexts = n as u32,
             "contexts_per_func" => limits.contexts_per_func = n as u32,
+            "render_nodes" => limits.render_nodes = n as u32,
+            "render_depth" => limits.render_depth = Some(n as u32),
             other => panic!("unknown limit `{other}`"),
         }
     }
-    Some(limits)
+    Some((limits, ids))
 }
 
 /// Every mode. The same expected trees must come out of each. A fixture with
 /// limits skips the no-reuse run: that run compares outputs with no cuts at all.
 pub fn check_both(fixture: &str) {
     let path = format!("experience/12-call-tree/{fixture}");
-    let limits = fixture_limits(&std::fs::read_to_string(path).unwrap());
+    let found = fixture_limits(&std::fs::read_to_string(path).unwrap());
+    let ids = found.as_ref().is_some_and(|(_, ids)| *ids);
     let mut runs = vec![inline()];
-    match limits {
-        Some(limits) => runs.push(Options {
+    match found {
+        Some((limits, _)) => runs.push(Options {
             limits,
             ..summary()
         }),
@@ -180,6 +190,9 @@ pub fn check_both(fixture: &str) {
                 ..summary()
             });
         }
+    }
+    for r in &mut runs {
+        r.require_ids = ids;
     }
     check_with(fixture, &runs);
 }
@@ -555,4 +568,27 @@ fn p05_01_stable_ids_ignore_discovery_order() {
     let (one, two) = (ids("main"), ids("main2"));
     assert_eq!(one.len(), 3); // read_a, read_b, done
     assert_eq!(one, two);
+}
+
+#[test]
+fn p05_02_wire_tree() {
+    check_both("05-output/python/ids.py");
+    check_both("05-output/python/render_cut.py");
+}
+
+#[test]
+fn p05_02_merge_matches_v_noc() {
+    use crate::interp::{call_wire, merge_for_output};
+    // `twice` calls `run` twice from one function: two nodes on the wire, one after v-noc's merge
+    let path = std::fs::canonicalize("experience/12-call-tree/02-function-summaries/python/graph.py").unwrap();
+    let db = open_project(SystemPath::from_std_path(path.parent().unwrap()).unwrap()).unwrap();
+    let (file, _) = open(&db, SystemPath::from_std_path(&path).unwrap()).unwrap();
+    let (wire, _) = call_wire(&db, file, "main", &summary()).unwrap();
+    let twice = |t: &crate::interp::FrameJson| t.children.iter().find(|c| c.target_qname == "graph.twice").unwrap().clone();
+    let before = twice(&wire);
+    assert_eq!(before.children.len(), 2);
+    assert!(before.children.iter().all(|c| c.call_count == 0 && c.call_site.is_some()));
+    let after = twice(&merge_for_output(&wire));
+    assert_eq!(after.children.len(), 1);
+    assert_eq!(after.children[0].call_count, 1);
 }
