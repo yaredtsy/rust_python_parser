@@ -20,7 +20,7 @@ struct Output<'a> {
     nodes: &'a [Node],
 }
 
-const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph | --wire] [--merged] [--ids] [--pretty]";
+const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty] [-o <path>]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph | --wire] [--merged] [--ids] [--pretty] [-o <path>]";
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,11 +28,32 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!(USAGE);
     }
     let command = args.remove(0);
+    let (out, args) = take_out(args)?;
     match command.as_str() {
-        "parse" => parse(args),
-        "calls" => calls(args),
+        "parse" => parse(args, out),
+        "calls" => calls(args, out),
         _ => anyhow::bail!(USAGE),
     }
+}
+
+/// `-o <path>` / `--out <path>`: the flag and its value, taken out of `args`.
+fn take_out(mut args: Vec<String>) -> anyhow::Result<(Option<String>, Vec<String>)> {
+    let Some(i) = args.iter().position(|a| a == "-o" || a == "--out") else {
+        return Ok((None, args));
+    };
+    anyhow::ensure!(i + 1 < args.len(), "-o/--out needs a path\n{USAGE}");
+    let path = args.remove(i + 1);
+    args.remove(i);
+    Ok((Some(path), args))
+}
+
+/// To the file when `-o` was given, else to stdout.
+fn emit(text: String, out: Option<String>) -> anyhow::Result<()> {
+    match out {
+        Some(path) => std::fs::write(path, text)?,
+        None => println!("{}", text.trim_end_matches('\n')),
+    }
+    Ok(())
 }
 
 fn json<T: serde::Serialize>(out: &T, pretty: bool) -> anyhow::Result<String> {
@@ -43,7 +64,7 @@ fn json<T: serde::Serialize>(out: &T, pretty: bool) -> anyhow::Result<String> {
     })
 }
 
-fn calls(args: Vec<String>) -> anyhow::Result<()> {
+fn calls(args: Vec<String>, out: Option<String>) -> anyhow::Result<()> {
     let pretty = args.iter().any(|a| a == "--pretty");
     let graph = args.iter().any(|a| a == "--graph");
     let entry = args
@@ -76,23 +97,23 @@ fn calls(args: Vec<String>) -> anyhow::Result<()> {
     let no_entry = || anyhow::anyhow!("no function `{entry}` in {file_arg}");
     if graph {
         let g = call_graph(&db, file, entry, &opts).ok_or_else(no_entry)?;
-        println!("{}", json(&g, pretty)?);
+        emit(json(&g, pretty)?, out)?;
     } else {
         let (mut wire, _) = call_wire(&db, file, entry, &opts).ok_or_else(no_entry)?;
         if has("--merged") {
             wire = merge_for_output(&wire); // the spec of v-noc's merge: never on the response path
         }
         if has("--wire") {
-            println!("{}", json(&wire, pretty)?);
+            emit(json(&wire, pretty)?, out)?;
         } else {
             let module = file_path.file_stem().unwrap_or_default();
-            print!("{}", to_text(&wire.to_node(), module));
+            emit(to_text(&wire.to_node(), module), out)?;
         }
     }
     Ok(())
 }
 
-fn parse(args: Vec<String>) -> anyhow::Result<()> {
+fn parse(args: Vec<String>, out: Option<String>) -> anyhow::Result<()> {
     let mut args = args.into_iter();
 
     let dir = args
@@ -126,14 +147,6 @@ fn parse(args: Vec<String>) -> anyhow::Result<()> {
 
     // 3. scan, serialise. Same two calls as the standalone `scan` bin.
     let nodes = scan_module(&ctx, &parsed.syntax().body);
-    let out = Output { nodes: &nodes };
-    println!(
-        "{}",
-        if pretty {
-            serde_json::to_string_pretty(&out)?
-        } else {
-            serde_json::to_string(&out)?
-        }
-    );
-    Ok(())
+    let output = Output { nodes: &nodes };
+    emit(json(&output, pretty)?, out)
 }
