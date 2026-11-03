@@ -1,7 +1,7 @@
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
 use ruff_python_ast::{Alias, AnyNodeRef, ExprName, ExprRef, Stmt, StmtFunctionDef};
-use ruff_text_size::{Ranged, TextSize};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use ty_project::glob::IncludeResult;
 use ty_project::{Db as _, ProjectDatabase};
@@ -38,6 +38,19 @@ pub struct BodyScope<'db> {
     pub file: ProgramFile<'db>,
     pub scope: FileScopeId,
 }
+/// A class or a function around an entry.
+pub enum Scope<'db> {
+    Class(Definition<'db>),
+    Function(Definition<'db>),
+}
+
+/// What a function defined in a class is called on.
+pub enum EntryKind {
+    Method,
+    ClassMethod,
+    StaticMethod,
+}
+
 /// A property's project accessors. A library accessor is a stub: not walked.
 pub struct PropertyParts<'db> {
     pub getter: Option<Definition<'db>>,
@@ -115,18 +128,57 @@ impl<'db> Sem<'db> {
         vnoc::instance_of(self.db, &env, ty)
     }
 
-    /// The class a method is written in, if it is written in one.
-    pub fn enclosing_class(&self, def: Definition<'db>) -> Option<Definition<'db>> {
+    /// The classes and functions around `def`, outermost first, then `def` itself.
+    pub fn scope_chain(&self, def: Definition<'db>) -> Vec<Scope<'db>> {
         let file = def.program_file(self.db);
         let index = semantic_index(self.db, file);
-        let (_, scope) = index
-            .ancestor_scopes(def.scope(self.db).file_scope_id(self.db))
-            .next()?;
-        let ty_python_core::scope::NodeWithScopeKind::Class(c) = scope.node() else {
-            return None;
-        };
         let parsed = self.parsed(def);
-        Some(c.node(&parsed).definition(&self.model(file)))
+        let model = self.model(file);
+        let mut chain: Vec<Scope<'db>> = index
+            .ancestor_scopes(def.scope(self.db).file_scope_id(self.db))
+            .filter_map(|(_, scope)| match scope.node() {
+                ty_python_core::scope::NodeWithScopeKind::Class(c) => {
+                    Some(Scope::Class(c.node(&parsed).definition(&model)))
+                }
+                ty_python_core::scope::NodeWithScopeKind::Function(f) => {
+                    Some(Scope::Function(f.node(&parsed).definition(&model)))
+                }
+                _ => None, // the module; type-parameter scopes hold nothing
+            })
+            .collect();
+        chain.reverse();
+        chain.push(Scope::Function(def));
+        chain
+    }
+
+    /// A function in `class`, by what ty makes of it on an instance: the same order as `member`.
+    pub fn entry_kind(&self, class: Definition<'db>, func: Definition<'db>) -> EntryKind {
+        let name = self.function_name(func);
+        if self.property_parts(class, &name).is_some() {
+            return EntryKind::Method; // a property's getter runs on an object
+        }
+        let file = class.program_file(self.db);
+        match self
+            .member(self.instance_type(class), &name, file)
+            .map(|t| (t, self.shape(t, file)))
+        {
+            Some((t, Shape::BoundMethod { .. })) => match self.bound_to(t) {
+                BoundTo::Class => EntryKind::ClassMethod,
+                _ => EntryKind::Method,
+            },
+            Some((_, Shape::Function(_))) => EntryKind::StaticMethod, // no receiver on an instance
+            _ => EntryKind::Method, // ty can't tell (an unknown decorator): a method
+        }
+    }
+
+    pub fn def_range(&self, def: Definition<'db>) -> TextRange {
+        def.full_range(self.db, &self.parsed(def)).range()
+    }
+
+    pub fn function_name(&self, def: Definition<'db>) -> String {
+        let parsed = self.parsed(def);
+        self.function_node(def, &parsed)
+            .map_or_else(String::new, |f| f.name.to_string())
     }
 
     /// An instance of the class, for looking up attributes on an object.
@@ -375,6 +427,9 @@ impl<'db> Sem<'db> {
                     }
                     Stmt::ClassDef(c) if !last && c.name.as_str() == part => {
                         next = Some(&c.body[..])
+                    }
+                    Stmt::FunctionDef(f) if !last && f.name.as_str() == part => {
+                        next = Some(&f.body[..])
                     }
                     _ => {}
                 }

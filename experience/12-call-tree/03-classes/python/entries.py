@@ -109,6 +109,44 @@ def outer():
     h = B()
 
 
+def with_param(h: Handler):
+    def inner():
+        h.handle()  # outer's parameter: outer ran with it from its annotation
+
+
+def with_default():
+    h = A()
+
+    def inner(x=h):
+        x.go()  # a default is taken when `def` runs: A, not the B after it
+
+    h = B()
+
+
+def siblings():
+    def helper():
+        log()
+
+    def inner():
+        helper()  # a sibling: a closure from the same run
+
+
+def branches(c):
+    if c:
+        h = A()
+    else:
+        h = B()
+
+    def inner():
+        h.go()  # both arms reach the run's end: A.go and B.go
+
+
+def recursive():
+    def walk(n):
+        log()
+        walk(n)  # the entry recursing: still a [recursive] leaf
+
+
 def a():
     x = A()
 
@@ -150,6 +188,40 @@ class Outer:
             self.h.process()
 
 
+class Host:
+    def __init__(self):
+        self.h = JsonHandler()
+
+    def meth(self):
+        host = self
+
+        class Local:
+            def m(self):
+                host.h.process()  # only if Host was built and meth ran
+
+        return Local
+
+
+class Holder:
+    pass
+
+
+def setup(holder):
+    h = A()
+
+    def cb():
+        h.go()  # called after setup returned: reads the end of setup's run
+
+    holder.cb = cb
+    h = B()  # the last statement: the run must keep it
+
+
+def fire():  # not an entry case: ordinary code, the end-of-run rule
+    holder = Holder()
+    setup(holder)
+    holder.cb()
+
+
 class Tree:
     def __init__(self):
         Tree()  # recursive, inside the prologue: hidden
@@ -186,6 +258,24 @@ class Tree:
 # Svc.build.step
 #   JsonHandler.process
 # expect:
+# with_param.inner
+#   Handler.handle
+# expect:
+# with_default.inner
+#   A.go
+# expect:
+# siblings.inner
+#   siblings.helper
+#     log
+# expect:
+# branches.inner
+#   A.go
+#   B.go
+# expect:
+# recursive.walk
+#   log
+#   recursive.walk [recursive]
+# expect:
 # a.b.c
 #   A.go
 #   B.go
@@ -196,6 +286,17 @@ class Tree:
 # expect:
 # Outer.Inner.m
 #   JsonHandler.process
+# expect:
+# Host.meth.Local.m
+#   JsonHandler.process
+# expect:
+# fire
+#   Holder
+#   setup
+#     A
+#     B
+#   setup.cb
+#     B.go
 # expect:
 # Tree.walk
 #   log

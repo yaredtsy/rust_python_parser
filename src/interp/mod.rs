@@ -3,6 +3,7 @@ mod env;
 mod bind;
 mod call;
 mod defer;
+mod entry;
 #[cfg(test)]
 mod fixture;
 mod key;
@@ -63,6 +64,7 @@ pub struct Stats {
     pub rounds_capped: u32, // group fixpoints stopped by `max_rounds`
     pub cuts: Cuts,         // calls cut by a cost limit, by kind
     pub chain_fanout_hits: u32, // an attribute hop cut to `max_chain_fanout` values
+    pub prologue_walks: u32, // functions run, and objects built, to start an entry
     pub annotation_fallbacks: u32, // a parameter that started from its annotation
     pub lifted_subclass_of: u32, // `lift` reached a `type[X]` (tests: the arm runs)
 }
@@ -174,15 +176,22 @@ fn inline_tree(
     let node = sem.function_node(def, &parsed)?;
     let mut s = Solver::new(sem, opts.clone());
     let qname = s.sem.qname(def);
-    s.path.push(qname.clone());
+
+    // What Python runs to reach the entry: kept in effect, never shown.
+    let mut w = Walk::new(&s, def);
+    let mut objects = env::Env::default();
+    let start = w.prologue(&mut s, def, &mut objects);
+    s.path.push(qname.clone()); // after the prologue: a clean path
     s.stats.walks += 1; // the entry
 
     // Called with no arguments (step 01.11), and keyed like any call.
-    let mut w = Walk::new(&s, def);
-    let bound = w.bind_parameters(&mut s, def, node, None, &bind::EvaluatedArgs::default(), None);
-    s.key(&w, def, &bound, None);
+    let args = bind::EvaluatedArgs::default();
+    let bound = w.bind_parameters(&mut s, def, node, start.receiver, &args, start.enclosing);
+    s.key(&w, def, &bound, start.enclosing);
     let mut env = w.env_from_bound(node, &bound);
     env.scope = Some(s.sem.body_scope(def, node));
+    env.enclosing = start.enclosing;
+    env.attrs = objects.attrs; // the objects' state
     w.walk_stmts(&mut s, &node.body, env);
 
     s.stats.contexts = s.contexts.len() as u32;

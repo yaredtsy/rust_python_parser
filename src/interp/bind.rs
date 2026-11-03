@@ -139,20 +139,17 @@ impl<'db> Walk<'db> {
             slots.push(unknown());
         }
         if sol.opts.mode == Mode::Inline {
-            self.annotation_fallback(sol, func, def, receiver.is_none(), &mut slots);
+            self.annotation_fallback(sol, def, &mut slots);
         }
         Bound { slots }
     }
 
     /// A parameter with no value starts from its annotation, lifted: an object of its
-    /// own for this run (`Entry`, not `OPAQUE`, so writes to it are tracked here). An
-    /// unannotated `self` / `cls` starts from the enclosing class.
+    /// own for this run (`Entry`, not `OPAQUE`, so writes to it are tracked here).
     fn annotation_fallback(
         &mut self,
         sol: &mut Solver<'db>,
-        func: Definition<'db>,
         def: &StmtFunctionDef,
-        no_receiver: bool,
         slots: &mut SmallVec<[Values<'db>; 4]>,
     ) {
         let params = &def.parameters;
@@ -168,10 +165,6 @@ impl<'db> Walk<'db> {
                     let t = sol.sem.type_of(&self.frame.model, ExprRef::from(&**ann));
                     self.instances_of(sol, t)
                 }
-                None if i == 0 && no_receiver => match self.enclosing_self(sol, func, def) {
-                    Some(v) => v,
-                    None => continue,
-                },
                 None => continue,
             };
             if v.is_empty() {
@@ -194,30 +187,6 @@ impl<'db> Walk<'db> {
                 None => Values::new(),
             },
         }
-    }
-
-    /// An entry method's unannotated first parameter: its class (an object of it, or
-    /// the class itself for a `@classmethod`; a `@staticmethod` has none).
-    fn enclosing_self(
-        &mut self,
-        sol: &mut Solver<'db>,
-        func: Definition<'db>,
-        def: &StmtFunctionDef,
-    ) -> Option<Values<'db>> {
-        let class = sol.sem.enclosing_class(func)?;
-        let decorated = |name: &str| {
-            def.decorator_list
-                .iter()
-                .any(|d| matches!(&d.expression, Expr::Name(n) if n.id.as_str() == name))
-        };
-        if decorated("staticmethod") {
-            return None;
-        }
-        if decorated("classmethod") {
-            return Some(smallvec![AbstractValue::Class(class)]);
-        }
-        let inst = sol.sem.instance_of(sol.sem.class_type(class), self.frame.file)?;
-        Some(self.lift(sol, inst))
     }
 
     /// The callee's starting env, from the bound slots.

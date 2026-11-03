@@ -374,7 +374,51 @@ class Outer:
     class Inner:
         def __init__(self): self.h = JsonHandler()
         def m(self): self.h.process()                    # Outer.Inner.m > JsonHandler.process
+
+# 14. a class inside a method: the method's class is built, the method runs
+class Host:
+    def __init__(self): self.h = JsonHandler()
+    def meth(self):
+        host = self
+        class Local:
+            def m(self): host.h.process()                # Host.meth.Local.m > JsonHandler.process
+        return Local
+
+# 15. not an entry: a closure escapes and is called after its run ended
+def setup(holder):
+    h = A()
+    def cb(): h.go()
+    holder.cb = cb
+    h = B()                                              # the run must keep its end
+def fire():
+    holder = Holder(); setup(holder); holder.cb()        # setup.cb > B.go (today: A.go)
+
+
+# 16–20. functions in functions
+def with_param(h: Handler):
+    def inner(): h.handle()                              # the parent's parameter: Handler.handle
+def with_default():
+    h = A()
+    def inner(x=h): x.go()                               # a default is taken at `def`: A.go
+    h = B()
+def siblings():
+    def helper(): log()
+    def inner(): helper()                                # siblings.inner > siblings.helper > log
+def branches(c):
+    if c: h = A()
+    else: h = B()
+    def inner(): h.go()                                  # A.go, B.go
+def recursive():
+    def walk(n): log(); walk(n)                          # recursive.walk > log, recursive.walk [Recursive]
 ```
+
+Each of 16–20, reached by an ordinary call instead (`with_default()()`), gives
+the same subtree today. An entry may differ from a call only in its arguments
+and its prologue.
+
+Fixtures 1–20 are `experience/12-call-tree/03-classes/python/entries.py`, run by
+`p03_08_entries` (ignored until E1–E3 land). A counter test,
+`Stats.prologue_walks` per entry, checks *what* the prologue ran.
 
 ---
 
@@ -386,7 +430,7 @@ class Outer:
    hidden frame, then walk the method on the object. Retire `enclosing_self`.
    Fixtures 2, 3, 4, 5, 7, 10.
 3. **E3.** `sem.entry` into functions; the walk down the scope chain, with the
-   run's end env stored. Fixtures 8, 9, 11, 12, 13.
+   run's end env stored (both modes). Fixtures 8, 9, 11–20.
 4. **E4.** Summary mode: the same prologue in the root walk; the entry keyed
    with its values. Callee writes in `__init__` after part 04's effects.
 5. **E5.** Invalidation: re-run an entry when anything in its "depends on" row

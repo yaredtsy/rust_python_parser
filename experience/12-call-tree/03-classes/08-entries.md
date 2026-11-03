@@ -49,6 +49,22 @@ def outer():
     def inner(): h.go()                          # outer.inner > B.go
     h = B()
 
+def with_param(h: Handler):                      # functions in functions
+    def inner(): h.handle()                      # with_param.inner > Handler.handle   (outer's parameter)
+def with_default():
+    h = A()
+    def inner(x=h): x.go()                       # with_default.inner > A.go   (a default: taken at `def`)
+    h = B()
+def siblings():
+    def helper(): log()
+    def inner(): helper()                        # siblings.inner > siblings.helper > log
+def branches(c):
+    if c: h = A()
+    else: h = B()
+    def inner(): h.go()                          # branches.inner > A.go, B.go
+def recursive():
+    def walk(n): log(); walk(n)                  # recursive.walk > log, recursive.walk [recursive]
+
 def a():                                         # three levels of functions
     x = A()
     def b():
@@ -69,6 +85,22 @@ class Outer:                                     # a class inside a class
         def __init__(self): self.h = JsonHandler()
         def m(self): self.h.process()            # Outer.Inner.m > JsonHandler.process
 
+class Host:                                      # a class inside a method
+    def __init__(self): self.h = JsonHandler()
+    def meth(self):
+        host = self
+        class Local:
+            def m(self): host.h.process()        # Host.meth.Local.m > JsonHandler.process
+        return Local
+
+def setup(holder):                               # not an entry: ordinary code
+    h = A()
+    def cb(): h.go()
+    holder.cb = cb                               # the closure escapes
+    h = B()
+def fire():
+    holder = Holder(); setup(holder); holder.cb()   # fire > …, setup.cb > B.go
+
 def process(h: Handler, n=3): h.handle()         # process > Handler.handle
 # and Box.h (a property), Tree.walk (a recursive __init__, hidden)
 ```
@@ -81,7 +113,8 @@ wrong:
 | `Svc.run` | nothing | `JsonHandler.process` |
 | `Child.go` | nothing | `JsonHandler.process` |
 | `Job.run` | `A.go`, `B.go` | `A.go` |
-| `outer.inner`, `Svc.build.step`, `a.b.c`, `make.Local.run` | `(no function …)` | found, reading their parents' runs |
+| `outer.inner`, `with_param.inner`, `with_default.inner`, `siblings.inner`, `branches.inner`, `recursive.walk`, `a.b.c`, `Svc.build.step`, `make.Local.run`, `Host.meth.Local.m` | `(no function …)` | found, reading their parents' runs |
+| `fire` (ordinary code) | `setup.cb > A.go` | `setup.cb > B.go` |
 
 ## Predict
 
@@ -328,7 +361,14 @@ read the env before `h = B()`, and show `A.go`.
 
 This applies to every inline call, not only prologues: a closure that escapes
 its run and is called later now reads the end of that run. That is Python's
-late binding. Run every earlier test after this change.
+late binding. `fire` tests it in ordinary code: `setup` stores `cb` on an
+object, then sets `h = B()` as its last statement, and `fire` calls `cb` after
+`setup` returned. Without the store, `cb` reads `h = A()`. Run every earlier
+test after this change.
+
+Summary mode has the same gap: `walk_context` doesn't store the end env either,
+and `finish` reads a returned closure's free values from that run. Store it
+there too.
 
 If a run never reaches the next `def` or `class` (it comes after an
 unconditional `return`), the next level has no run state for it. Its free
@@ -440,10 +480,39 @@ use crate::sem::{Definition, EntryKind, Scope};
 
 ```rust
 #[test]
+#[ignore = "step 03.08 (entries) is not built yet"]   // already in fixture.rs: remove this line
 fn p03_08_entries() {
     check("03-classes/python/entries.py");
 }
+
+#[test]
+fn p03_08_prologue_runs_the_parents() {
+    let f = "03-classes/python/entries.py";
+    let walks = |entry| stats_for(f, entry, &inline()).prologue_walks;
+    assert_eq!(walks("process"), 0);           // a module function: nothing to set up
+    assert_eq!(walks("Reg.create"), 0);        // a classmethod: no object
+    assert_eq!(walks("outer.inner"), 1);       // outer ran
+    assert_eq!(walks("with_param.inner"), 1);  // with_param ran, h from its annotation
+    assert_eq!(walks("with_default.inner"), 1);
+    assert_eq!(walks("siblings.inner"), 1);    // helper is not run: it is only defined
+    assert_eq!(walks("branches.inner"), 1);
+    assert_eq!(walks("recursive.walk"), 1);
+    assert_eq!(walks("a.b.c"), 2);             // a, then b
+    assert_eq!(walks("Svc.run"), 1);           // Svc.__init__
+    assert_eq!(walks("Svc.build.step"), 2);    // Svc.__init__, then build
+    assert_eq!(walks("Host.meth.Local.m"), 2); // Host.__init__, then meth (Local has no __init__)
+}
 ```
+
+The trees show the prologue's *effects* (an edge that only exists if the parent
+ran). The counter shows *what* ran, so a tree that comes out right for another
+reason doesn't hide a missing step.
+
+**The function-in-function trees are the same as through a call.** Each nested
+function, reached by an ordinary call (`with_default()()`, `siblings()()`, …),
+gives exactly the subtree its entry block expects. That is the contract: an
+entry differs from a call only in its arguments (unknown) and its context (the
+prologue), never in how the body is walked.
 
 Then every earlier test: `Service.call` in `chains.py` now gets its `Service`
 from the prologue. `Service.__init__(self, handler: Handler)` runs with

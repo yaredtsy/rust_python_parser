@@ -494,9 +494,15 @@ pub fn walk_context<'db>(s: &mut Solver<'db>, ctx: ContextId) -> Walk<'db> {
     let mut w = Walk::new(s, func);
     w.generator = contains_yield(&node.body);
     let env = w.materialize(s, ctx, node);
-    if w.walk_stmts(s, &node.body, env).is_some() {
+    if let Some(end) = w.walk_stmts(s, &node.body, env) {
         let none = w.none_value(s);
         w.frame.returns.extend(none); // fell off the end
+        w.frame.exits.push(end);
+    }
+    // The run as it ended: a returned closure reads its free values from here.
+    let exits = std::mem::take(&mut w.frame.exits);
+    if let Some(end) = crate::interp::env::Env::join(exits.into_iter().map(Some).collect()) {
+        w.activations[w.frame.act] = end;
     }
     w
 }

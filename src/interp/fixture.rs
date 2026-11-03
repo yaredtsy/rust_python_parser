@@ -489,3 +489,29 @@ fn p03_07_fanout_counted() {
 fn p03_07_chains() {
     check("03-classes/python/chains.py");
 }
+
+/// Remove the `ignore` when step 03.08 is built. Covers methods, classmethods,
+/// staticmethods, properties, closures at any depth, classes in functions and
+/// methods, and the end-of-run rule for an escaped closure (`fire`).
+#[test]
+fn p03_08_entries() {
+    check("03-classes/python/entries.py");
+}
+
+#[test]
+fn p03_08_prologue_runs_the_parents() {
+    let f = "03-classes/python/entries.py";
+    let walks = |entry| stats_for(f, entry, &inline()).prologue_walks;
+    assert_eq!(walks("process"), 0); // a module function: nothing to set up
+    assert_eq!(walks("Reg.create"), 0); // a classmethod: no object
+    assert_eq!(walks("outer.inner"), 1); // outer ran
+    assert_eq!(walks("with_param.inner"), 1); // with_param ran, h from its annotation
+    assert_eq!(walks("with_default.inner"), 1);
+    assert_eq!(walks("siblings.inner"), 1); // helper is not run: it is only defined
+    assert_eq!(walks("branches.inner"), 1);
+    assert_eq!(walks("recursive.walk"), 1);
+    assert_eq!(walks("a.b.c"), 2); // a, then b
+    assert_eq!(walks("Svc.run"), 1); // Svc.__init__
+    assert_eq!(walks("Svc.build.step"), 2); // Svc.__init__, then build
+    assert_eq!(walks("Host.meth.Local.m"), 2); // Host.__init__, then meth (Local has no __init__)
+}

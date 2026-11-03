@@ -19,6 +19,7 @@ use smallvec::{SmallVec, smallvec};
 pub struct InlineRun<'db> {
     pub children: Vec<Node>,
     pub returns: Values<'db>,
+    pub act: Option<ActivationId>, // the run, for the prologue
 }
 
 impl<'db> Walk<'db> {
@@ -257,7 +258,7 @@ impl<'db> Walk<'db> {
     }
 
     /// Inline mode: walk `def`'s body now. No node and no guard: that is `inline_node`'s job.
-    fn walk_inline(
+    pub(crate) fn walk_inline(
         &mut self,
         sol: &mut Solver<'db>,
         def: Definition<'db>,
@@ -268,10 +269,15 @@ impl<'db> Walk<'db> {
     ) -> InlineRun<'db> {
         let parsed = sol.sem.parsed(def);
         let Some(node) = sol.sem.function_node(def, &parsed) else {
-            return InlineRun { children: Vec::new(), returns: smallvec![AbstractValue::Unknown] };
+            return InlineRun {
+                children: Vec::new(),
+                returns: smallvec![AbstractValue::Unknown],
+                act: None,
+            };
         };
         sol.stats.walks += 1;
         let new = self.new_frame(sol, def);
+        let act = new.act;
         let caller = std::mem::replace(&mut self.frame, new);
         let bound = self.bind_parameters(sol, def, node, receiver, args, enclosing);
         sol.key(self, def, &bound, enclosing);
@@ -286,6 +292,7 @@ impl<'db> Walk<'db> {
         }
         let callee = std::mem::replace(&mut self.frame, caller);
         if let Some(exit) = Env::join(callee.exits.into_iter().map(Some).collect()) {
+            self.activations[act] = exit.clone(); // the run as it ended: closures read this
             env.attrs = exit.attrs; // the caller continues with what the callee left
         }
         let returns = if contains_yield(&node.body) {
@@ -293,7 +300,7 @@ impl<'db> Walk<'db> {
         } else {
             callee.returns
         };
-        InlineRun { children: callee.children, returns }
+        InlineRun { children: callee.children, returns, act: Some(act) }
     }
 
     fn push_leaf(&mut self, sol: &mut Solver<'db>, node: Node) {
