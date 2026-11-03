@@ -84,16 +84,16 @@ pub enum PlainVal<'db> {
 }
 
 pub struct Path { pub root: Root, pub steps: SmallVec<[Step; 2]> }   // steps.len() <= max_path
-pub enum Root { Param(u8), Free(u8) }
-pub enum Step { Attr(Name), Free(u8), Recv }
+pub enum Root { Param(u8), Free(u8), Default(u8) }
+pub enum Step { Attr(Name), Free(u8), Default(u8), Recv }
 ```
 
 `Ref(path)` means "the object at this path when the call started". Paths can be
 longer than `fp_depth`: the key stops there, but the walk can still name deeper
 input objects by their location ([`07`](07-attributes-and-self.md#objects-the-key-does-not-reach)).
 
-`Step::Free` and `Step::Recv` reach into a closure or a bound method passed as an
-argument. So a callback that writes to its own receiver still produces an effect
+`Step::Free`, `Step::Default` and `Step::Recv` reach into a closure or a bound method passed as an
+argument (a default holds a caller's object too). So a callback that writes to its own receiver still produces an effect
 the caller can apply ([`11`](11-closures-and-callbacks.md)).
 
 A closure in a summary carries its free values directly. A finished run's

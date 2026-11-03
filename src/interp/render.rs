@@ -28,7 +28,7 @@ pub fn render(s: &Solver<'_>, ctxs: &[ContextId], path: &mut Vec<String>) -> Vec
                 node.marks.push(Mark::Recursive); // shown, not entered
             } else {
                 path.push(q);
-                node.children = render(s, &callee_ctxs, path);
+                node.children = if callee_ctxs.is_empty() { Vec::new() } else { render(s, &callee_ctxs, path) };
                 path.pop();
             }
             out.push(node);
@@ -42,8 +42,8 @@ pub fn render(s: &Solver<'_>, ctxs: &[ContextId], path: &mut Vec<String>) -> Vec
 fn sites_union<'db>(
     s: &Solver<'db>,
     ctxs: &[ContextId],
-) -> Vec<(SiteId, SmallVec<[ContextId; 2]>)> {
-    let mut out: Vec<(SiteId, SmallVec<[ContextId; 2]>)> = Vec::new();
+) -> Vec<(SiteId, SmallVec<[Target<'db>; 2]>)> {
+    let mut out: Vec<(SiteId, SmallVec<[Target<'db>; 2]>)> = Vec::new();
     for &c in ctxs {
         let Some(res) = &s.slots[c].result else {
             continue;
@@ -57,9 +57,8 @@ fn sites_union<'db>(
                 }
             };
             for t in &edge.targets {
-                let Target::Call(ctx) = *t;
-                if !out[i].1.contains(&ctx) {
-                    out[i].1.push(ctx)
+                if !out[i].1.contains(t) {
+                    out[i].1.push(t.clone())
                 }
             }
         }
@@ -67,19 +66,31 @@ fn sites_union<'db>(
     out
 }
 
-/// Targets grouped by function, ordered by where each function is defined
-/// (step 01.09): the same order inline mode uses.
+/// The definition a target's node is named by, and the context under it.
+fn callee_of<'db>(s: &Solver<'db>, t: &Target<'db>) -> (Definition<'db>, Option<ContextId>) {
+    match *t {
+        Target::Call(ctx) => (s.contexts[ctx].func, Some(ctx)),
+        Target::Construct { class, init } => (class, init),
+    }
+}
+
+/// Targets grouped by the definition that names them, ordered by where each is
+/// defined (step 01.09): the same order inline mode uses.
 fn group_by_function<'db>(
     s: &Solver<'db>,
-    targets: &[ContextId],
+    targets: &[Target<'db>],
 ) -> Vec<(Definition<'db>, Vec<ContextId>)> {
     let mut out: Vec<(Definition<'db>, Vec<ContextId>)> = Vec::new();
-    for &t in targets {
-        let f = s.contexts[t].func;
-        match out.iter_mut().find(|(g, _)| *g == f) {
-            Some((_, v)) => v.push(t),
-            None => out.push((f, vec![t])),
-        }
+    for t in targets {
+        let (f, ctx) = callee_of(s, t);
+        let i = match out.iter().position(|(g, _)| *g == f) {
+            Some(i) => i,
+            None => {
+                out.push((f, Vec::new()));
+                out.len() - 1
+            }
+        };
+        out[i].1.extend(ctx);
     }
     out.sort_by_key(|(f, _)| s.sem.def_position(*f));
     out

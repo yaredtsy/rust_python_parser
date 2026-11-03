@@ -7,7 +7,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::interp::env::Env;
 use crate::interp::solver::Solver;
 use crate::interp::Mode;
-use crate::interp::value::{AbstractValue, ActivationId, OriginKey, Values};
+use crate::interp::value::{AbstractValue, ActivationId, OriginKey, Path, Root, Values};
 use crate::interp::walk::Walk;
 use crate::sem::{Definition, Name, SIGNATURE_KEEPING, Shape, Type};
 
@@ -159,7 +159,7 @@ impl<'db> Walk<'db> {
             if slots.get(i).map(|v| v.as_slice()) != Some(&[AbstractValue::Unknown][..]) {
                 continue;
             }
-            let key = OriginKey::Entry { act: self.frame.act, param: i as u8 };
+            let key = OriginKey::Entry { act: self.frame.act, path: Path::root(Root::Param(i as u8)) };
             let v = match &p.parameter.annotation {
                 Some(ann) => {
                     let t = sol.sem.type_of(&self.frame.model, ExprRef::from(&**ann));

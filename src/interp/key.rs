@@ -10,7 +10,7 @@ use crate::interp::bind::{Bound, param_names};
 use crate::interp::env::Env;
 use crate::interp::relevant::relevant_params;
 use crate::interp::solver::Solver;
-use crate::interp::value::{AbstractValue, ActivationId, Values};
+use crate::interp::value::{AbstractValue, ActivationId, OriginKey, Path, Root, Values};
 use crate::interp::walk::Walk;
 use crate::sem::{Definition, Name, Type};
 use ty_python_core::ProgramFile;
@@ -36,6 +36,15 @@ pub enum Fp<'db> {
         defaults: SmallVec<[(Name, FpId); 2]>, // the defaults it was made with
     },
     Back(u8), // the closure k levels up
+    /// An object that holds state: its class and its attributes, sorted by name.
+    Instance {
+        class: Definition<'db>,
+        attrs: SmallVec<[(Name, FpId); 4]>,
+    },
+    /// Its class only: no state, or the depth limit.
+    Opaque(Definition<'db>),
+    /// A bound method's receiver.
+    Bound { func: Definition<'db>, recv: FpId },
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -107,13 +116,14 @@ impl<'db> Solver<'db> {
     pub fn fingerprint(
         &mut self,
         w: &Walk<'db>,
+        env: &Env<'db>,
         file: ProgramFile<'db>,
         vals: &Values<'db>,
         depth: u8,
         cl: &mut ClosureStack<'db>,
     ) -> FpId {
         let mut ids: SmallVec<[FpId; 4]> =
-            vals.iter().map(|v| self.fp_one(w, file, *v, depth, cl)).collect();
+            vals.iter().map(|v| self.fp_one(w, env, file, *v, depth, cl)).collect();
         ids.sort();
         ids.dedup();
         match ids.len() {
@@ -126,6 +136,7 @@ impl<'db> Solver<'db> {
     fn fp_one(
         &mut self,
         w: &Walk<'db>,
+        env: &Env<'db>,
         file: ProgramFile<'db>,
         v: AbstractValue<'db>,
         depth: u8,
@@ -133,9 +144,24 @@ impl<'db> Solver<'db> {
     ) -> FpId {
         let fp = match v {
             AbstractValue::Function(d) => Fp::Function(d),
-            AbstractValue::BoundMethod { .. } => Fp::Unknown, // part 04: Fp::Bound { func, recv }
+            AbstractValue::BoundMethod { func, receiver } => Fp::Bound {
+                func,
+                recv: self.fp_one(w, env, file, w.values[receiver], depth + 1, cl),
+            },
             AbstractValue::Class(d) => Fp::Class(d), // a class is a constant, like a function
-            AbstractValue::Instance { .. } => Fp::Unknown, // part 04: Fp::Instance { class, attrs }
+            AbstractValue::Instance { class, origin }
+                if !origin.holds_state() || depth == self.opts.limits.fp_depth =>
+            {
+                Fp::Opaque(class)
+            }
+            AbstractValue::Instance { class, origin } => Fp::Instance {
+                class,
+                attrs: env
+                    .attrs_of(origin)
+                    .into_iter()
+                    .map(|(name, vals)| (name, self.fingerprint(w, env, file, &vals, depth + 1, cl)))
+                    .collect(),
+            },
             AbstractValue::Module(t) => Fp::Module(t),
             AbstractValue::Ty(t) => Fp::Data(self.sem.widen(t, file)),
             AbstractValue::Unknown => Fp::Unknown,
@@ -144,11 +170,18 @@ impl<'db> Solver<'db> {
                 None if depth == self.opts.limits.fp_depth => self.fp_closure_at_limit(w, func, activation),
                 None => cl.with(func, activation, |cl| Fp::Closure {
                     func,
-                    free: self.fp_free(w, func, activation, cl, depth + 1),
-                    defaults: self.fp_defaults(w, func, activation, cl, depth + 1),
+                    free: self.fp_free(w, env, func, activation, cl, depth + 1),
+                    defaults: self.fp_defaults(w, env, func, activation, cl, depth + 1),
                 }),
             },
-            AbstractValue::Pending(_) => Fp::Unknown, // a call with a pending argument is deferred, never keyed
+            // a replay: this round's value (step 04.01, decision 8)
+            AbstractValue::Pending(id) => match &w.now {
+                Some(now) => return self.fingerprint(w, env, file, &now[id], depth, cl),
+                None => {
+                    debug_assert!(false, "a pending value reached a key: reaches_pending missed it");
+                    Fp::Unknown
+                }
+            },
         };
         self.fps.intern(fp)
     }
@@ -173,6 +206,7 @@ impl<'db> Solver<'db> {
     fn fp_free(
         &mut self,
         w: &Walk<'db>,
+        env: &Env<'db>,
         func: Definition<'db>,
         activation: ActivationId,
         cl: &mut ClosureStack<'db>,
@@ -182,7 +216,7 @@ impl<'db> Solver<'db> {
         let mut out = SmallVec::new();
         for n in self.sem.free_variables(func) {
             let vals = w.lookup_in(self, func, activation, &n);
-            out.push((n, self.fingerprint(w, file, &vals, depth, cl)));
+            out.push((n, self.fingerprint(w, env, file, &vals, depth, cl)));
         }
         out
     }
@@ -190,6 +224,7 @@ impl<'db> Solver<'db> {
     fn fp_defaults(
         &mut self,
         w: &Walk<'db>,
+        env: &Env<'db>,
         func: Definition<'db>,
         activation: ActivationId,
         cl: &mut ClosureStack<'db>,
@@ -198,7 +233,7 @@ impl<'db> Solver<'db> {
         let file = func.program_file(self.sem.db);
         let mut out = SmallVec::new();
         for (n, vals) in w.defaults.get(&(func, activation)).into_iter().flatten() {
-            out.push((n.clone(), self.fingerprint(w, file, vals, depth, cl)));
+            out.push((n.clone(), self.fingerprint(w, env, file, vals, depth, cl)));
         }
         out
     }
@@ -210,6 +245,7 @@ impl<'db> Solver<'db> {
         func: Definition<'db>,
         bound: &Bound<'db>,
         closure: Option<ActivationId>,
+        env: &Env<'db>,
     ) -> ContextId {
         let file = func.program_file(self.sem.db);
         // a parameter the walk can't be affected by is Unknown: callers share one summary
@@ -225,7 +261,7 @@ impl<'db> Solver<'db> {
             .enumerate()
             .map(|(i, v)| {
                 if relevant.get(i).copied().unwrap_or(true) {
-                    self.fingerprint(w, file, v, 0, &mut ClosureStack::default())
+                    self.fingerprint(w, env, file, v, 0, &mut ClosureStack::default())
                 } else {
                     self.fps.intern(Fp::Unknown)
                 }
@@ -235,8 +271,8 @@ impl<'db> Solver<'db> {
         let (free, defaults) = match closure {
             Some(act) => ClosureStack::default().with(func, act, |cl| {
                 (
-                    self.fp_free(w, func, act, cl, 1),
-                    self.fp_defaults(w, func, act, cl, 1),
+                    self.fp_free(w, env, func, act, cl, 1),
+                    self.fp_defaults(w, env, func, act, cl, 1),
                 )
             }),
             None => (SmallVec::new(), SmallVec::new()),
@@ -246,12 +282,15 @@ impl<'db> Solver<'db> {
 }
 
 impl<'db> Walk<'db> {
-    /// A value from a fingerprint. `cl`: the closures being rebuilt, innermost last.
+    /// A value from a fingerprint, sitting at `at`. `cl`: the closures being rebuilt,
+    /// innermost last. Attributes of the objects go into `env`.
     fn from_fp(
         &mut self,
         sol: &Solver<'db>,
         fp: FpId,
+        at: Path,
         cl: &mut Vec<(Definition<'db>, ActivationId)>,
+        env: &mut Env<'db>,
     ) -> Values<'db> {
         match &sol.fps[fp] {
             Fp::Function(d) => smallvec![AbstractValue::Function(*d)],
@@ -259,7 +298,31 @@ impl<'db> Walk<'db> {
             Fp::Module(t) => smallvec![AbstractValue::Module(*t)],
             Fp::Data(t) => smallvec![AbstractValue::Ty(*t)],
             Fp::Unknown => smallvec![AbstractValue::Unknown],
-            Fp::Union(ids) => ids.iter().flat_map(|&i| self.from_fp(sol, i, cl)).collect(),
+            Fp::Instance { class, attrs } => {
+                let origin = self.origins.intern(OriginKey::Entry { act: self.frame.act, path: at.clone() });
+                for (name, a) in attrs {
+                    let v = self.from_fp(sol, *a, at.attr(name), cl, env);
+                    env.bind_attr(origin, name, v, false); // weak: a union shares this origin
+                }
+                smallvec![AbstractValue::Instance { class: *class, origin }]
+            }
+            Fp::Opaque(class) => {
+                let origin = self.origins.intern(OriginKey::Entry { act: self.frame.act, path: at });
+                smallvec![AbstractValue::Instance { class: *class, origin }]
+            }
+            Fp::Bound { func, recv } => {
+                let r = self.from_fp(sol, *recv, at.recv(), cl, env);
+                r.into_iter()
+                    .map(|r| AbstractValue::BoundMethod { func: *func, receiver: self.values.intern(r) })
+                    .collect()
+            }
+            Fp::Union(ids) => {
+                let mut out = Values::new();
+                for &i in ids {
+                    out.extend(self.from_fp(sol, i, at.clone(), cl, env));
+                }
+                out
+            }
             Fp::Back(k) => {
                 let (func, activation) = cl[cl.len() - 1 - *k as usize];
                 smallvec![AbstractValue::Closure { func, activation }]
@@ -267,13 +330,16 @@ impl<'db> Walk<'db> {
             Fp::Closure { func, free, defaults } => {
                 let activation = self.activations.push(Env::flat());
                 cl.push((*func, activation));
-                for (name, fp) in free {
-                    let v = self.from_fp(sol, *fp, cl);
+                for (n, (name, fp)) in free.iter().enumerate() {
+                    let v = self.from_fp(sol, *fp, at.free(n as u8), cl, env);
                     self.activations[activation].bind(name, v);
                 }
                 let d = defaults
                     .iter()
-                    .map(|(n, fp)| (n.clone(), self.from_fp(sol, *fp, cl)))
+                    .enumerate()
+                    .map(|(n, (name, fp))| {
+                        (name.clone(), self.from_fp(sol, *fp, at.default(n as u8), cl, env))
+                    })
                     .collect();
                 self.defaults.insert((*func, activation), d);
                 cl.pop();
@@ -296,20 +362,24 @@ impl<'db> Walk<'db> {
             // the called closure's own activation, so a Back(0) inside reaches it
             let activation = self.activations.push(Env::flat());
             let mut cl = vec![(key.func, activation)];
-            for (name, fp) in &key.free {
-                let v = self.from_fp(sol, *fp, &mut cl);
+            for (i, (name, fp)) in key.free.iter().enumerate() {
+                let v = self.from_fp(sol, *fp, Path::root(Root::Free(i as u8)), &mut cl, &mut env);
                 self.activations[activation].bind(name, v);
             }
             let d = key
                 .defaults
                 .iter()
-                .map(|(n, fp)| (n.clone(), self.from_fp(sol, *fp, &mut cl)))
+                .enumerate()
+                .map(|(i, (n, fp))| {
+                    (n.clone(), self.from_fp(sol, *fp, Path::root(Root::Default(i as u8)), &mut cl, &mut env))
+                })
                 .collect();
             self.defaults.insert((key.func, activation), d);
             env.enclosing = Some(activation);
         }
-        for (param, &fp) in param_names(node).zip(&key.args) {
-            env.bind(param, self.from_fp(sol, fp, &mut Vec::new()));
+        for (i, (param, &fp)) in param_names(node).zip(&key.args).enumerate() {
+            let v = self.from_fp(sol, fp, Path::root(Root::Param(i as u8)), &mut Vec::new(), &mut env);
+            env.bind(param, v);
         }
         env
     }

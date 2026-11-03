@@ -128,12 +128,12 @@ against `before`, the state when the call started.
 
 - `Ref(path)`: start at the root, then follow each step.
   - `Param(i)` is combo argument `i`. `Free(i)` is free variable `i` of the
-    callee closure, read from its activation.
+    callee closure, read from its activation. `Default(i)` is its default `i`.
   - `Attr` reads `before`'s attribute store, then the class side and ty, as
     `member` does. Reading past the caller's own key gives the caller's own
     path-named objects ([`07`](07-attributes-and-self.md#objects-the-key-does-not-reach)).
-  - `Free(n)` reads a closure value's activation. `Recv` reads a bound
-    method's receiver.
+  - `Free(n)` reads a closure value's activation, `Default(n)` its defaults.
+    `Recv` reads a bound method's receiver.
 - `Obj(j)`: origin `New { site, t, combo: k, made: Obj(j) }`.
 - `Closure { func, free }`: a new activation holding the resolved free values.
 - `Plain(v)`: the matching `AbstractValue`.

@@ -78,7 +78,7 @@ pub struct Options {
 pub struct Limits {
     // precision (rule 3: decided by the key and the code)
     pub max_rounds: u32, // a group's fixpoint stops here, marked incomplete
-    pub fp_depth: u8,    // closures nest at most this deep, in keys and in summaries
+    pub fp_depth: u8,    // steps from a parameter (attribute, receiver, free value, default), in keys and in summaries
     // cost (each one cuts, is marked, and is never reused)
     pub max_chain_fanout: usize, // 8: values carried per attribute hop
     pub max_stack: usize,       // 256
@@ -159,7 +159,7 @@ pub fn solve<'db>(
     // does the binding, exactly as step 02 did.
     let mut w = Walk::new(&s, def);
     let bound = w.bind_parameters(&mut s, def, node, None, &bind::EvaluatedArgs::default(), None);
-    let root_ctx = s.key(&w, def, &bound, None);
+    let root_ctx = s.key(&w, def, &bound, None, &env::Env::default());
     s.get(root_ctx);
     Some((s, root_ctx))
 }
@@ -187,7 +187,7 @@ fn inline_tree(
     // Called with no arguments (step 01.11), and keyed like any call.
     let args = bind::EvaluatedArgs::default();
     let bound = w.bind_parameters(&mut s, def, node, start.receiver, &args, start.enclosing);
-    s.key(&w, def, &bound, start.enclosing);
+    s.key(&w, def, &bound, start.enclosing, &objects);
     let mut env = w.env_from_bound(node, &bound);
     env.scope = Some(s.sem.body_scope(def, node));
     env.enclosing = start.enclosing;

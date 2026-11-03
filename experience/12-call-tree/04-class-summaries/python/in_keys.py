@@ -79,6 +79,32 @@ def deep():
     s.run()  # fp_depth = 2: the key stops at self.app.config. A known limit
 
 
+def log():
+    pass
+
+
+class Runner:
+    def run(self):
+        self.cb()
+
+
+def again(n):
+    r = Runner()
+    r.cb = again(n - 1)  # summary: pending, `again` is still running
+    r.run()  # the key would read r.cb: deferred, keyed in the fixpoint
+    return log
+
+
+def again_closure(n):
+    r = again_closure(n - 1)  # summary: pending
+
+    def g():
+        r()
+
+    g()  # the key reads g's free value r: deferred, keyed in the fixpoint
+    return log
+
+
 # expect:
 # main
 #   json_box
@@ -128,3 +154,23 @@ def deep():
 #   App
 #   Service
 #   Service.run
+# expect inline:
+# again
+#   Runner
+#   again [recursive]
+#   Runner.run
+# expect summary:
+# again
+#   Runner
+#   again [recursive]
+#   Runner.run
+#     log
+# expect inline:
+# again_closure
+#   again_closure [recursive]
+#   again_closure.g
+# expect summary:
+# again_closure
+#   again_closure [recursive]
+#   again_closure.g
+#     log

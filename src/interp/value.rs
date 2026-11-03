@@ -4,6 +4,7 @@ use crate::{
 };
 use ruff_index::newtype_index;
 use crate::interp::key::Interner;
+use crate::sem::Name;
 use ruff_text_size::TextRange;
 use smallvec::SmallVec;
 use smallvec::smallvec;
@@ -39,10 +40,59 @@ impl OriginId {
 pub enum OriginKey {
     /// An object ty gave us, not built in this walk: `OriginId::OPAQUE`.
     Opaque,
-    /// A parameter nobody gave a value: one object per parameter per run of its function.
-    Entry { act: ActivationId, param: u8 },
+    /// An input object, named by where it sits among the inputs. One per path per run.
+    Entry { act: ActivationId, path: Path },
     /// An object built in this walk, at this site, in this run of its body.
     New { site: TextRange, act: ActivationId },
+}
+
+/// Where an input object sits: a root, then steps from it.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Path {
+    pub root: Root,
+    pub steps: SmallVec<[Step; 2]>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Root {
+    Param(u8),
+    /// Free value `i` of the walked closure itself.
+    Free(u8),
+    /// Default `i` of the walked closure itself.
+    Default(u8),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Step {
+    Attr(Name),
+    /// Free value `n` of the closure at the path so far.
+    Free(u8),
+    Default(u8),
+    /// A bound method's receiver.
+    Recv,
+}
+
+impl Path {
+    pub fn root(root: Root) -> Self {
+        Path { root, steps: SmallVec::new() }
+    }
+    fn then(&self, step: Step) -> Self {
+        let mut p = self.clone();
+        p.steps.push(step);
+        p
+    }
+    pub fn attr(&self, name: &Name) -> Self {
+        self.then(Step::Attr(name.clone()))
+    }
+    pub fn free(&self, i: u8) -> Self {
+        self.then(Step::Free(i))
+    }
+    pub fn default(&self, i: u8) -> Self {
+        self.then(Step::Default(i))
+    }
+    pub fn recv(&self) -> Self {
+        self.then(Step::Recv)
+    }
 }
 
 /// A deferred operation of one walk: a recursive call, or a use of its value.

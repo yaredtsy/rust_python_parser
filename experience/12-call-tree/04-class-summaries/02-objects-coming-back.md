@@ -139,7 +139,8 @@ fn resolve_sval(&mut self, s: &mut Solver<'db>, sv: &SVal<'db>, call: &CallSite<
 
 - **`Ref(path)`**: start at the root (`Param(i)` is the `i`-th bound argument
   of this call), then follow each step: `Attr` reads the attribute as `member`
-  would, `Recv` takes a bound method's receiver, `Free` a closure's free value.
+  would, `Recv` takes a bound method's receiver, `Free` a closure's free value
+  (its activation), `Default` a closure's default (`Walk.defaults`).
 - **`Obj(j)`**: a new origin in the caller, keyed by this call site and `j`.
   Then each of the object's attributes is resolved and written into the
   caller's state.

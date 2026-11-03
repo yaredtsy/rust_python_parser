@@ -14,7 +14,7 @@ use crate::interp::value::ActivationId;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FunctionResult<'db> {
-    pub calls: Vec<CallEdge>, // one per call site reached, in evaluation order
+    pub calls: Vec<CallEdge<'db>>, // one per call site reached, in evaluation order
     pub returns: SVals<'db>,       // the union of every return
     pub status: Status,
 }
@@ -58,14 +58,16 @@ impl Gaps {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct CallEdge {
+pub struct CallEdge<'db> {
     pub site: SiteId,
-    pub targets: SmallVec<[Target; 2]>, // one per project callee at this site
+    pub targets: SmallVec<[Target<'db>; 2]>, // one per project callee at this site
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Target {
-    Call(ContextId), // Construct and External arrive with classes and part 05
+pub enum Target<'db> {
+    Call(ContextId),
+    /// A new object. `init`: the `__init__` context, if the MRO has a body.
+    Construct { class: Definition<'db>, init: Option<ContextId> }, // External arrives with part 05
 }
 
 /// The call expression's range, relative to the start of the enclosing `def`.

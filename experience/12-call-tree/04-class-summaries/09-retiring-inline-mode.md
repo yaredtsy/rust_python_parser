@@ -35,6 +35,7 @@ Each mode-specific block in the fixtures is one of three kinds.
 | `02/pending.py` `walk` | a recursive call's value is found by the fixpoint; inline mode stops at the guard with `Unknown` |
 | `02/groups.py` `ping_entry`, `merge_entry` | the same, across a group |
 | `04/split.py` | CPA keeps each handler with its own key; inline mode walks `build` once with both |
+| `04/in_keys.py` `again`, `again_closure` | a pending value held by an object's attribute, or by a closure's free value: the call is deferred and keyed with the round's value (step 01, decision 8) |
 | `04/recursion_objects.py` `use_walk` | a pending object's method, called in the fixpoint |
 
 **Inline mode finds more**, because a key or a summary is bounded:

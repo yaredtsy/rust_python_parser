@@ -60,7 +60,7 @@ impl<'db> Walk<'db> {
     /// values. An operation may read the results of earlier ones in this same
     /// round. `capped`: the last round allowed, so every result also gets `Unknown`.
     pub fn replay(&mut self, sol: &mut Solver<'db>, capped: bool) -> IndexVec<DeferId, Values<'db>> {
-        let mut now = self.resolved.clone();
+        self.now = Some(self.resolved.clone());
         self.replaying = true;
         let ids: Vec<DeferId> = self.deferred.indices().collect();
         for id in ids {
@@ -77,13 +77,14 @@ impl<'db> Walk<'db> {
                     fallback,
                     edge,
                 } => {
-                    let callee = substitute(&callee, &now);
+                    let now = self.now.as_ref().expect("set above");
+                    let callee = substitute(&callee, now);
                     let args = EvaluatedArgs {
-                        positional: args.positional.iter().map(|v| substitute(v, &now)).collect(),
+                        positional: args.positional.iter().map(|v| substitute(v, now)).collect(),
                         keywords: args
                             .keywords
                             .iter()
-                            .map(|(n, v)| (n.clone(), substitute(v, &now)))
+                            .map(|(n, v)| (n.clone(), substitute(v, now)))
                             .collect(),
                         has_splat: args.has_splat,
                     };
@@ -95,9 +96,9 @@ impl<'db> Walk<'db> {
                 v.push(AbstractValue::Unknown);
                 dedup(&mut v);
             }
-            now[id] = v;
+            self.now.as_mut().expect("set above")[id] = v;
         }
         self.replaying = false;
-        now
+        self.now.take().expect("set above")
     }
 }

@@ -45,6 +45,17 @@ impl<'db> Env<'db> {
         };
         self.attrs.insert_mut(key, v);
     }
+    /// One object's attributes, sorted by name. Scans the flat map.
+    pub fn attrs_of(&self, origin: OriginId) -> Vec<(Name, Values<'db>)> {
+        let mut out: Vec<(Name, Values<'db>)> = self
+            .attrs
+            .iter()
+            .filter(|((o, _), _)| *o == origin)
+            .map(|((_, n), v)| (n.clone(), v.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
     /// Union per name. A name missing from an arm was not assigned on that path.
     pub fn join(arms: Vec<Option<Env<'db>>>) -> Option<Env<'db>> {
         let mut arms = arms.into_iter().flatten();

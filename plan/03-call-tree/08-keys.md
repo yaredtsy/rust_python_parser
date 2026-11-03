@@ -166,7 +166,7 @@ else (rule 1).
 | `Instance { class, attrs }` | `Instance { class, origin: Entry(path) }`, attrs written into `Env.attrs`, each at `path + [Attr(name)]` |
 | `Opaque(class)` | `Instance { class, origin: Entry(path) }` with no attrs. Reads fall through to the class side, and unknown attributes are named by path ([`07`](07-attributes-and-self.md#objects-the-key-does-not-reach)) |
 | `Bound { func, recv }` | `BoundMethod { func, receiver }`, receiver at `path + [Recv]` |
-| `Closure { func, free }` | `Closure { func, activation }` over a new activation holding the free values, each at `path + [Free(n)]` |
+| `Closure { func, free, defaults }` | `Closure { func, activation }` over a new activation holding the free values, each at `path + [Free(n)]`, and its defaults, each at `path + [Default(n)]`. Objects' attributes go into the walk's `Env.attrs`, not the flat activation |
 | `Back(k)` | the closure value built `k` levels up |
 | `Function`, `Class`, `Module`, `Data` | the matching `AbstractValue` |
 | `Unknown` | the parameter's annotation, lifted, if it has one (below). Else `Unknown` |
@@ -175,7 +175,7 @@ else (rule 1).
 Parameter `i` starts at `Path { root: Param(i), steps: [] }`. Aliased parameters
 share the first one's origin. The function's own free variables go into a new
 activation that becomes the walk's `enclosing`, with roots `Free(i)`, where `i`
-indexes the sorted `free` list. In that list, `Back(0)` is the walked function
+indexes the sorted `free` list, and its defaults have roots `Default(i)`. In that list, `Back(0)` is the walked function
 itself.
 
 An `Opaque` fingerprint gets a real `Entry` origin, not the shared `OPAQUE`. It

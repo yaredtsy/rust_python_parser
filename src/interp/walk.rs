@@ -34,6 +34,8 @@ pub struct Walk<'db> {
     pub resolved: IndexVec<DeferId, Values<'db>>,
     /// Set while the solver repeats the deferred operations.
     pub replaying: bool,
+    /// During a replay: the values of the pending operations in this round.
+    pub now: Option<IndexVec<DeferId, Values<'db>>>,
     /// The body yields: its call returns a generator, whatever it returns.
     pub generator: bool,
 }
@@ -47,7 +49,7 @@ pub struct Frame<'db> {
     pub returns: Values<'db>,
     /// The env at each `return` and at the end of the body.
     pub exits: Vec<Env<'db>>,
-    pub calls: Vec<CallEdge>, // one per call site with a project callee
+    pub calls: Vec<CallEdge<'db>>, // one per call site with a project callee
     pub def_start: TextSize,       // where this `def` starts: sites are relative to it
     pub act: ActivationId,
 }
@@ -83,6 +85,7 @@ impl<'db> Walk<'db> {
             deferred: IndexVec::new(),
             resolved: IndexVec::new(),
             replaying: false,
+            now: None,
             generator: false,
         }
     }

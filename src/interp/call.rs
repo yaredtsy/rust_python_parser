@@ -32,7 +32,7 @@ impl<'db> Walk<'db> {
         let callees = self.eval(sol, &call.func, env);
         let args = self.eval_arguments(sol, &call.arguments, env);
         let site = SiteId::new(call.range(), self.frame.def_start);
-        if sol.opts.mode == Mode::Summary && self.needs_defer(sol, &callees, &args) {
+        if sol.opts.mode == Mode::Summary && self.needs_defer(sol, &callees, &args, env) {
             // It can't be keyed yet: record it, and find its value in the fixpoint.
             let ty = sol.sem.type_of(&self.frame.model, ExprRef::from(call));
             let fallback = self.lift(sol, ty);
@@ -65,26 +65,75 @@ impl<'db> Walk<'db> {
         )
     }
 
-    /// A callee that is pending, or a project callee given a pending argument:
-    /// its key would read a value that is not known yet.
+    /// Would keying these values meet a `Pending`? Looks exactly as far as `fingerprint`.
+    fn reaches_pending(&self, sol: &Solver<'db>, vals: &Values<'db>, env: &Env<'db>, depth: u8) -> bool {
+        let limit = sol.opts.limits.fp_depth;
+        vals.iter().any(|v| match *v {
+            AbstractValue::Pending(_) => true,
+            AbstractValue::Instance { origin, .. } if origin.holds_state() && depth < limit => env
+                .attrs_of(origin)
+                .iter()
+                .any(|(_, a)| self.reaches_pending(sol, a, env, depth + 1)),
+            AbstractValue::BoundMethod { receiver, .. } => {
+                self.reaches_pending(sol, &smallvec![self.values[receiver]], env, depth + 1)
+            }
+            AbstractValue::Closure { func, activation } if depth < limit => {
+                sol.sem.free_variables(func).iter().any(|n| {
+                    self.reaches_pending(sol, &self.lookup_in(sol, func, activation, n), env, depth + 1)
+                }) || self
+                    .defaults
+                    .get(&(func, activation))
+                    .into_iter()
+                    .flatten()
+                    .any(|(_, d)| self.reaches_pending(sol, d, env, depth + 1))
+            }
+            _ => false,
+        })
+    }
+
+    /// A callee that is pending, or a project callee whose key would read a
+    /// pending value: an argument, a receiver, a closure's free value, an attribute.
     fn needs_defer(
         &self,
         sol: &Solver<'db>,
         callees: &Values<'db>,
         args: &EvaluatedArgs<'db>,
+        env: &Env<'db>,
     ) -> bool {
-        let pending = |v: &Values<'db>| v.iter().any(|x| matches!(x, AbstractValue::Pending(_)));
-        if pending(callees) {
+        if self.deferred.is_empty() {
+            return false; // a Pending is an index into `deferred`: none exist yet
+        }
+        if callees.iter().any(|c| matches!(c, AbstractValue::Pending(_))) {
             return true;
         }
-        let has_pending_arg =
-            args.positional.iter().any(pending) || args.keywords.iter().any(|(_, v)| pending(v));
-        has_pending_arg
-            && callees.iter().any(|c| match *c {
-                AbstractValue::Function(d) => sol.sem.is_project(d),
-                AbstractValue::Closure { func, .. } => sol.sem.is_project(func),
+        let project: SmallVec<[AbstractValue<'db>; 2]> = callees
+            .iter()
+            .copied()
+            .filter(|c| match *c {
+                AbstractValue::Function(d) | AbstractValue::Class(d) => sol.sem.is_project(d),
+                AbstractValue::Closure { func, .. } | AbstractValue::BoundMethod { func, .. } => {
+                    sol.sem.is_project(func)
+                }
                 _ => false,
             })
+            .collect();
+        if project.is_empty() {
+            return false;
+        }
+        let arg = args
+            .positional
+            .iter()
+            .chain(args.keywords.iter().map(|(_, v)| v))
+            .any(|v| self.reaches_pending(sol, v, env, 0));
+        arg || project.iter().any(|c| match *c {
+            // its own free values and defaults sit at depth 1, as `key` reads them
+            AbstractValue::Closure { .. } => self.reaches_pending(sol, &smallvec![*c], env, 0),
+            // the receiver is slot 0
+            AbstractValue::BoundMethod { receiver, .. } => {
+                self.reaches_pending(sol, &smallvec![self.values[receiver]], env, 0)
+            }
+            _ => false,
+        })
     }
 
     /// The second half of a call: the callee values and the arguments are known.
@@ -114,23 +163,17 @@ impl<'db> Walk<'db> {
                 AbstractValue::Closure { func, activation } if sol.sem.is_project(func) => {
                     targets.push((func, Some(activation)))
                 }
-                AbstractValue::BoundMethod { func, receiver }
-                    if sol.opts.mode == Mode::Inline && sol.sem.is_project(func) =>
-                {
+                AbstractValue::BoundMethod { func, receiver } if sol.sem.is_project(func) => {
                     methods.push((func, self.values[receiver]))
                 }
-                AbstractValue::Class(class)
-                    if sol.opts.mode == Mode::Inline && sol.sem.is_project(class) =>
-                {
-                    classes.push(class)
-                }
-                _ => ask_ty = true, // `dict`, and every class in summary mode
+                AbstractValue::Class(class) if sol.sem.is_project(class) => classes.push(class),
+                _ => ask_ty = true, // `dict`, and the classes and methods that aren't project code
             }
         }
         targets.sort_by_key(|(d, _)| sol.sem.def_position(*d));
         methods.sort_by_key(|(d, _)| sol.sem.def_position(*d));
         classes.sort_by_key(|&c| sol.sem.def_position(c));
-        let mut edge_targets: SmallVec<[Target; 2]> = SmallVec::new();
+        let mut edge_targets: SmallVec<[Target<'db>; 2]> = SmallVec::new();
         let mut out = Values::new();
         // Callees at one site are alternatives: each starts from the state before the call.
         let before = env.clone();
@@ -145,22 +188,47 @@ impl<'db> Walk<'db> {
                     v
                 }
                 Mode::Summary => {
-                    self.call_project(sol, def, enclosing, args, &mut edge_targets, &*env)
+                    self.call_project(sol, def, enclosing, None, args, &mut edge_targets, &*env)
                 }
             };
             out.extend(v);
         }
         for (func, recv) in methods {
-            let range = self.site_range(site);
-            let mut e = before.clone();
-            out.extend(self.call_function(sol, func, None, Some(recv), range, args, &mut e));
-            after.push(Some(e));
+            match sol.opts.mode {
+                Mode::Inline => {
+                    let range = self.site_range(site);
+                    let mut e = before.clone();
+                    out.extend(self.call_function(sol, func, None, Some(recv), range, args, &mut e));
+                    after.push(Some(e));
+                }
+                Mode::Summary => out.extend(self.call_project(
+                    sol,
+                    func,
+                    None,
+                    Some(recv),
+                    args,
+                    &mut edge_targets,
+                    &*env,
+                )),
+            }
         }
         for class in classes {
             let range = self.site_range(site);
-            let mut e = before.clone();
-            out.extend(self.construct(sol, class, range, args, &mut e));
-            after.push(Some(e));
+            match sol.opts.mode {
+                Mode::Inline => {
+                    let mut e = before.clone();
+                    out.extend(self.construct(sol, class, range, args, &mut e));
+                    after.push(Some(e));
+                }
+                Mode::Summary => out.extend(self.construct_summary(
+                    sol,
+                    class,
+                    range,
+                    args,
+                    &mut edge_targets,
+                    &*env,
+                )),
+            }
         }
         match edge {
             Some(i) => self.frame.calls[i].targets = edge_targets,
@@ -280,7 +348,7 @@ impl<'db> Walk<'db> {
         let act = new.act;
         let caller = std::mem::replace(&mut self.frame, new);
         let bound = self.bind_parameters(sol, def, node, receiver, args, enclosing);
-        sol.key(self, def, &bound, enclosing);
+        sol.key(self, def, &bound, enclosing, env);
         let mut start = self.env_from_bound(node, &bound);
         start.scope = Some(sol.sem.body_scope(def, node));
         start.enclosing = enclosing;
@@ -315,12 +383,13 @@ impl<'db> Walk<'db> {
         sol: &mut Solver<'db>,
         def: Definition<'db>,
         node: &StmtFunctionDef,
+        receiver: Option<AbstractValue<'db>>,
         args: &EvaluatedArgs<'db>,
         enclosing: Option<ActivationId>,
     ) -> Bound<'db> {
         let new = self.new_frame(sol, def);
         let caller = std::mem::replace(&mut self.frame, new);
-        let bound = self.bind_parameters(sol, def, node, None, args, enclosing);
+        let bound = self.bind_parameters(sol, def, node, receiver, args, enclosing);
         self.frame = caller;
         bound
     }
@@ -332,8 +401,9 @@ impl<'db> Walk<'db> {
         sol: &mut Solver<'db>,
         def: Definition<'db>,
         enclosing: Option<ActivationId>,
+        receiver: Option<AbstractValue<'db>>,
         args: &EvaluatedArgs<'db>,
-        targets: &mut SmallVec<[Target; 2]>,
+        targets: &mut SmallVec<[Target<'db>; 2]>,
         env: &Env<'db>,
     ) -> Values<'db> {
         let parsed = sol.sem.parsed(def);
@@ -341,8 +411,8 @@ impl<'db> Walk<'db> {
             return smallvec![AbstractValue::Unknown];
         };
         let runs = !args.has_empty();
-        let bound = self.bind_for_callee(sol, def, node, args, enclosing);
-        let ctx = sol.key(self, def, &bound, enclosing);
+        let bound = self.bind_for_callee(sol, def, node, receiver, args, enclosing);
+        let ctx = sol.key(self, def, &bound, enclosing, env);
         targets.push(Target::Call(ctx)); // recorded now, whatever `get` answers
         match sol.get(ctx) {
             _ if !runs => Values::new(), // Python never makes this call, whatever `get` answered
@@ -353,5 +423,29 @@ impl<'db> Walk<'db> {
                 smallvec![AbstractValue::Pending(id)]
             }
         }
+    }
+
+    /// Summary mode: a new object here, and `__init__` keyed on it.
+    fn construct_summary(
+        &mut self,
+        sol: &mut Solver<'db>,
+        class: Definition<'db>,
+        site: TextRange,
+        args: &EvaluatedArgs<'db>,
+        targets: &mut SmallVec<[Target<'db>; 2]>,
+        env: &Env<'db>,
+    ) -> Values<'db> {
+        let origin = self.origins.intern(OriginKey::New { site, act: self.frame.act });
+        let obj = AbstractValue::Instance { class, origin };
+        let init = sol.sem.init_of(class).filter(|&i| sol.sem.is_project(i)).and_then(|init| {
+            let parsed = sol.sem.parsed(init);
+            let node = sol.sem.function_node(init, &parsed)?;
+            let bound = self.bind_for_callee(sol, init, node, Some(obj), args, None);
+            let ctx = sol.key(self, init, &bound, None, env);
+            sol.get(ctx); // its value is never used; its writes are effects (step 03)
+            Some(ctx)
+        });
+        targets.push(Target::Construct { class, init });
+        if args.has_empty() { Values::new() } else { smallvec![obj] }
     }
 }
