@@ -515,3 +515,9 @@ fn p03_08_prologue_runs_the_parents() {
     assert_eq!(walks("Svc.build.step"), 2); // Svc.__init__, then build
     assert_eq!(walks("Host.meth.Local.m"), 2); // Host.__init__, then meth (Local has no __init__)
 }
+#[test]
+fn p04_01_in_keys() {
+    check_both("04-class-summaries/python/in_keys.py");
+    let st = stats_for("04-class-summaries/python/in_keys.py", "shared", &summary());
+    assert_eq!((st.walks, st.reuse_hits), (3, 1));
+}

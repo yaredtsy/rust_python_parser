@@ -56,7 +56,7 @@ the way round. Read it at step 2.
 ```
 Fp      += Instance { class, attrs }, Opaque(class), Bound { func, recv }
 Context += alias
-OriginKey = Entry(Path) | Beyond { at, attr } | New { site, t, combo, made }
+OriginKey = Entry { act, path } | Beyond { at, attr } | New { site, t, combo, made }
 SVal    += Ref(Path), Obj(u16), Bound { func, recv }
 FunctionResult += effects: [Effect], objects: [NewObject]
 Env     += written: (OriginId, Name) → Must | May

@@ -100,7 +100,7 @@ would be one object, holding `h = JsonHandler | CsvHandler` and
 
 ```rust
 pub enum OriginKey {
-    Entry(Path),
+    Entry { act: ActivationId, path: Path },
     Beyond { at: Path, attr: Name },
     New { site: SiteId, t: u8, combo: u8, made: Made },   // ← t and combo added
 }
@@ -112,9 +112,10 @@ pub enum OriginKey {
   not merge either.
 
 A site is evaluated once per walk, so `(site, t, combo, made)` always names
-one object. `act` from part 03 is dropped from the key in summary mode: one
+one object. `act` from part 03 is dropped from `New` in summary mode: one
 walk is one run. (Inline mode still needs it: keep it there, or set it to the
-frame's activation, which is constant in a summary walk.)
+frame's activation, which is constant in a summary walk. The same holds for
+`Entry { act, path }`, step 01.)
 
 ### Decision 4: a strong write needs one callee and one combo
 

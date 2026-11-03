@@ -212,7 +212,7 @@ impl<'db> Env<'db> {
 // src/interp/summary.rs: in finish, after returns
 let mut effects: Vec<Effect<'db>> = exit.written.iter()
     .filter_map(|((origin, name), w)| match &self.origins[*origin] {
-        OriginKey::Entry(path) => Some(Effect {
+        OriginKey::Entry { path, .. } => Some(Effect {
             target: path.clone(),
             attr: name.clone(),
             value: exit.attr(*origin, name).iter().map(|v| self.to_sval(*v, &exit, &mut objs)).collect(),

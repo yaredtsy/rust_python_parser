@@ -173,7 +173,7 @@ fn to_sval(&mut self, v: AbstractValue<'db>, exit: &Env<'db>, objs: &mut ObjectN
     use AbstractValue::*;
     match v {
         Instance { class, origin } => match &self.origins[origin] {
-            OriginKey::Entry(path) => SVal::Ref(path.clone()),
+            OriginKey::Entry { path, .. } => SVal::Ref(path.clone()),
             OriginKey::New { site, .. } => SVal::Obj(objs.number(origin, class, *site)),
             _ => SVal::Plain(PlainVal::Opaque(class)),        // OPAQUE (and Beyond, step 05)
         },

@@ -88,6 +88,8 @@ pub struct OriginId(u32);   // index into the walk's origin interner
 enum OriginKey {
     /// An object the caller passed in, reached by this path from the inputs.
     /// From `materialize` (08), or read on demand past the key (07).
+    /// Shown without the run: the inline oracle also keys it by `act`, since
+    /// one inline walk holds many runs (experience 04.01).
     Entry(Path),
     /// An input object deeper than `max_path`. Holds no state. A write to it
     /// becomes the fallback effect (07).

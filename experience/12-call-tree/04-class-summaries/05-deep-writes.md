@@ -62,7 +62,7 @@ So `member` gets a third step:
 // member(), the Instance arm, after the class side answered `found`
 // 3. an input object's attribute the key didn't hold: name it by its path
 fn track_entry_attr(&mut self, recv_origin: OriginId, name: &Name, found: Values<'db>) -> Values<'db> {
-    let OriginKey::Entry(path) = &self.origins[recv_origin] else { return found };
+    let OriginKey::Entry { path, .. } = &self.origins[recv_origin] else { return found };
     found.into_iter().map(|v| match v {
         AbstractValue::Instance { class, origin } if origin == OriginId::OPAQUE => {
             AbstractValue::Instance { class, origin: self.entry_or_beyond(path.attr(name)) }
@@ -95,7 +95,7 @@ target. Past it, the object gets:
 
 ```rust
 pub enum OriginKey {
-    Entry(Path),
+    Entry { act: ActivationId, path: Path },
     Beyond { at: Path, attr: Name },   // deeper than max_path: `at` is the deepest path that fits
     New { … },
 }
@@ -138,7 +138,7 @@ deep.
 ```rust
 fn entry_or_beyond(&mut self, path: Path, max_path: u8) -> OriginId {
     if path.steps.len() <= max_path as usize {
-        return self.origins.intern(OriginKey::Entry(path));
+        return self.origins.intern(OriginKey::Entry { act: self.frame.act, path });
     }
     // the deepest prefix that fits, and the first step past it
     let at = path.prefix(max_path as usize);
@@ -189,7 +189,7 @@ fn p04_05_deep_writes() {
 
 ```
 member(Instance): state → property → class side → named by path, if the receiver is an input
-OriginKey = Entry(Path) | Beyond { at, attr } | New { … }
+OriginKey = Entry { act, path } | Beyond { at, attr } | New { … }
 Gaps      = CYCLE | DEEP_WRITE
 ```
 

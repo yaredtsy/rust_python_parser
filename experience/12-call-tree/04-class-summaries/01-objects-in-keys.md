@@ -112,7 +112,7 @@ their place among the inputs.
 
 ```rust
 pub enum OriginKey {
-    Entry(Path),                                   // an input object, named by where it sits
+    Entry { act: ActivationId, path: Path },       // an input object, named by where it sits
     New { site: SiteId, act: ActivationId },       // built in this walk (step 06 widens this)
 }
 
@@ -127,7 +127,19 @@ values at `Param(i).name`, written into `attrs`. `Opaque(class)` gets an
 `Entry` origin too, with no attributes: it is still one specific caller
 object, so writes to it can be tracked (step 03).
 
-`Entry(i)` from step 03.07 becomes `Entry(Path { root: Param(i), steps: [] })`.
+`Entry { act, param: i }` from step 03.07 becomes `Entry { act, path: Param(i) }`
+(`Path { root: Param(i), steps: [] }`). Keep `act`. A summary walk is one run,
+so there it is always the walk's own run and changes nothing. But inline mode
+runs every call inside one walk, and its annotation fallback still makes
+`Entry` origins per call. Without `act`, `f(u); g(u)` with `u` unknown gives
+`f`'s `h` and `g`'s `k` one origin, and `f`'s writes show up in `g`: the step
+03.07 bug again. In prose below, `Entry(Param(0).handler)` is short for
+`Entry { act: <this run>, path: Param(0).handler }`.
+
+**Why two summary walks can't collide:** each `walk_context` starts a new
+`Walk` with its own origin table, and a call in summary mode walks the callee
+in another `Walk`. Origins never cross: keys hold fingerprints, and results
+and effects come back as paths (steps 02 and 03).
 
 `run`'s walk for `json_box`'s key: `self = Instance { Box, Entry(Param(0)) }`,
 `(Entry(Param(0)), handler) = Instance { JsonHandler, Entry(Param(0).handler) }`.
@@ -158,7 +170,7 @@ which is why `Box` has no `__init__`.
 
 - `Fp::Instance`, `Fp::Opaque`, `Fp::Bound`, `fp_depth` (from step 02.07,
   now counting attributes too), and `key` reading the caller's env.
-- `Path`, `Root`, `Step`, `OriginKey::Entry(Path)`, and `materialize` for
+- `Path`, `Root`, `Step`, `OriginKey::Entry { act, path }`, and `materialize` for
   objects and bound methods.
 - If your `attrs` is a flat `(origin, name)` map: fingerprinting lists one
   object's attributes, which wants a map per object
@@ -196,7 +208,7 @@ fn fp_one(&mut self, w: &Walk<'db>, v: AbstractValue<'db>, env: &Env<'db>, depth
 fn from_fp(&mut self, s: &Solver<'db>, fp: FpId, at: Path, env: &mut Env<'db>) -> Values<'db> {
     match &s.fps[fp] {
         Fp::Instance { class, attrs } => {
-            let origin = self.origins.intern(OriginKey::Entry(at.clone()));
+            let origin = self.origins.intern(OriginKey::Entry { act: self.frame.act, path: at.clone() });
             for (name, a) in attrs {
                 let v = self.from_fp(s, *a, at.attr(name), env);
                 env.bind_attr(origin, name, v, true);
@@ -204,7 +216,7 @@ fn from_fp(&mut self, s: &Solver<'db>, fp: FpId, at: Path, env: &mut Env<'db>) -
             smallvec![AbstractValue::Instance { class: *class, origin }]
         }
         Fp::Opaque(class) => {
-            let origin = self.origins.intern(OriginKey::Entry(at));
+            let origin = self.origins.intern(OriginKey::Entry { act: self.frame.act, path: at });
             smallvec![AbstractValue::Instance { class: *class, origin }]
         }
         Fp::Bound { func, recv } => {
@@ -246,7 +258,7 @@ fn p04_01_in_keys() {
 
 ```
 Fp        += Instance { class, attrs }, Opaque(class), Bound { func, recv }
-OriginKey  = Entry(Path) | New { site, act }
+OriginKey  = Entry { act, path } | New { site, act }
 Target    += Construct { class, init }
 ```
 
