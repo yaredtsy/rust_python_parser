@@ -3,11 +3,22 @@ use crate::interp::canon::StableContextId;
 use crate::interp::graph::Span;
 use crate::interp::tree::{Mark, Node};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetKind {
+    Function,
+    Class,
+}
+
 /// The tree v-noc stores: one node per call site, one function, one path.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct FrameJson {
     pub target_qname: String,
     pub target_id: String,  // FunctionSchema/<id> or ClassSchema/<id>; empty only for an entry with no ID
+    pub target_file: Option<String>, // the def's file, absolute; None when it has none on disk (a builtin)
+    pub target_qualname: String,     // `__qualname__`, `<locals>` included: what the outline gives
+    pub target_nth: u32,             // 1-based among the defs with that qualname in that file, in source order
+    pub target_kind: TargetKind,
     pub call_count: u32,    // always 0 from pylspt: v-noc merges when saving
     pub call_site: Option<Span>,
     pub contexts: Vec<StableContextId>, // which graph contexts this node shows

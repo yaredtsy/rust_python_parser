@@ -40,6 +40,18 @@ pub struct Sem<'db> {
     pub db: &'db ProjectDatabase,
     /// Per file: a def's start offset to its `nth` among the defs with its qname.
     nth: RefCell<FxHashMap<File, Rc<FxHashMap<TextSize, u16>>>>,
+    /// Per file: a def's start offset to its `__qualname__` and its 1-based place among the defs with that qualname.
+    places: RefCell<FxHashMap<File, Rc<FxHashMap<TextSize, (String, u32)>>>>,
+}
+
+/// Where a def is, as the outline names it: the key the core finds a node by.
+pub struct Place {
+    /// An absolute path. `None` when the def has no file on disk (a builtin, a typeshed stub).
+    pub file: Option<String>,
+    /// `__qualname__`: a def inside a function gets `<locals>` after that function.
+    pub qualname: String,
+    /// 1-based, among the defs with this qualname in the file, in source order.
+    pub nth: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -289,7 +301,7 @@ impl<'db> Sem<'db> {
         out
     }
     pub fn new(db: &'db ProjectDatabase) -> Self {
-        Sem { db, nth: RefCell::default() }
+        Sem { db, nth: RefCell::default(), places: RefCell::default() }
     }
     pub fn model(&self, file: ProgramFile<'db>) -> SemanticModel<'db> {
         SemanticModel::new(self.db, file)
@@ -392,6 +404,51 @@ impl<'db> Sem<'db> {
 
     pub fn is_class(&self, def: Definition<'db>) -> bool {
         matches!(def.kind(self.db), DefinitionKind::Class(_))
+    }
+
+    /// The def's file, `__qualname__` and occurrence: the three values the outline gives it.
+    pub fn place(&self, def: Definition<'db>) -> Place {
+        let parsed = self.parsed(def);
+        let start = match def.kind(self.db) {
+            DefinitionKind::Function(f) => f.node(&parsed).range().start(),
+            DefinitionKind::Class(c) => c.node(&parsed).range().start(),
+            _ => self.def_position(def).1,
+        };
+        let file = def.file(self.db);
+        let (qualname, nth) = self.places_of(file, &parsed).get(&start).cloned().unwrap_or_default();
+        Place { file: file.path(self.db).as_system_path().map(|p| p.to_string()), qualname, nth }
+    }
+
+    /// The function in `file` whose `__qualname__` is `qualname`, the `nth` of them (1-based, source order). Any
+    /// def can be named, wherever it sits: in a class, in a function (`outer.<locals>.inner`), under an `if`.
+    pub fn entry_at(&self, file: File, qualname: &str, nth: u32) -> Option<Definition<'db>> {
+        let program_file = self.db.program_file(file);
+        let parsed = parsed_module(self.db, program_file.python_file(self.db)).load(self.db);
+        let model = SemanticModel::new(self.db, program_file);
+        let mut found = None;
+        each_def(&parsed.syntax().body, &mut |stmt, q, n| {
+            if let Stmt::FunctionDef(f) = stmt
+                && found.is_none()
+                && q == qualname
+                && n == nth
+            {
+                found = Some(f.definition(&model));
+            }
+        });
+        found
+    }
+
+    fn places_of(&self, file: File, parsed: &ParsedModuleRef) -> Rc<FxHashMap<TextSize, (String, u32)>> {
+        if let Some(found) = self.places.borrow().get(&file) {
+            return found.clone();
+        }
+        let mut out = FxHashMap::default();
+        each_def(&parsed.syntax().body, &mut |stmt, q, n| {
+            out.insert(stmt.range().start(), (q.to_string(), n));
+        });
+        let out = Rc::new(out);
+        self.places.borrow_mut().insert(file, out.clone());
+        out
     }
 
     /// A definition's identity outside this request: its docstring `ID:` when it
@@ -604,4 +661,36 @@ impl<'db> Sem<'db> {
         let parsed = parsed_module(self.db, def.python_file(self.db)).load(self.db);
         crate::qname::qualified_name(self.db, def, &parsed).unwrap_or_else(|| "<unknown>".into())
     }
+}
+
+/// Every `def` and `class` of a body, parents before children, in source order, each with its `__qualname__`
+/// and its 1-based place among the defs with that qualname.
+fn each_def<'a>(body: &'a [Stmt], f: &mut dyn FnMut(&'a Stmt, &str, u32)) {
+    struct Defs<'a, 'f> {
+        stack: Vec<(String, bool)>, // qualname, is a function
+        seen: FxHashMap<String, u32>,
+        f: &'f mut dyn FnMut(&'a Stmt, &str, u32),
+    }
+    impl<'a> Visitor<'a> for Defs<'a, '_> {
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            let (name, is_function) = match stmt {
+                Stmt::FunctionDef(f) => (f.name.as_str(), true),
+                Stmt::ClassDef(c) => (c.name.as_str(), false),
+                _ => return walk_stmt(self, stmt),
+            };
+            let qualname = match self.stack.last() {
+                None => name.to_string(),
+                Some((q, true)) => format!("{q}.<locals>.{name}"),
+                Some((q, false)) => format!("{q}.{name}"),
+            };
+            let n = self.seen.entry(qualname.clone()).or_insert(0);
+            *n += 1;
+            (self.f)(stmt, &qualname, *n);
+            self.stack.push((qualname, is_function));
+            walk_stmt(self, stmt);
+            self.stack.pop();
+        }
+    }
+    let mut w = Defs { stack: Vec::new(), seen: FxHashMap::default(), f };
+    w.visit_body(body);
 }

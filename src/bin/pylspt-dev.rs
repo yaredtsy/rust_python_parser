@@ -7,7 +7,7 @@
 //! See `experience/02-parse-and-ast/05-object-visitor/04-wiring-it-up.md`.
 
 use pylspt::db::{open, open_project};
-use pylspt::interp::{Mode, Options, call_graph, call_wire, merge_for_output, to_text};
+use pylspt::interp::{Mode, Options, call_graph, call_wire, call_wire_at, merge_for_output, to_text};
 use pylspt::nodes::Node;
 use pylspt::scan::{Ctx, scan_module};
 use ruff_db::parsed::parsed_module;
@@ -20,7 +20,7 @@ struct Output<'a> {
     nodes: &'a [Node],
 }
 
-const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty] [-o <path>]\n       pylspt-dev calls <dir> <file> --entry <name> [--graph | --wire] [--merged] [--ids] [--pretty] [-o <path>]";
+const USAGE: &str = "usage: pylspt-dev parse <dir> <file> [--pretty] [-o <path>]\n       pylspt-dev calls <dir> <file> --entry <name> [--nth <n>] [--graph | --wire] [--merged] [--ids] [--pretty] [-o <path>]";
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -72,10 +72,17 @@ fn calls(args: Vec<String>, out: Option<String>) -> anyhow::Result<()> {
         .position(|a| a == "--entry")
         .and_then(|i| args.get(i + 1))
         .ok_or_else(|| anyhow::anyhow!("--entry <name> is required\n{USAGE}"))?;
+    // `--nth <n>`: `--entry` is then a `__qualname__` (`Class.method`, `outer.<locals>.inner`), and this is which of
+    // the defs with that qualname in the file (1-based). Without it, `--entry` is a dotted name.
+    let nth: Option<u32> = args
+        .iter()
+        .position(|a| a == "--nth")
+        .map(|i| args.get(i + 1).and_then(|n| n.parse().ok()).ok_or_else(|| anyhow::anyhow!("--nth <n> takes a number\n{USAGE}")))
+        .transpose()?;
     let positional: Vec<&String> = args
         .iter()
         .enumerate()
-        .filter(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--entry"))
+        .filter(|(i, a)| !a.starts_with("--") && (*i == 0 || (args[i - 1] != "--entry" && args[i - 1] != "--nth")))
         .map(|(_, a)| a)
         .collect();
     let [dir, file_arg] = positional[..] else {
@@ -99,7 +106,11 @@ fn calls(args: Vec<String>, out: Option<String>) -> anyhow::Result<()> {
         let g = call_graph(&db, file, entry, &opts).ok_or_else(no_entry)?;
         emit(json(&g, pretty)?, out)?;
     } else {
-        let (mut wire, _) = call_wire(&db, file, entry, &opts).ok_or_else(no_entry)?;
+        let found = match nth {
+            Some(n) => call_wire_at(&db, file, entry, n, &opts),
+            None => call_wire(&db, file, entry, &opts),
+        };
+        let (mut wire, _) = found.ok_or_else(no_entry)?;
         if has("--merged") {
             wire = merge_for_output(&wire); // the spec of v-noc's merge: never on the response path
         }

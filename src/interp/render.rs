@@ -33,15 +33,7 @@ pub fn render_root(s: &Solver<'_>, root: ContextId) -> FrameJson {
     let qname = s.sem.qname(func);
     let mut budget = Budget(s.opts.limits.render_nodes);
     budget.tick();
-    let mut node = FrameJson {
-        target_qname: qname.clone(),
-        target_id: s.target_id(func),
-        call_count: 0,
-        call_site: None,
-        contexts: vec![s.stable_id(root)],
-        marks: Vec::new(),
-        children: Vec::new(),
-    };
+    let mut node = s.wire_node(func, None, &[root]);
     let mut path = vec![qname];
     let kids = render(s, &[root], &mut path, 1, &mut budget);
     node.children = kids.nodes;

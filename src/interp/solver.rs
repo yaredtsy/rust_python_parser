@@ -13,7 +13,7 @@ use crate::interp::summary::{FunctionResult, Gaps, SiteId, Status, Cut, same_sva
 use crate::interp::walk::{Walk, contains_yield};
 use crate::interp::{Options, Stats};
 use crate::interp::graph::Span;
-use crate::interp::wire::FrameJson;
+use crate::interp::wire::{FrameJson, TargetKind};
 use crate::sem::{Definition, Sem};
 use crate::stable::StableDef;
 use ruff_text_size::Ranged;
@@ -495,14 +495,25 @@ impl<'db> Solver<'db> {
         ctxs: &[ContextId],
     ) -> FrameJson {
         let range = self.site_range(caller, site);
+        let call_site = Span {
+            start: self.sem.line_col(caller, range.start()),
+            end: self.sem.line_col(caller, range.end()),
+        };
+        self.wire_node(callee, Some(call_site), ctxs)
+    }
+
+    /// A wire node for `def`: how it is named, with no marks and no children yet.
+    pub fn wire_node(&self, def: Definition<'db>, call_site: Option<Span>, ctxs: &[ContextId]) -> FrameJson {
+        let place = self.sem.place(def);
         FrameJson {
-            target_qname: self.sem.qname(callee),
-            target_id: self.target_id(callee),
+            target_qname: self.sem.qname(def),
+            target_id: self.target_id(def),
+            target_file: place.file,
+            target_qualname: place.qualname,
+            target_nth: place.nth,
+            target_kind: if self.sem.is_class(def) { TargetKind::Class } else { TargetKind::Function },
             call_count: 0,
-            call_site: Some(Span {
-                start: self.sem.line_col(caller, range.start()),
-                end: self.sem.line_col(caller, range.end()),
-            }),
+            call_site,
             contexts: ctxs.iter().map(|&c| self.stable_id(c)).collect(),
             marks: Vec::new(),
             children: Vec::new(),

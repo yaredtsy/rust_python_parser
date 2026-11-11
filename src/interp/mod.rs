@@ -21,7 +21,7 @@ mod wire;
 pub use canon::StableContextId;
 pub use graph::{ContextOut, EdgeOut, EdgeTo, GraphOut, Span};
 pub use tree::{Mark, Node, to_text};
-pub use wire::{FrameJson, merge_for_output};
+pub use wire::{FrameJson, TargetKind, merge_for_output};
 
 use std::time::Duration;
 
@@ -31,7 +31,7 @@ use ty_project::ProjectDatabase;
 
 use crate::{
     interp::{graph::graph, key::ContextId, render::render_root, solver::Solver, walk::Walk},
-    sem::Sem,
+    sem::{Definition, Sem},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +167,24 @@ pub fn call_wire(
     Some((wire, s.stats))
 }
 
+/// `call_wire` for the function in `file` whose `__qualname__` is `qualname`, the `nth` of them (1-based): any
+/// def of the file can be named, as the outline names it.
+pub fn call_wire_at(
+    db: &ProjectDatabase,
+    file: File,
+    qualname: &str,
+    nth: u32,
+    opts: &Options,
+) -> Option<(FrameJson, Stats)> {
+    let sem = Sem::new(db);
+    let def = sem.entry_at(file, qualname, nth)?;
+    let (mut s, root_ctx) = solve_def(sem, def, opts)?;
+    let wire = render_root(&s, root_ctx);
+    s.stats.contexts = s.contexts.len() as u32;
+    s.stats.nodes = wire.children.iter().map(FrameJson::count).sum();
+    Some((wire, s.stats))
+}
+
 /// Summary mode, stopped before rendering: the solver, with the entry solved.
 pub fn solve<'db>(
     db: &'db ProjectDatabase,
@@ -176,6 +194,14 @@ pub fn solve<'db>(
 ) -> Option<(Solver<'db>, ContextId)> {
     let sem = Sem::new(db);
     let def = sem.entry(file, entry)?;
+    solve_def(sem, def, opts)
+}
+
+fn solve_def<'db>(
+    sem: Sem<'db>,
+    def: Definition<'db>,
+    opts: &Options,
+) -> Option<(Solver<'db>, ContextId)> {
     let parsed = sem.parsed(def);
     let node = sem.function_node(def, &parsed)?;
     let mut s = Solver::new(sem, opts.clone());

@@ -592,3 +592,47 @@ fn p05_02_merge_matches_v_noc() {
     assert_eq!(after.children.len(), 1);
     assert_eq!(after.children[0].call_count, 1);
 }
+
+#[test]
+fn p05_02_wire_names_each_target_for_the_core() {
+    use crate::interp::{TargetKind, call_wire, call_wire_at};
+    let dir = std::fs::canonicalize("experience/12-call-tree/05-output/python/wire_target").unwrap();
+    let db = open_project(SystemPath::from_std_path(&dir).unwrap()).unwrap();
+    let open_file = |name: &str| open(&db, SystemPath::from_std_path(&dir.join(name)).unwrap()).unwrap().0;
+    let (caller, callee) = (open_file("caller.py"), open_file("callee.py"));
+    let path = |name: &str| Some(dir.join(name).to_str().unwrap().to_string());
+
+    let (wire, _) = call_wire_at(&db, caller, "Service.run", 1, &summary()).unwrap();
+    assert_eq!((wire.target_file.clone(), wire.target_qualname.as_str(), wire.target_nth), (path("caller.py"), "Service.run", 1));
+    assert_eq!(wire.target_kind, TargetKind::Function);
+
+    // a class, a method and the second `twin`, all in the callee's file, none in the caller's
+    let seen: Vec<_> = wire.children.iter().map(|c| (c.target_qualname.as_str(), c.target_nth, c.target_kind)).collect();
+    assert_eq!(
+        seen,
+        [("Store", 1, TargetKind::Class), ("Store.save", 1, TargetKind::Function), ("twin", 2, TargetKind::Function)]
+    );
+    assert!(wire.children.iter().all(|c| c.target_file == path("callee.py")));
+    // `Store.save` calls `os.getcwd`: code outside the project is not in the wire
+    assert!(wire.children.iter().all(|c| c.children.is_empty()));
+
+    // `call_site` is a range in the CALLER's file (1-based line and column)
+    let text = std::fs::read_to_string(dir.join("caller.py")).unwrap();
+    let site = wire.children[0].call_site.as_ref().unwrap();
+    let line = text.lines().nth(site.start.0 as usize - 1).unwrap();
+    assert_eq!(&line[site.start.1 as usize - 1..site.end.1 as usize - 1], "Store()");
+    assert_eq!(site.start.0, site.end.0);
+
+    // any def can be the entry: a nested one by its `<locals>` qualname, the n-th of two with one qualname
+    let (inner, _) = call_wire_at(&db, caller, "Service.go.<locals>.inner", 1, &summary()).unwrap();
+    assert_eq!(inner.target_qualname, "Service.go.<locals>.inner");
+    assert_eq!(inner.children.len(), 1);
+    let (dotted, _) = call_wire(&db, caller, "Service.go.inner", &summary()).unwrap();
+    assert_eq!((dotted.target_qualname, dotted.target_nth), (inner.target_qualname, inner.target_nth));
+    let (twin, _) = call_wire_at(&db, callee, "twin", 2, &summary()).unwrap();
+    assert_eq!(twin.target_nth, 2);
+    assert!(call_wire_at(&db, callee, "twin", 1, &summary()).is_some());
+    assert!(call_wire_at(&db, callee, "twin", 3, &summary()).is_none());
+    assert!(call_wire_at(&db, caller, "Service", 1, &summary()).is_none()); // a class is not an entry
+    assert!(call_wire_at(&db, caller, "Service.nope", 1, &summary()).is_none());
+}
